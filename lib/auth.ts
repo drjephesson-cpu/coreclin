@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { cookies } from "next/headers";
 
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
 
@@ -18,7 +19,7 @@ function signPayload(payload: string): string {
   return createHmac("sha256", AUTH_SECRET).update(payload).digest("hex");
 }
 
-export function validateLoginCredentials(username: string, password: string): boolean {
+export function validateLegacyCredentials(username: string, password: string): boolean {
   return username.trim().toLowerCase() === AUTH_USERNAME && password === AUTH_PASSWORD;
 }
 
@@ -63,13 +64,18 @@ export function getSessionFromToken(token: string): SessionData | null {
       return null;
     }
 
-    if (username !== AUTH_USERNAME) {
-      return null;
-    }
-
     return { username, issuedAt, expiresAt };
   } catch {
     return null;
   }
 }
 
+export async function getCurrentSession(): Promise<SessionData | null> {
+  const cookieStore = await cookies();
+  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
+  if (!token) {
+    return null;
+  }
+
+  return getSessionFromToken(token);
+}

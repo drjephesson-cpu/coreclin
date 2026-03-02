@@ -1,14 +1,11 @@
 import Image from "next/image";
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
 import LoginForm from "@/app/_components/login-form";
-import { SESSION_COOKIE_NAME, getSessionFromToken } from "@/lib/auth";
+import { getCurrentSession } from "@/lib/auth";
 
 export default async function Home() {
-  const cookieStore = await cookies();
-  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
-  const session = token ? getSessionFromToken(token) : null;
+  const session = await getCurrentSession();
 
   if (session) {
     redirect("/dashboard");

@@ -1,52 +1,35 @@
 # CoreClin
 
-Projeto inicial em Next.js para o CoreClin, com tela de login e sessão via cookie HTTP-only.
+Projeto em Next.js para apoio à decisão farmacêutica com:
 
-## Login inicial
+- Login com sessão HTTP-only.
+- Cadastro de profissional, equipe e paciente.
+- Vínculo do paciente ao profissional responsável via login.
+- Dados variáveis de paciente (peso e altura) com cálculo de IMC e superfície corporal.
+- Histórico persistido no Neon (PostgreSQL).
 
-- Usuário: `jephesson`
-- Senha: `ufpb2010`
+## Variáveis de ambiente (Vercel)
 
-As credenciais estão configuráveis por variáveis de ambiente.
+- `DATABASE_URL` (Neon)
+- `AUTH_SECRET`
+- `AUTH_USERNAME` (seed inicial, padrão: `jephesson`)
+- `AUTH_PASSWORD` (seed inicial, padrão: `ufpb2010`)
 
-## Rodando localmente
+## Seed inicial
 
-1. Instale dependências:
-   ```bash
-   npm install
-   ```
-2. Crie o arquivo de ambiente:
-   ```bash
-   cp .env.example .env.local
-   ```
-3. Inicie o servidor:
-   ```bash
-   npm run dev
-   ```
-4. Acesse [http://localhost:3000](http://localhost:3000).
+Na primeira execução com banco conectado, o sistema cria automaticamente:
 
-## Deploy (Vercel + GitHub)
+- **Dr. Jephesson Alex Floriano dos Santos**
+- Profissão: **Farmacêutico**
+- Conselho: **CRF/RS 18913**
+- Instituição: **HE-UFPel**
+- Login: `AUTH_USERNAME` (ou `jephesson`)
+- Senha: `AUTH_PASSWORD` (ou `ufpb2010`)
 
-1. Crie um repositório no GitHub e faça push:
-   ```bash
-   git init
-   git add .
-   git commit -m "feat: base do CoreClin com login"
-   git branch -M main
-   git remote add origin <URL_DO_REPOSITORIO>
-   git push -u origin main
-   ```
-2. Na Vercel, importe o repositório e configure as variáveis:
-   - `AUTH_USERNAME`
-   - `AUTH_PASSWORD`
-   - `AUTH_SECRET`
-3. Faça deploy.
+## Deploy (GitHub + Vercel + Neon)
 
-## Próxima etapa: Neon
-
-Para substituir o login fixo por autenticação real:
-
-1. Criar projeto no Neon e obter `DATABASE_URL`.
-2. Configurar ORM (`Prisma` ou `Drizzle`).
-3. Criar tabela de usuários/perfis.
-4. Trocar a validação fixa do arquivo `lib/auth.ts` por consulta no banco.
+1. Push no GitHub.
+2. Importar o repositório na Vercel.
+3. Garantir `Framework Preset: Next.js`.
+4. Configurar as variáveis acima.
+5. Deploy.
