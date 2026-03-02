@@ -25,14 +25,12 @@ export default async function Home() {
             priority
             className="brand-logo-image"
           />
-          <p className="brand-tag">CoreClin</p>
-          <h1>Autenticação Clínica</h1>
         </header>
 
         <LoginForm />
 
         <footer className="auth-footer">
-          <span>dr.jephesson@gmail.com</span>
+          <span>Desenvolvido pelo Dr. Jephesson Santos</span>
         </footer>
       </section>
     </main>
