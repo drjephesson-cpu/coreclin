@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import LogoutButton from "@/app/_components/logout-button";
 import { SESSION_COOKIE_NAME, getSessionFromToken } from "@/lib/auth";
 
-export default async function DashboardPage(): Promise<JSX.Element> {
+export default async function DashboardPage() {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
   const session = token ? getSessionFromToken(token) : null;
@@ -48,4 +48,3 @@ export default async function DashboardPage(): Promise<JSX.Element> {
     </main>
   );
 }
-

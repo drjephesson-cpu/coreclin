@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-export default function LogoutButton(): JSX.Element {
+export default function LogoutButton() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
 
@@ -26,4 +26,3 @@ export default function LogoutButton(): JSX.Element {
     </button>
   );
 }
-
