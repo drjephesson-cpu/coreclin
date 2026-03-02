@@ -18,29 +18,24 @@ export default async function Home() {
     <main className="auth-shell">
       <div className="ambient ambient-one" />
       <div className="ambient ambient-two" />
-      <section className="auth-card">
+      <section className="auth-panel">
         <header className="brand-header">
-          <div className="brand-logo">
-            <Image
-              src="/coreclin.png"
-              alt="CoreClin"
-              width={74}
-              height={74}
-              priority
-              className="brand-logo-image"
-            />
-          </div>
+          <Image
+            src="/coreclin.png"
+            alt="CoreClin"
+            width={190}
+            height={190}
+            priority
+            className="brand-logo-image"
+          />
           <p className="brand-tag">CoreClin</p>
           <h1>Autenticação Clínica</h1>
-          <p className="brand-subtitle">
-            Acesse o painel para revisão farmacêutica, verificação de prescrições e feedback.
-          </p>
         </header>
 
         <LoginForm />
 
         <footer className="auth-footer">
-          <span>Projeto inicial para deploy em Vercel + Neon + GitHub.</span>
+          <span>dr.jephesson@gmail.com</span>
         </footer>
       </section>
     </main>

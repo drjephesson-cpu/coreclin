@@ -67,13 +67,9 @@ body {
   animation: float-ambient 9s ease-in-out infinite reverse;
 }
 
-.auth-card {
-  width: min(520px, 100%);
-  background: linear-gradient(180deg, #fcfffd 0%, var(--bg-card) 100%);
-  border-radius: 28px;
-  border: 1px solid var(--border);
-  padding: 30px 30px 24px;
-  box-shadow: var(--shadow);
+.auth-panel {
+  width: min(560px, 100%);
+  padding: 12px 10px;
   position: relative;
   z-index: 1;
   animation: reveal-card 0.6s ease-out both;
@@ -86,20 +82,9 @@ body {
   margin-bottom: 24px;
 }
 
-.brand-logo {
-  width: 82px;
-  height: 82px;
-  border-radius: 20px;
-  margin: 0 auto;
-  background: linear-gradient(160deg, #f5fffb 10%, #daf3e9 100%);
-  border: 1px solid #bed7cd;
-  display: grid;
-  place-items: center;
-}
-
 .brand-logo-image {
+  margin: 0 auto;
   object-fit: contain;
-  border-radius: 12px;
 }
 
 .brand-tag {
@@ -116,13 +101,6 @@ body {
   font-family: var(--font-title);
   font-size: clamp(1.62rem, 2.5vw, 2rem);
   line-height: 1.2;
-}
-
-.brand-subtitle {
-  margin: 0;
-  color: var(--ink-soft);
-  line-height: 1.5;
-  font-size: 0.98rem;
 }
 
 .login-form {
@@ -303,9 +281,13 @@ body {
 }
 
 @media (max-width: 640px) {
-  .auth-card {
-    border-radius: 22px;
-    padding: 22px 18px 18px;
+  .auth-panel {
+    padding: 10px 4px;
+  }
+
+  .brand-logo-image {
+    width: 150px;
+    height: 150px;
   }
 
   .dashboard-panel {
