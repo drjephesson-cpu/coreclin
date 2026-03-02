@@ -9,8 +9,12 @@ import {
   type BsaFormulaId,
   type CouncilOption,
   type DashboardData,
+  type MedicalPrescriptionRecord,
+  type MedicationRecord,
   type MeasurementHistoryRecord,
   type PatientRecord,
+  type PatientAllergyRecord,
+  type PriorMedicationRecord,
   type ProfessionOption,
   type ProfessionalRecord,
   type TeamRecord
@@ -35,6 +39,7 @@ export type CreatePatientInput = {
   chartNumber: string;
   birthDate: string;
   responsibleLogin: string;
+  allergies: string[];
 };
 
 export type CreateAdmissionInput = {
@@ -48,6 +53,38 @@ export type CreateAdmissionInput = {
   bmiFormula: BmiFormulaId;
   bsaFormula: BsaFormulaId;
   responsibleLogin: string;
+};
+
+export type CreateMedicationInput = {
+  name: string;
+  defaultUnit: string;
+};
+
+export type AddPatientAllergyInput = {
+  patientId: number;
+  allergyName: string;
+};
+
+export type AddPriorMedicationInput = {
+  patientId: number;
+  medicationId?: number;
+  medicationName: string;
+  dose: number;
+  doseUnit: string;
+  frequency: string;
+  shifts: string;
+};
+
+export type AddMedicalPrescriptionInput = {
+  patientId: number;
+  admissionId?: number;
+  medicationId?: number;
+  medicationName: string;
+  dose: number;
+  doseUnit: string;
+  frequency: string;
+  shifts: string;
+  notes?: string;
 };
 
 type GlobalDbState = typeof globalThis & {
@@ -141,6 +178,59 @@ function mapMeasurement(row: DbRow): MeasurementHistoryRecord {
     bodySurfaceArea: toNumber(row.body_surface_area),
     bsaFormula: String(row.bsa_formula ?? "mosteller") as BsaFormulaId,
     recordedAt: toIso(row.recorded_at)
+  };
+}
+
+function mapMedication(row: DbRow): MedicationRecord {
+  return {
+    id: toNumber(row.id),
+    name: String(row.name ?? ""),
+    defaultUnit: String(row.default_unit ?? ""),
+    createdAt: toIso(row.created_at)
+  };
+}
+
+function mapPatientAllergy(row: DbRow): PatientAllergyRecord {
+  return {
+    id: toNumber(row.id),
+    patientId: toNumber(row.patient_id),
+    patientName: String(row.patient_name ?? ""),
+    allergyName: String(row.allergy_name ?? ""),
+    createdAt: toIso(row.created_at)
+  };
+}
+
+function mapPriorMedication(row: DbRow): PriorMedicationRecord {
+  return {
+    id: toNumber(row.id),
+    patientId: toNumber(row.patient_id),
+    patientName: String(row.patient_name ?? ""),
+    medicationId: row.medication_id === null ? null : toNumber(row.medication_id),
+    medicationName: String(row.medication_name ?? ""),
+    dose: toNumber(row.dose),
+    doseUnit: String(row.dose_unit ?? ""),
+    frequency: String(row.frequency ?? ""),
+    shifts: String(row.shifts ?? ""),
+    createdAt: toIso(row.created_at)
+  };
+}
+
+function mapMedicalPrescription(row: DbRow): MedicalPrescriptionRecord {
+  return {
+    id: toNumber(row.id),
+    patientId: toNumber(row.patient_id),
+    patientName: String(row.patient_name ?? ""),
+    admissionId: row.admission_id === null ? null : toNumber(row.admission_id),
+    admissionDate: row.admission_date === null ? null : String(row.admission_date),
+    bed: row.bed === null ? null : String(row.bed),
+    medicationId: row.medication_id === null ? null : toNumber(row.medication_id),
+    medicationName: String(row.medication_name ?? ""),
+    dose: toNumber(row.dose),
+    doseUnit: String(row.dose_unit ?? ""),
+    frequency: String(row.frequency ?? ""),
+    shifts: String(row.shifts ?? ""),
+    notes: row.notes === null ? null : String(row.notes),
+    createdAt: toIso(row.created_at)
   };
 }
 
@@ -363,10 +453,55 @@ async function setupDatabase(): Promise<void> {
       recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS medication_catalog (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      default_unit TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS patient_allergies (
+      id SERIAL PRIMARY KEY,
+      patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+      allergy_name TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (patient_id, allergy_name)
+    );
+
+    CREATE TABLE IF NOT EXISTS patient_prior_medications (
+      id SERIAL PRIMARY KEY,
+      patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+      medication_id INTEGER REFERENCES medication_catalog(id) ON DELETE SET NULL,
+      medication_name TEXT NOT NULL,
+      dose NUMERIC(10, 2) NOT NULL,
+      dose_unit TEXT NOT NULL,
+      frequency TEXT NOT NULL,
+      shifts TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS medical_prescriptions (
+      id SERIAL PRIMARY KEY,
+      patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+      admission_id INTEGER REFERENCES admissions(id) ON DELETE SET NULL,
+      medication_id INTEGER REFERENCES medication_catalog(id) ON DELETE SET NULL,
+      medication_name TEXT NOT NULL,
+      dose NUMERIC(10, 2) NOT NULL,
+      dose_unit TEXT NOT NULL,
+      frequency TEXT NOT NULL,
+      shifts TEXT NOT NULL,
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE INDEX IF NOT EXISTS idx_admissions_patient_id ON admissions (patient_id);
     CREATE INDEX IF NOT EXISTS idx_admissions_date ON admissions (admission_date DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_measurements_patient_id ON patient_measurements (patient_id);
     CREATE INDEX IF NOT EXISTS idx_measurements_recorded_at ON patient_measurements (recorded_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_allergies_patient_id ON patient_allergies (patient_id);
+    CREATE INDEX IF NOT EXISTS idx_prior_medications_patient_id ON patient_prior_medications (patient_id);
+    CREATE INDEX IF NOT EXISTS idx_prescriptions_patient_id ON medical_prescriptions (patient_id);
+    CREATE INDEX IF NOT EXISTS idx_prescriptions_admission_id ON medical_prescriptions (admission_id);
   `);
 
   await pool.query(`
@@ -565,6 +700,83 @@ export async function createTeam(name: string): Promise<TeamRecord> {
   }
 }
 
+export async function listMedicationCatalog(): Promise<MedicationRecord[]> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const result = await pool.query(`
+    SELECT id, name, default_unit, created_at
+    FROM medication_catalog
+    ORDER BY name ASC
+  `);
+
+  return result.rows.map((row) => mapMedication(row as DbRow));
+}
+
+export async function createMedication(input: CreateMedicationInput): Promise<MedicationRecord> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+
+  try {
+    const result = await pool.query(
+      `
+        INSERT INTO medication_catalog (name, default_unit)
+        VALUES ($1, $2)
+        RETURNING id, name, default_unit, created_at
+      `,
+      [input.name.trim(), input.defaultUnit.trim()]
+    );
+    return mapMedication(result.rows[0] as DbRow);
+  } catch (error) {
+    const postgresError = error as { code?: string };
+    if (postgresError.code === "23505") {
+      throw new Error("Medicamento já cadastrado.");
+    }
+    throw error;
+  }
+}
+
+async function ensurePatientExists(client: PoolClient, patientId: number): Promise<void> {
+  const result = await client.query(`SELECT id FROM patients WHERE id = $1 LIMIT 1`, [patientId]);
+  if (result.rows.length === 0) {
+    throw new Error("Paciente não encontrado.");
+  }
+}
+
+async function resolveMedicationData(
+  client: PoolClient,
+  medicationId: number | undefined,
+  fallbackMedicationName: string
+): Promise<{ medicationId: number | null; medicationName: string }> {
+  if (medicationId && Number.isInteger(medicationId) && medicationId > 0) {
+    const result = await client.query(
+      `
+        SELECT id, name
+        FROM medication_catalog
+        WHERE id = $1
+        LIMIT 1
+      `,
+      [medicationId]
+    );
+    if (result.rows.length === 0) {
+      throw new Error("Medicamento selecionado não encontrado.");
+    }
+    return {
+      medicationId: toNumber((result.rows[0] as DbRow).id),
+      medicationName: String((result.rows[0] as DbRow).name ?? "")
+    };
+  }
+
+  const normalizedName = fallbackMedicationName.trim();
+  if (!normalizedName) {
+    throw new Error("Informe o nome do medicamento.");
+  }
+
+  return {
+    medicationId: null,
+    medicationName: normalizedName
+  };
+}
+
 async function findProfessionalIdByLogin(client: PoolClient, login: string): Promise<number> {
   const normalizedLogin = login.trim().toLowerCase();
   const result = await client.query(
@@ -607,8 +819,30 @@ export async function createPatient(input: CreatePatientInput): Promise<PatientR
       [input.fullName.trim(), input.chartNumber.trim(), responsibleProfessionalId, input.birthDate]
     );
 
-    await client.query("COMMIT");
     const patientId = toNumber((inserted.rows[0] as DbRow).id);
+
+    const normalizedAllergies = input.allergies
+      .map((allergy) => allergy.trim())
+      .filter((allergy) => allergy.length > 0);
+
+    if (normalizedAllergies.length > 0) {
+      const uniqueAllergies = Array.from(
+        new Map(normalizedAllergies.map((allergy) => [allergy.toLocaleLowerCase(), allergy])).values()
+      );
+
+      for (const allergy of uniqueAllergies) {
+        await client.query(
+          `
+            INSERT INTO patient_allergies (patient_id, allergy_name)
+            VALUES ($1, $2)
+            ON CONFLICT (patient_id, allergy_name) DO NOTHING
+          `,
+          [patientId, allergy]
+        );
+      }
+    }
+
+    await client.query("COMMIT");
     const patientList = await listPatients();
     const createdPatient = patientList.find((patient) => patient.id === patientId);
     if (!createdPatient) {
@@ -705,6 +939,228 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
     const postgresError = error as { code?: string };
     if (postgresError.code === "23503") {
       throw new Error("Paciente ou equipe inválidos para a internação.");
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function addPatientAllergy(input: AddPatientAllergyInput): Promise<PatientAllergyRecord> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await ensurePatientExists(client, input.patientId);
+
+    const normalizedAllergy = input.allergyName.trim();
+    const inserted = await client.query(
+      `
+        INSERT INTO patient_allergies (patient_id, allergy_name)
+        VALUES ($1, $2)
+        RETURNING id
+      `,
+      [input.patientId, normalizedAllergy]
+    );
+
+    const allergyId = toNumber((inserted.rows[0] as DbRow).id);
+    const result = await client.query(
+      `
+        SELECT
+          pa.id,
+          pa.patient_id,
+          p.full_name AS patient_name,
+          pa.allergy_name,
+          pa.created_at
+        FROM patient_allergies pa
+        INNER JOIN patients p ON p.id = pa.patient_id
+        WHERE pa.id = $1
+        LIMIT 1
+      `,
+      [allergyId]
+    );
+
+    await client.query("COMMIT");
+    return mapPatientAllergy(result.rows[0] as DbRow);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    const postgresError = error as { code?: string };
+    if (postgresError.code === "23505") {
+      throw new Error("Alergia já cadastrada para este paciente.");
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function addPriorMedication(
+  input: AddPriorMedicationInput
+): Promise<PriorMedicationRecord> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await ensurePatientExists(client, input.patientId);
+    const medicationData = await resolveMedicationData(client, input.medicationId, input.medicationName);
+
+    const inserted = await client.query(
+      `
+        INSERT INTO patient_prior_medications (
+          patient_id,
+          medication_id,
+          medication_name,
+          dose,
+          dose_unit,
+          frequency,
+          shifts
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id
+      `,
+      [
+        input.patientId,
+        medicationData.medicationId,
+        medicationData.medicationName,
+        input.dose,
+        input.doseUnit.trim(),
+        input.frequency.trim(),
+        input.shifts.trim()
+      ]
+    );
+
+    const priorMedicationId = toNumber((inserted.rows[0] as DbRow).id);
+    const result = await client.query(
+      `
+        SELECT
+          pm.id,
+          pm.patient_id,
+          p.full_name AS patient_name,
+          pm.medication_id,
+          pm.medication_name,
+          pm.dose::float8 AS dose,
+          pm.dose_unit,
+          pm.frequency,
+          pm.shifts,
+          pm.created_at
+        FROM patient_prior_medications pm
+        INNER JOIN patients p ON p.id = pm.patient_id
+        WHERE pm.id = $1
+        LIMIT 1
+      `,
+      [priorMedicationId]
+    );
+
+    await client.query("COMMIT");
+    return mapPriorMedication(result.rows[0] as DbRow);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    const postgresError = error as { code?: string };
+    if (postgresError.code === "23503") {
+      throw new Error("Paciente ou medicamento inválido.");
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function addMedicalPrescription(
+  input: AddMedicalPrescriptionInput
+): Promise<MedicalPrescriptionRecord> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await ensurePatientExists(client, input.patientId);
+
+    const medicationData = await resolveMedicationData(client, input.medicationId, input.medicationName);
+    let safeAdmissionId: number | null = null;
+    if (input.admissionId && Number.isInteger(input.admissionId) && input.admissionId > 0) {
+      const admissionResult = await client.query(
+        `
+          SELECT id
+          FROM admissions
+          WHERE id = $1 AND patient_id = $2
+          LIMIT 1
+        `,
+        [input.admissionId, input.patientId]
+      );
+      if (admissionResult.rows.length === 0) {
+        throw new Error("Internação selecionada não pertence ao paciente.");
+      }
+      safeAdmissionId = input.admissionId;
+    }
+
+    const inserted = await client.query(
+      `
+        INSERT INTO medical_prescriptions (
+          patient_id,
+          admission_id,
+          medication_id,
+          medication_name,
+          dose,
+          dose_unit,
+          frequency,
+          shifts,
+          notes
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING id
+      `,
+      [
+        input.patientId,
+        safeAdmissionId,
+        medicationData.medicationId,
+        medicationData.medicationName,
+        input.dose,
+        input.doseUnit.trim(),
+        input.frequency.trim(),
+        input.shifts.trim(),
+        input.notes?.trim() ? input.notes.trim() : null
+      ]
+    );
+
+    const prescriptionId = toNumber((inserted.rows[0] as DbRow).id);
+    const result = await client.query(
+      `
+        SELECT
+          mp.id,
+          mp.patient_id,
+          p.full_name AS patient_name,
+          mp.admission_id,
+          a.admission_date::text AS admission_date,
+          a.bed,
+          mp.medication_id,
+          mp.medication_name,
+          mp.dose::float8 AS dose,
+          mp.dose_unit,
+          mp.frequency,
+          mp.shifts,
+          mp.notes,
+          mp.created_at
+        FROM medical_prescriptions mp
+        INNER JOIN patients p ON p.id = mp.patient_id
+        LEFT JOIN admissions a ON a.id = mp.admission_id
+        WHERE mp.id = $1
+        LIMIT 1
+      `,
+      [prescriptionId]
+    );
+
+    await client.query("COMMIT");
+    return mapMedicalPrescription(result.rows[0] as DbRow);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    const postgresError = error as { code?: string };
+    if (postgresError.code === "23503") {
+      throw new Error("Paciente, internação ou medicamento inválido.");
     }
     throw error;
   } finally {
@@ -920,18 +1376,101 @@ export async function listRecentMeasurements(limit = 30): Promise<MeasurementHis
   return result.rows.map((row) => mapMeasurement(row as DbRow));
 }
 
+export async function listPatientAllergies(): Promise<PatientAllergyRecord[]> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const result = await pool.query(`
+    SELECT
+      pa.id,
+      pa.patient_id,
+      p.full_name AS patient_name,
+      pa.allergy_name,
+      pa.created_at
+    FROM patient_allergies pa
+    INNER JOIN patients p ON p.id = pa.patient_id
+    ORDER BY pa.created_at DESC, pa.id DESC
+  `);
+
+  return result.rows.map((row) => mapPatientAllergy(row as DbRow));
+}
+
+export async function listPriorMedications(): Promise<PriorMedicationRecord[]> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const result = await pool.query(`
+    SELECT
+      pm.id,
+      pm.patient_id,
+      p.full_name AS patient_name,
+      pm.medication_id,
+      pm.medication_name,
+      pm.dose::float8 AS dose,
+      pm.dose_unit,
+      pm.frequency,
+      pm.shifts,
+      pm.created_at
+    FROM patient_prior_medications pm
+    INNER JOIN patients p ON p.id = pm.patient_id
+    ORDER BY pm.created_at DESC, pm.id DESC
+  `);
+
+  return result.rows.map((row) => mapPriorMedication(row as DbRow));
+}
+
+export async function listMedicalPrescriptions(): Promise<MedicalPrescriptionRecord[]> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const result = await pool.query(`
+    SELECT
+      mp.id,
+      mp.patient_id,
+      p.full_name AS patient_name,
+      mp.admission_id,
+      a.admission_date::text AS admission_date,
+      a.bed,
+      mp.medication_id,
+      mp.medication_name,
+      mp.dose::float8 AS dose,
+      mp.dose_unit,
+      mp.frequency,
+      mp.shifts,
+      mp.notes,
+      mp.created_at
+    FROM medical_prescriptions mp
+    INNER JOIN patients p ON p.id = mp.patient_id
+    LEFT JOIN admissions a ON a.id = mp.admission_id
+    ORDER BY mp.created_at DESC, mp.id DESC
+  `);
+
+  return result.rows.map((row) => mapMedicalPrescription(row as DbRow));
+}
+
 export async function getDashboardData(currentLogin: string): Promise<DashboardData> {
   await ensureDatabaseReady();
 
-  const [currentProfessional, professionals, teams, patients, recentAdmissions, recentMeasurements] =
-    await Promise.all([
-      findProfessionalByLogin(currentLogin),
-      listProfessionals(),
-      listTeams(),
-      listPatients(),
-      listRecentAdmissions(80),
-      listRecentMeasurements(80)
-    ]);
+  const [
+    currentProfessional,
+    professionals,
+    teams,
+    patients,
+    recentAdmissions,
+    recentMeasurements,
+    medications,
+    patientAllergies,
+    priorMedications,
+    prescriptions
+  ] = await Promise.all([
+    findProfessionalByLogin(currentLogin),
+    listProfessionals(),
+    listTeams(),
+    listPatients(),
+    listRecentAdmissions(80),
+    listRecentMeasurements(80),
+    listMedicationCatalog(),
+    listPatientAllergies(),
+    listPriorMedications(),
+    listMedicalPrescriptions()
+  ]);
 
   return {
     currentProfessional,
@@ -939,6 +1478,10 @@ export async function getDashboardData(currentLogin: string): Promise<DashboardD
     teams,
     patients,
     recentAdmissions,
-    recentMeasurements
+    recentMeasurements,
+    medications,
+    patientAllergies,
+    priorMedications,
+    prescriptions
   };
 }

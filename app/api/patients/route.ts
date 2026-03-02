@@ -22,6 +22,11 @@ export async function POST(request: Request): Promise<NextResponse> {
   const fullName = typeof body.fullName === "string" ? body.fullName.trim() : "";
   const chartNumber = typeof body.chartNumber === "string" ? body.chartNumber.trim() : "";
   const birthDate = typeof body.birthDate === "string" ? body.birthDate : "";
+  const allergiesRaw = Array.isArray(body.allergies) ? body.allergies : [];
+  const allergies = allergiesRaw
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
 
   if (!fullName || !chartNumber || !birthDate) {
     return NextResponse.json({ message: "Preencha os campos obrigatórios do paciente." }, { status: 400 });
@@ -32,7 +37,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       fullName,
       chartNumber,
       birthDate,
-      responsibleLogin: session.username
+      responsibleLogin: session.username,
+      allergies
     });
 
     return NextResponse.json({ ok: true, patient });

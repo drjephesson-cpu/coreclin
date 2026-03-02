@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import LogoutButton from "@/app/_components/logout-button";
@@ -47,14 +47,34 @@ const UF_OPTIONS = [
   "TO"
 ] as const;
 
+const ALLERGY_OPTIONS = [
+  "Penicilina",
+  "Dipirona",
+  "AINEs",
+  "Iodo",
+  "Látex",
+  "Sulfas",
+  "Outra"
+] as const;
+
 const DASHBOARD_NAV_ITEMS = [
   { id: "professional", label: "Cadastrar Profissional" },
   { id: "team", label: "Cadastrar Equipe" },
   { id: "patient", label: "Cadastrar Paciente" },
-  { id: "admission", label: "Internação" }
+  { id: "admission", label: "Internação" },
+  { id: "medication", label: "Cadastro de Medicamentos" }
+] as const;
+
+const PATIENT_VIEW_ITEMS = [
+  { id: "allergies", label: "Alergias" },
+  { id: "admission-info", label: "Informações da internação" },
+  { id: "prior-use", label: "Medicamentos de uso prévio" },
+  { id: "prescriptions", label: "Prescrição médica" }
 ] as const;
 
 type DashboardSectionId = (typeof DASHBOARD_NAV_ITEMS)[number]["id"];
+type PatientViewId = (typeof PATIENT_VIEW_ITEMS)[number]["id"];
+type PrescriptionMode = "view" | "create";
 type FeedbackType = "success" | "error";
 
 type FeedbackState = {
@@ -85,6 +105,22 @@ function calculateAge(dateString: string): number | null {
   }
 
   return age >= 0 ? age : null;
+}
+
+function formatTimestamp(timestamp: string): string {
+  if (!timestamp) {
+    return "-";
+  }
+
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short"
+  }).format(date);
 }
 
 function formatNumber(value: number): string {
@@ -118,6 +154,10 @@ export default function DashboardConsole({
   const teams = data?.teams ?? [];
   const patients = data?.patients ?? [];
   const recentAdmissions = data?.recentAdmissions ?? [];
+  const medications = data?.medications ?? [];
+  const patientAllergies = data?.patientAllergies ?? [];
+  const priorMedications = data?.priorMedications ?? [];
+  const prescriptions = data?.prescriptions ?? [];
   const currentProfessional = data?.currentProfessional ?? null;
 
   const [activeSection, setActiveSection] = useState<DashboardSectionId>("professional");
@@ -125,7 +165,8 @@ export default function DashboardConsole({
     professional: false,
     team: false,
     patient: false,
-    admission: false
+    admission: false,
+    medication: false
   });
 
   const [professionalForm, setProfessionalForm] = useState({
@@ -148,10 +189,19 @@ export default function DashboardConsole({
   const [patientForm, setPatientForm] = useState({
     fullName: "",
     chartNumber: "",
-    birthDate: ""
+    birthDate: "",
+    allergies: [] as string[]
   });
   const [patientFeedback, setPatientFeedback] = useState<FeedbackState>(null);
   const [patientLoading, setPatientLoading] = useState(false);
+
+  const [patientInitialAllergyForm, setPatientInitialAllergyForm] = useState<{
+    allergyName: (typeof ALLERGY_OPTIONS)[number];
+    customAllergy: string;
+  }>({
+    allergyName: ALLERGY_OPTIONS[0],
+    customAllergy: ""
+  });
 
   const [admissionForm, setAdmissionForm] = useState({
     patientId: patients[0] ? String(patients[0].id) : "",
@@ -166,6 +216,65 @@ export default function DashboardConsole({
   });
   const [admissionFeedback, setAdmissionFeedback] = useState<FeedbackState>(null);
   const [admissionLoading, setAdmissionLoading] = useState(false);
+
+  const [medicationForm, setMedicationForm] = useState({
+    name: "",
+    defaultUnit: "mg"
+  });
+  const [medicationFeedback, setMedicationFeedback] = useState<FeedbackState>(null);
+  const [medicationLoading, setMedicationLoading] = useState(false);
+
+  const [selectedPatientId, setSelectedPatientId] = useState<string>(
+    patients[0] ? String(patients[0].id) : ""
+  );
+  const [patientView, setPatientView] = useState<PatientViewId>("allergies");
+  const [prescriptionMode, setPrescriptionMode] = useState<PrescriptionMode>("view");
+
+  const [allergyForm, setAllergyForm] = useState<{
+    allergyName: (typeof ALLERGY_OPTIONS)[number];
+    customAllergy: string;
+  }>({
+    allergyName: ALLERGY_OPTIONS[0],
+    customAllergy: ""
+  });
+  const [allergyFeedback, setAllergyFeedback] = useState<FeedbackState>(null);
+  const [allergyLoading, setAllergyLoading] = useState(false);
+
+  const [priorMedicationForm, setPriorMedicationForm] = useState({
+    medicationId: medications[0] ? String(medications[0].id) : "",
+    medicationName: "",
+    dose: "",
+    doseUnit: medications[0]?.defaultUnit ?? "mg",
+    frequency: "",
+    shifts: ""
+  });
+  const [priorMedicationFeedback, setPriorMedicationFeedback] = useState<FeedbackState>(null);
+  const [priorMedicationLoading, setPriorMedicationLoading] = useState(false);
+
+  const [prescriptionForm, setPrescriptionForm] = useState({
+    admissionId: "",
+    medicationId: medications[0] ? String(medications[0].id) : "",
+    medicationName: "",
+    dose: "",
+    doseUnit: medications[0]?.defaultUnit ?? "mg",
+    frequency: "",
+    shifts: "",
+    notes: ""
+  });
+  const [prescriptionFeedback, setPrescriptionFeedback] = useState<FeedbackState>(null);
+  const [prescriptionLoading, setPrescriptionLoading] = useState(false);
+
+  useEffect(() => {
+    if (patients.length === 0) {
+      setSelectedPatientId("");
+      return;
+    }
+
+    const hasSelectedPatient = patients.some((patient) => String(patient.id) === selectedPatientId);
+    if (!hasSelectedPatient) {
+      setSelectedPatientId(String(patients[0].id));
+    }
+  }, [patients, selectedPatientId]);
 
   const agePreview = useMemo(() => calculateAge(patientForm.birthDate), [patientForm.birthDate]);
   const responsibleProfessionalName = currentProfessional?.fullName ?? currentLogin;
@@ -192,8 +301,97 @@ export default function DashboardConsole({
     (formula) => formula.id === admissionForm.bsaFormula
   );
 
+  const selectedPatientNumericId = Number(selectedPatientId);
+  const selectedPatient =
+    Number.isInteger(selectedPatientNumericId) && selectedPatientNumericId > 0
+      ? patients.find((patient) => patient.id === selectedPatientNumericId) ?? null
+      : null;
+
+  const selectedPatientAdmissions = useMemo(
+    () =>
+      recentAdmissions.filter(
+        (admission) => selectedPatient !== null && admission.patientId === selectedPatient.id
+      ),
+    [recentAdmissions, selectedPatient]
+  );
+
+  const selectedPatientAllergies = useMemo(
+    () =>
+      patientAllergies.filter(
+        (allergy) => selectedPatient !== null && allergy.patientId === selectedPatient.id
+      ),
+    [patientAllergies, selectedPatient]
+  );
+
+  const selectedPatientPriorMedications = useMemo(
+    () =>
+      priorMedications.filter(
+        (medication) => selectedPatient !== null && medication.patientId === selectedPatient.id
+      ),
+    [priorMedications, selectedPatient]
+  );
+
+  const selectedPatientPrescriptions = useMemo(
+    () =>
+      prescriptions.filter(
+        (prescription) => selectedPatient !== null && prescription.patientId === selectedPatient.id
+      ),
+    [prescriptions, selectedPatient]
+  );
+
+  const selectedAdmissionPatientAllergies = useMemo(() => {
+    const patientId = Number(admissionForm.patientId);
+    if (!Number.isInteger(patientId) || patientId <= 0) {
+      return [];
+    }
+
+    return patientAllergies.filter((allergy) => allergy.patientId === patientId);
+  }, [patientAllergies, admissionForm.patientId]);
+
   function toggleList(sectionId: DashboardSectionId): void {
     setListVisibility((current) => ({ ...current, [sectionId]: !current[sectionId] }));
+  }
+
+  function resolveDraftInitialAllergy(): string {
+    if (patientInitialAllergyForm.allergyName === "Outra") {
+      return patientInitialAllergyForm.customAllergy.trim();
+    }
+
+    return patientInitialAllergyForm.allergyName;
+  }
+
+  function handleAddInitialPatientAllergy(): void {
+    const nextAllergy = resolveDraftInitialAllergy();
+    if (!nextAllergy) {
+      return;
+    }
+
+    setPatientForm((current) => {
+      const hasAllergy = current.allergies.some(
+        (allergy) => allergy.toLocaleLowerCase() === nextAllergy.toLocaleLowerCase()
+      );
+      if (hasAllergy) {
+        return current;
+      }
+      return {
+        ...current,
+        allergies: [...current.allergies, nextAllergy]
+      };
+    });
+
+    setPatientInitialAllergyForm({
+      allergyName: ALLERGY_OPTIONS[0],
+      customAllergy: ""
+    });
+  }
+
+  function handleRemoveInitialPatientAllergy(allergyToRemove: string): void {
+    setPatientForm((current) => ({
+      ...current,
+      allergies: current.allergies.filter(
+        (allergy) => allergy.toLocaleLowerCase() !== allergyToRemove.toLocaleLowerCase()
+      )
+    }));
   }
 
   async function handleProfessionalSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -292,7 +490,12 @@ export default function DashboardConsole({
       setPatientForm({
         fullName: "",
         chartNumber: "",
-        birthDate: ""
+        birthDate: "",
+        allergies: []
+      });
+      setPatientInitialAllergyForm({
+        allergyName: ALLERGY_OPTIONS[0],
+        customAllergy: ""
       });
       router.refresh();
     } catch {
@@ -353,6 +556,218 @@ export default function DashboardConsole({
     } finally {
       setAdmissionLoading(false);
     }
+  }
+
+  async function handleMedicationSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setMedicationFeedback(null);
+    setMedicationLoading(true);
+
+    try {
+      const response = await fetch("/api/medications", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(medicationForm)
+      });
+
+      const result = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        setMedicationFeedback({
+          type: "error",
+          message: result.message ?? "Falha ao cadastrar medicamento."
+        });
+        return;
+      }
+
+      setMedicationFeedback({ type: "success", message: "Medicamento cadastrado com sucesso." });
+      setMedicationForm({ name: "", defaultUnit: "mg" });
+      router.refresh();
+    } catch {
+      setMedicationFeedback({ type: "error", message: "Erro de conexão ao cadastrar medicamento." });
+    } finally {
+      setMedicationLoading(false);
+    }
+  }
+
+  async function handleAllergySubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setAllergyFeedback(null);
+
+    if (!selectedPatient) {
+      setAllergyFeedback({ type: "error", message: "Selecione um paciente para cadastrar alergia." });
+      return;
+    }
+
+    const allergyName =
+      allergyForm.allergyName === "Outra" ? allergyForm.customAllergy.trim() : allergyForm.allergyName;
+
+    if (!allergyName) {
+      setAllergyFeedback({ type: "error", message: "Informe a alergia antes de salvar." });
+      return;
+    }
+
+    setAllergyLoading(true);
+    try {
+      const response = await fetch(`/api/patients/${selectedPatient.id}/allergies`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allergyName })
+      });
+
+      const result = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        setAllergyFeedback({ type: "error", message: result.message ?? "Falha ao cadastrar alergia." });
+        return;
+      }
+
+      setAllergyFeedback({ type: "success", message: "Alergia cadastrada com sucesso." });
+      setAllergyForm({ allergyName: ALLERGY_OPTIONS[0], customAllergy: "" });
+      router.refresh();
+    } catch {
+      setAllergyFeedback({ type: "error", message: "Erro de conexão ao cadastrar alergia." });
+    } finally {
+      setAllergyLoading(false);
+    }
+  }
+
+  async function handlePriorMedicationSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setPriorMedicationFeedback(null);
+
+    if (!selectedPatient) {
+      setPriorMedicationFeedback({
+        type: "error",
+        message: "Selecione um paciente para cadastrar medicamento prévio."
+      });
+      return;
+    }
+
+    setPriorMedicationLoading(true);
+    try {
+      const response = await fetch(`/api/patients/${selectedPatient.id}/prior-medications`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          medicationId: priorMedicationForm.medicationId,
+          medicationName: priorMedicationForm.medicationName,
+          dose: Number(priorMedicationForm.dose),
+          doseUnit: priorMedicationForm.doseUnit,
+          frequency: priorMedicationForm.frequency,
+          shifts: priorMedicationForm.shifts
+        })
+      });
+
+      const result = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        setPriorMedicationFeedback({
+          type: "error",
+          message: result.message ?? "Falha ao cadastrar medicamento de uso prévio."
+        });
+        return;
+      }
+
+      setPriorMedicationFeedback({
+        type: "success",
+        message: "Medicamento de uso prévio cadastrado com sucesso."
+      });
+      setPriorMedicationForm((current) => ({
+        ...current,
+        medicationName: "",
+        dose: "",
+        frequency: "",
+        shifts: ""
+      }));
+      router.refresh();
+    } catch {
+      setPriorMedicationFeedback({
+        type: "error",
+        message: "Erro de conexão ao cadastrar medicamento de uso prévio."
+      });
+    } finally {
+      setPriorMedicationLoading(false);
+    }
+  }
+
+  async function handlePrescriptionSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setPrescriptionFeedback(null);
+
+    if (!selectedPatient) {
+      setPrescriptionFeedback({ type: "error", message: "Selecione um paciente para cadastrar prescrição." });
+      return;
+    }
+
+    setPrescriptionLoading(true);
+    try {
+      const response = await fetch(`/api/patients/${selectedPatient.id}/prescriptions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          admissionId: prescriptionForm.admissionId,
+          medicationId: prescriptionForm.medicationId,
+          medicationName: prescriptionForm.medicationName,
+          dose: Number(prescriptionForm.dose),
+          doseUnit: prescriptionForm.doseUnit,
+          frequency: prescriptionForm.frequency,
+          shifts: prescriptionForm.shifts,
+          notes: prescriptionForm.notes
+        })
+      });
+
+      const result = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        setPrescriptionFeedback({
+          type: "error",
+          message: result.message ?? "Falha ao cadastrar prescrição médica."
+        });
+        return;
+      }
+
+      setPrescriptionFeedback({ type: "success", message: "Prescrição médica cadastrada com sucesso." });
+      setPrescriptionForm((current) => ({
+        ...current,
+        medicationName: "",
+        dose: "",
+        frequency: "",
+        shifts: "",
+        notes: ""
+      }));
+      setPrescriptionMode("view");
+      router.refresh();
+    } catch {
+      setPrescriptionFeedback({
+        type: "error",
+        message: "Erro de conexão ao cadastrar prescrição médica."
+      });
+    } finally {
+      setPrescriptionLoading(false);
+    }
+  }
+
+  function handlePriorMedicationCatalogChange(nextMedicationId: string): void {
+    const selectedCatalogMedication = medications.find(
+      (medication) => String(medication.id) === nextMedicationId
+    );
+
+    setPriorMedicationForm((current) => ({
+      ...current,
+      medicationId: nextMedicationId,
+      medicationName: selectedCatalogMedication ? selectedCatalogMedication.name : current.medicationName,
+      doseUnit: selectedCatalogMedication ? selectedCatalogMedication.defaultUnit : current.doseUnit
+    }));
+  }
+
+  function handlePrescriptionCatalogChange(nextMedicationId: string): void {
+    const selectedCatalogMedication = medications.find(
+      (medication) => String(medication.id) === nextMedicationId
+    );
+
+    setPrescriptionForm((current) => ({
+      ...current,
+      medicationId: nextMedicationId,
+      medicationName: selectedCatalogMedication ? selectedCatalogMedication.name : current.medicationName,
+      doseUnit: selectedCatalogMedication ? selectedCatalogMedication.defaultUnit : current.doseUnit
+    }));
   }
 
   return (
@@ -641,6 +1056,72 @@ export default function DashboardConsole({
                       <input value={agePreview === null ? "Idade" : `${agePreview} anos`} disabled />
                     </div>
 
+                    <div className="dashboard-subsection-block">
+                      <h3>Alergias iniciais</h3>
+                      <div className="dashboard-two-columns">
+                        <select
+                          value={patientInitialAllergyForm.allergyName}
+                          onChange={(event) =>
+                            setPatientInitialAllergyForm((current) => ({
+                              ...current,
+                              allergyName: event.target.value as (typeof ALLERGY_OPTIONS)[number]
+                            }))
+                          }
+                        >
+                          {ALLERGY_OPTIONS.map((allergyOption) => (
+                            <option key={allergyOption} value={allergyOption}>
+                              {allergyOption}
+                            </option>
+                          ))}
+                        </select>
+                        {patientInitialAllergyForm.allergyName === "Outra" ? (
+                          <input
+                            placeholder="Descreva a alergia"
+                            value={patientInitialAllergyForm.customAllergy}
+                            onChange={(event) =>
+                              setPatientInitialAllergyForm((current) => ({
+                                ...current,
+                                customAllergy: event.target.value
+                              }))
+                            }
+                          />
+                        ) : (
+                          <input
+                            value={resolveDraftInitialAllergy()}
+                            disabled
+                            aria-label="Alergia selecionada"
+                          />
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        className="dashboard-mini-button dashboard-mini-button-inline"
+                        onClick={handleAddInitialPatientAllergy}
+                      >
+                        Adicionar alergia
+                      </button>
+
+                      {patientForm.allergies.length === 0 ? (
+                        <p className="dashboard-muted">Nenhuma alergia inicial adicionada.</p>
+                      ) : (
+                        <ul className="dashboard-chip-list">
+                          {patientForm.allergies.map((allergy) => (
+                            <li key={allergy}>
+                              {allergy}
+                              <button
+                                type="button"
+                                className="dashboard-chip-remove"
+                                onClick={() => handleRemoveInitialPatientAllergy(allergy)}
+                              >
+                                Remover
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
                     {patientFeedback ? (
                       <p className={`dashboard-feedback dashboard-feedback-${patientFeedback.type}`}>
                         {patientFeedback.message}
@@ -693,6 +1174,479 @@ export default function DashboardConsole({
                       )
                     ) : null}
                   </div>
+
+                  <section className="dashboard-subsection">
+                    <h3>Paciente selecionado</h3>
+                    <select
+                      value={selectedPatientId}
+                      onChange={(event) => setSelectedPatientId(event.target.value)}
+                      disabled={patients.length === 0}
+                    >
+                      {patients.length === 0 ? <option value="">Nenhum paciente cadastrado</option> : null}
+                      {patients.map((patient) => (
+                        <option key={patient.id} value={patient.id}>
+                          {patient.fullName} ({patient.chartNumber})
+                        </option>
+                      ))}
+                    </select>
+
+                    {selectedPatient ? (
+                      <>
+                        <div className="dashboard-inline-actions">
+                          {PATIENT_VIEW_ITEMS.map((item) => (
+                            <button
+                              key={item.id}
+                              type="button"
+                              className={`dashboard-mini-button ${patientView === item.id ? "is-active" : ""}`}
+                              onClick={() => setPatientView(item.id)}
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        {patientView === "allergies" ? (
+                          <div className="dashboard-subsection-block">
+                            <h3>Alergias</h3>
+                            <form className="dashboard-form" onSubmit={handleAllergySubmit}>
+                              <select
+                                value={allergyForm.allergyName}
+                                onChange={(event) =>
+                                  setAllergyForm((current) => ({
+                                    ...current,
+                                    allergyName: event.target.value as (typeof ALLERGY_OPTIONS)[number]
+                                  }))
+                                }
+                              >
+                                {ALLERGY_OPTIONS.map((allergyOption) => (
+                                  <option key={allergyOption} value={allergyOption}>
+                                    {allergyOption}
+                                  </option>
+                                ))}
+                              </select>
+
+                              {allergyForm.allergyName === "Outra" ? (
+                                <input
+                                  placeholder="Descreva a alergia"
+                                  value={allergyForm.customAllergy}
+                                  onChange={(event) =>
+                                    setAllergyForm((current) => ({
+                                      ...current,
+                                      customAllergy: event.target.value
+                                    }))
+                                  }
+                                  required
+                                />
+                              ) : null}
+
+                              {allergyFeedback ? (
+                                <p className={`dashboard-feedback dashboard-feedback-${allergyFeedback.type}`}>
+                                  {allergyFeedback.message}
+                                </p>
+                              ) : null}
+
+                              <button type="submit" disabled={allergyLoading}>
+                                {allergyLoading ? "Salvando..." : "Salvar alergia"}
+                              </button>
+                            </form>
+
+                            <div className="dashboard-table-wrap">
+                              <table className="dashboard-table">
+                                <thead>
+                                  <tr>
+                                    <th>Alergia</th>
+                                    <th>Registro</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {selectedPatientAllergies.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={2}>Nenhuma alergia cadastrada.</td>
+                                    </tr>
+                                  ) : (
+                                    selectedPatientAllergies.map((allergy) => (
+                                      <tr key={allergy.id}>
+                                        <td>{allergy.allergyName}</td>
+                                        <td>{formatTimestamp(allergy.createdAt)}</td>
+                                      </tr>
+                                    ))
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {patientView === "admission-info" ? (
+                          <div className="dashboard-subsection-block">
+                            <h3>Informações da internação</h3>
+                            <div className="dashboard-table-wrap">
+                              <table className="dashboard-table">
+                                <thead>
+                                  <tr>
+                                    <th>Admissão</th>
+                                    <th>Leito</th>
+                                    <th>Equipe</th>
+                                    <th>Motivo</th>
+                                    <th>Peso/Altura</th>
+                                    <th>IMC</th>
+                                    <th>SC</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {selectedPatientAdmissions.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={7}>Sem internações cadastradas para este paciente.</td>
+                                    </tr>
+                                  ) : (
+                                    selectedPatientAdmissions.map((admission) => (
+                                      <tr key={admission.id}>
+                                        <td>{admission.admissionDate}</td>
+                                        <td>{admission.bed}</td>
+                                        <td>{admission.teamName ?? "-"}</td>
+                                        <td>{admission.admissionReason}</td>
+                                        <td>
+                                          {admission.weightKg !== null && admission.heightCm !== null
+                                            ? `${formatNumber(admission.weightKg)} kg / ${formatNumber(admission.heightCm)} cm`
+                                            : "-"}
+                                        </td>
+                                        <td>{admission.bmi !== null ? formatNumber(admission.bmi) : "-"}</td>
+                                        <td>
+                                          {admission.bodySurfaceArea !== null
+                                            ? formatNumber(admission.bodySurfaceArea)
+                                            : "-"}
+                                        </td>
+                                      </tr>
+                                    ))
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {patientView === "prior-use" ? (
+                          <div className="dashboard-subsection-block">
+                            <h3>Medicamentos de uso prévio</h3>
+                            <form className="dashboard-form" onSubmit={handlePriorMedicationSubmit}>
+                              <div className="dashboard-two-columns">
+                                <select
+                                  value={priorMedicationForm.medicationId}
+                                  onChange={(event) => handlePriorMedicationCatalogChange(event.target.value)}
+                                >
+                                  <option value="">Sem vínculo com cadastro</option>
+                                  {medications.map((medication) => (
+                                    <option key={medication.id} value={medication.id}>
+                                      {medication.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <input
+                                  placeholder="Nome do medicamento"
+                                  value={priorMedicationForm.medicationName}
+                                  onChange={(event) =>
+                                    setPriorMedicationForm((current) => ({
+                                      ...current,
+                                      medicationName: event.target.value
+                                    }))
+                                  }
+                                />
+                              </div>
+
+                              <div className="dashboard-two-columns">
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  placeholder="Dose"
+                                  value={priorMedicationForm.dose}
+                                  onChange={(event) =>
+                                    setPriorMedicationForm((current) => ({
+                                      ...current,
+                                      dose: event.target.value
+                                    }))
+                                  }
+                                  required
+                                />
+                                <input
+                                  placeholder="Unidade da dose"
+                                  value={priorMedicationForm.doseUnit}
+                                  onChange={(event) =>
+                                    setPriorMedicationForm((current) => ({
+                                      ...current,
+                                      doseUnit: event.target.value
+                                    }))
+                                  }
+                                  required
+                                />
+                              </div>
+
+                              <div className="dashboard-two-columns">
+                                <input
+                                  placeholder="Frequência"
+                                  value={priorMedicationForm.frequency}
+                                  onChange={(event) =>
+                                    setPriorMedicationForm((current) => ({
+                                      ...current,
+                                      frequency: event.target.value
+                                    }))
+                                  }
+                                  required
+                                />
+                                <input
+                                  placeholder="Turnos de uso"
+                                  value={priorMedicationForm.shifts}
+                                  onChange={(event) =>
+                                    setPriorMedicationForm((current) => ({
+                                      ...current,
+                                      shifts: event.target.value
+                                    }))
+                                  }
+                                  required
+                                />
+                              </div>
+
+                              {priorMedicationFeedback ? (
+                                <p
+                                  className={`dashboard-feedback dashboard-feedback-${priorMedicationFeedback.type}`}
+                                >
+                                  {priorMedicationFeedback.message}
+                                </p>
+                              ) : null}
+
+                              <button type="submit" disabled={priorMedicationLoading}>
+                                {priorMedicationLoading ? "Salvando..." : "Salvar medicamento prévio"}
+                              </button>
+                            </form>
+
+                            <div className="dashboard-table-wrap">
+                              <table className="dashboard-table">
+                                <thead>
+                                  <tr>
+                                    <th>Medicamento</th>
+                                    <th>Dose</th>
+                                    <th>Frequência</th>
+                                    <th>Turnos</th>
+                                    <th>Registro</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {selectedPatientPriorMedications.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={5}>Nenhum medicamento prévio cadastrado.</td>
+                                    </tr>
+                                  ) : (
+                                    selectedPatientPriorMedications.map((medication) => (
+                                      <tr key={medication.id}>
+                                        <td>{medication.medicationName}</td>
+                                        <td>
+                                          {formatNumber(medication.dose)} {medication.doseUnit}
+                                        </td>
+                                        <td>{medication.frequency}</td>
+                                        <td>{medication.shifts}</td>
+                                        <td>{formatTimestamp(medication.createdAt)}</td>
+                                      </tr>
+                                    ))
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {patientView === "prescriptions" ? (
+                          <div className="dashboard-subsection-block">
+                            <h3>Prescrição médica</h3>
+
+                            <div className="dashboard-inline-actions">
+                              <button
+                                type="button"
+                                className={`dashboard-mini-button ${
+                                  prescriptionMode === "view" ? "is-active" : ""
+                                }`}
+                                onClick={() => setPrescriptionMode("view")}
+                              >
+                                Ver prescrições
+                              </button>
+                              <button
+                                type="button"
+                                className={`dashboard-mini-button ${
+                                  prescriptionMode === "create" ? "is-active" : ""
+                                }`}
+                                onClick={() => setPrescriptionMode("create")}
+                              >
+                                Cadastrar prescrição
+                              </button>
+                            </div>
+
+                            {prescriptionMode === "create" ? (
+                              <form className="dashboard-form" onSubmit={handlePrescriptionSubmit}>
+                                <select
+                                  value={prescriptionForm.admissionId}
+                                  onChange={(event) =>
+                                    setPrescriptionForm((current) => ({
+                                      ...current,
+                                      admissionId: event.target.value
+                                    }))
+                                  }
+                                >
+                                  <option value="">Sem vínculo com internação</option>
+                                  {selectedPatientAdmissions.map((admission) => (
+                                    <option key={admission.id} value={admission.id}>
+                                      {admission.admissionDate} | Leito {admission.bed} | {admission.teamName ?? "-"}
+                                    </option>
+                                  ))}
+                                </select>
+
+                                <div className="dashboard-two-columns">
+                                  <select
+                                    value={prescriptionForm.medicationId}
+                                    onChange={(event) => handlePrescriptionCatalogChange(event.target.value)}
+                                  >
+                                    <option value="">Sem vínculo com cadastro</option>
+                                    {medications.map((medication) => (
+                                      <option key={medication.id} value={medication.id}>
+                                        {medication.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <input
+                                    placeholder="Nome do medicamento"
+                                    value={prescriptionForm.medicationName}
+                                    onChange={(event) =>
+                                      setPrescriptionForm((current) => ({
+                                        ...current,
+                                        medicationName: event.target.value
+                                      }))
+                                    }
+                                  />
+                                </div>
+
+                                <div className="dashboard-two-columns">
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    placeholder="Dose"
+                                    value={prescriptionForm.dose}
+                                    onChange={(event) =>
+                                      setPrescriptionForm((current) => ({
+                                        ...current,
+                                        dose: event.target.value
+                                      }))
+                                    }
+                                    required
+                                  />
+                                  <input
+                                    placeholder="Unidade da dose"
+                                    value={prescriptionForm.doseUnit}
+                                    onChange={(event) =>
+                                      setPrescriptionForm((current) => ({
+                                        ...current,
+                                        doseUnit: event.target.value
+                                      }))
+                                    }
+                                    required
+                                  />
+                                </div>
+
+                                <div className="dashboard-two-columns">
+                                  <input
+                                    placeholder="Frequência"
+                                    value={prescriptionForm.frequency}
+                                    onChange={(event) =>
+                                      setPrescriptionForm((current) => ({
+                                        ...current,
+                                        frequency: event.target.value
+                                      }))
+                                    }
+                                    required
+                                  />
+                                  <input
+                                    placeholder="Turnos"
+                                    value={prescriptionForm.shifts}
+                                    onChange={(event) =>
+                                      setPrescriptionForm((current) => ({
+                                        ...current,
+                                        shifts: event.target.value
+                                      }))
+                                    }
+                                    required
+                                  />
+                                </div>
+
+                                <textarea
+                                  placeholder="Observações da prescrição (opcional)"
+                                  value={prescriptionForm.notes}
+                                  onChange={(event) =>
+                                    setPrescriptionForm((current) => ({
+                                      ...current,
+                                      notes: event.target.value
+                                    }))
+                                  }
+                                />
+
+                                {prescriptionFeedback ? (
+                                  <p className={`dashboard-feedback dashboard-feedback-${prescriptionFeedback.type}`}>
+                                    {prescriptionFeedback.message}
+                                  </p>
+                                ) : null}
+
+                                <button type="submit" disabled={prescriptionLoading}>
+                                  {prescriptionLoading ? "Salvando..." : "Salvar prescrição"}
+                                </button>
+                              </form>
+                            ) : null}
+
+                            {prescriptionMode === "view" ? (
+                              <div className="dashboard-table-wrap">
+                                <table className="dashboard-table">
+                                  <thead>
+                                    <tr>
+                                      <th>Internação</th>
+                                      <th>Medicamento</th>
+                                      <th>Dose</th>
+                                      <th>Frequência</th>
+                                      <th>Turnos</th>
+                                      <th>Observações</th>
+                                      <th>Registro</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {selectedPatientPrescriptions.length === 0 ? (
+                                      <tr>
+                                        <td colSpan={7}>Nenhuma prescrição cadastrada para este paciente.</td>
+                                      </tr>
+                                    ) : (
+                                      selectedPatientPrescriptions.map((prescription) => (
+                                        <tr key={prescription.id}>
+                                          <td>
+                                            {prescription.admissionDate
+                                              ? `${prescription.admissionDate} | Leito ${prescription.bed ?? "-"}`
+                                              : "Sem vínculo"}
+                                          </td>
+                                          <td>{prescription.medicationName}</td>
+                                          <td>
+                                            {formatNumber(prescription.dose)} {prescription.doseUnit}
+                                          </td>
+                                          <td>{prescription.frequency}</td>
+                                          <td>{prescription.shifts}</td>
+                                          <td>{prescription.notes ?? "-"}</td>
+                                          <td>{formatTimestamp(prescription.createdAt)}</td>
+                                        </tr>
+                                      ))
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <p className="dashboard-muted">Cadastre um paciente para habilitar os módulos clínicos.</p>
+                    )}
+                  </section>
                 </section>
               ) : null}
 
@@ -714,6 +1668,19 @@ export default function DashboardConsole({
                         </option>
                       ))}
                     </select>
+
+                    <div className="dashboard-calculation-box">
+                      <h3>Alergias replicadas do cadastro do paciente</h3>
+                      {selectedAdmissionPatientAllergies.length === 0 ? (
+                        <p>Nenhuma alergia cadastrada para este paciente.</p>
+                      ) : (
+                        <ul className="dashboard-chip-list">
+                          {selectedAdmissionPatientAllergies.map((allergy) => (
+                            <li key={allergy.id}>{allergy.allergyName}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
 
                     <div className="dashboard-two-columns">
                       <input
@@ -825,12 +1792,10 @@ export default function DashboardConsole({
                     <div className="dashboard-calculation-box">
                       <h3>Cálculo automático</h3>
                       <p>
-                        {selectedBmiFormula?.label}:{" "}
-                        <span>{selectedBmiFormula?.equation ?? "-"}</span>
+                        {selectedBmiFormula?.label}: <span>{selectedBmiFormula?.equation ?? "-"}</span>
                       </p>
                       <p>
-                        {selectedBsaFormula?.label}:{" "}
-                        <span>{selectedBsaFormula?.equation ?? "-"}</span>
+                        {selectedBsaFormula?.label}: <span>{selectedBsaFormula?.equation ?? "-"}</span>
                       </p>
                       <div className="dashboard-two-columns">
                         <input
@@ -906,6 +1871,78 @@ export default function DashboardConsole({
                                       : "-"}
                                   </td>
                                   <td>{getBsaFormulaLabel(admission.bsaFormula)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )
+                    ) : null}
+                  </div>
+                </section>
+              ) : null}
+
+              {activeSection === "medication" ? (
+                <section className="dashboard-card">
+                  <h2>Cadastro de Medicamentos</h2>
+                  <form className="dashboard-form" onSubmit={handleMedicationSubmit}>
+                    <input
+                      placeholder="Nome do medicamento"
+                      value={medicationForm.name}
+                      onChange={(event) =>
+                        setMedicationForm((current) => ({ ...current, name: event.target.value }))
+                      }
+                      required
+                    />
+                    <input
+                      placeholder="Unidade padrão (ex.: mg, mL, UI)"
+                      value={medicationForm.defaultUnit}
+                      onChange={(event) =>
+                        setMedicationForm((current) => ({ ...current, defaultUnit: event.target.value }))
+                      }
+                      required
+                    />
+
+                    {medicationFeedback ? (
+                      <p className={`dashboard-feedback dashboard-feedback-${medicationFeedback.type}`}>
+                        {medicationFeedback.message}
+                      </p>
+                    ) : null}
+
+                    <button type="submit" disabled={medicationLoading}>
+                      {medicationLoading ? "Salvando..." : "Salvar medicamento"}
+                    </button>
+                  </form>
+
+                  <div className="dashboard-list-box">
+                    <button
+                      type="button"
+                      className="dashboard-list-toggle"
+                      onClick={() => toggleList("medication")}
+                    >
+                      {listVisibility.medication
+                        ? "Ocultar medicamentos cadastrados"
+                        : "Ver medicamentos cadastrados"}
+                    </button>
+                    {listVisibility.medication ? (
+                      medications.length === 0 ? (
+                        <p className="dashboard-muted">Nenhum medicamento cadastrado.</p>
+                      ) : (
+                        <div className="dashboard-table-wrap">
+                          <table className="dashboard-table">
+                            <thead>
+                              <tr>
+                                <th>Medicamento</th>
+                                <th>Unidade padrão</th>
+                                <th>Registro</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {medications.map((medication) => (
+                                <tr key={medication.id}>
+                                  <td>{medication.name}</td>
+                                  <td>{medication.defaultUnit}</td>
+                                  <td>{formatTimestamp(medication.createdAt)}</td>
                                 </tr>
                               ))}
                             </tbody>

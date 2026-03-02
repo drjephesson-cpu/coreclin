@@ -119,6 +119,51 @@ export type MeasurementHistoryRecord = {
   recordedAt: string;
 };
 
+export type MedicationRecord = {
+  id: number;
+  name: string;
+  defaultUnit: string;
+  createdAt: string;
+};
+
+export type PatientAllergyRecord = {
+  id: number;
+  patientId: number;
+  patientName: string;
+  allergyName: string;
+  createdAt: string;
+};
+
+export type PriorMedicationRecord = {
+  id: number;
+  patientId: number;
+  patientName: string;
+  medicationId: number | null;
+  medicationName: string;
+  dose: number;
+  doseUnit: string;
+  frequency: string;
+  shifts: string;
+  createdAt: string;
+};
+
+export type MedicalPrescriptionRecord = {
+  id: number;
+  patientId: number;
+  patientName: string;
+  admissionId: number | null;
+  admissionDate: string | null;
+  bed: string | null;
+  medicationId: number | null;
+  medicationName: string;
+  dose: number;
+  doseUnit: string;
+  frequency: string;
+  shifts: string;
+  notes: string | null;
+  createdAt: string;
+};
+
 export type DashboardData = {
   currentProfessional: ProfessionalRecord | null;
   professionals: ProfessionalRecord[];
@@ -126,4 +171,8 @@ export type DashboardData = {
   patients: PatientRecord[];
   recentAdmissions: AdmissionRecord[];
   recentMeasurements: MeasurementHistoryRecord[];
+  medications: MedicationRecord[];
+  patientAllergies: PatientAllergyRecord[];
+  priorMedications: PriorMedicationRecord[];
+  prescriptions: MedicalPrescriptionRecord[];
 };
