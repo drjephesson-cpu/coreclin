@@ -43,6 +43,18 @@ export type PatientRecord = {
   chartNumber: string;
   birthDate: string;
   ageYears: number;
+  responsibleProfessionalId: number;
+  responsibleProfessionalName: string;
+  responsibleProfessionalLogin: string;
+  latestAdmission: AdmissionRecord | null;
+  latestMeasurement: LatestMeasurement | null;
+};
+
+export type AdmissionRecord = {
+  id: number;
+  patientId: number;
+  patientName: string;
+  chartNumber: string;
   admissionDate: string;
   bed: string;
   admissionReason: string;
@@ -50,8 +62,7 @@ export type PatientRecord = {
   teamName: string | null;
   responsibleProfessionalId: number;
   responsibleProfessionalName: string;
-  responsibleProfessionalLogin: string;
-  latestMeasurement: LatestMeasurement | null;
+  createdAt: string;
 };
 
 export type MeasurementHistoryRecord = {
@@ -70,6 +81,6 @@ export type DashboardData = {
   professionals: ProfessionalRecord[];
   teams: TeamRecord[];
   patients: PatientRecord[];
+  recentAdmissions: AdmissionRecord[];
   recentMeasurements: MeasurementHistoryRecord[];
 };
-

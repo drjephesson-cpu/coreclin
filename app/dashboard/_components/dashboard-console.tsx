@@ -104,6 +104,7 @@ export default function DashboardConsole({
   const professionals = data?.professionals ?? [];
   const teams = data?.teams ?? [];
   const patients = data?.patients ?? [];
+  const recentAdmissions = data?.recentAdmissions ?? [];
   const recentMeasurements = data?.recentMeasurements ?? [];
   const currentProfessional = data?.currentProfessional ?? null;
 
@@ -127,16 +128,20 @@ export default function DashboardConsole({
   const [patientForm, setPatientForm] = useState({
     fullName: "",
     chartNumber: "",
-    birthDate: "",
-    admissionDate: "",
-    bed: "",
-    admissionReason: "",
-    teamId: teams[0] ? String(teams[0].id) : "",
-    weightKg: "",
-    heightCm: ""
+    birthDate: ""
   });
   const [patientFeedback, setPatientFeedback] = useState<FeedbackState>(null);
   const [patientLoading, setPatientLoading] = useState(false);
+
+  const [admissionForm, setAdmissionForm] = useState({
+    patientId: patients[0] ? String(patients[0].id) : "",
+    admissionDate: "",
+    bed: "",
+    admissionReason: "",
+    teamId: teams[0] ? String(teams[0].id) : ""
+  });
+  const [admissionFeedback, setAdmissionFeedback] = useState<FeedbackState>(null);
+  const [admissionLoading, setAdmissionLoading] = useState(false);
 
   const [measurementForm, setMeasurementForm] = useState({
     patientId: patients[0] ? String(patients[0].id) : "",
@@ -229,12 +234,7 @@ export default function DashboardConsole({
       const response = await fetch("/api/patients", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...patientForm,
-          teamId: Number(patientForm.teamId),
-          weightKg: Number(patientForm.weightKg),
-          heightCm: Number(patientForm.heightCm)
-        })
+        body: JSON.stringify(patientForm)
       });
 
       const result = (await response.json()) as { message?: string };
@@ -250,13 +250,7 @@ export default function DashboardConsole({
       setPatientForm({
         fullName: "",
         chartNumber: "",
-        birthDate: "",
-        admissionDate: "",
-        bed: "",
-        admissionReason: "",
-        teamId: teams[0] ? String(teams[0].id) : "",
-        weightKg: "",
-        heightCm: ""
+        birthDate: ""
       });
       router.refresh();
     } catch {
@@ -266,6 +260,50 @@ export default function DashboardConsole({
       });
     } finally {
       setPatientLoading(false);
+    }
+  }
+
+  async function handleAdmissionSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setAdmissionFeedback(null);
+    setAdmissionLoading(true);
+
+    try {
+      const response = await fetch("/api/admissions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...admissionForm,
+          patientId: Number(admissionForm.patientId),
+          teamId: Number(admissionForm.teamId)
+        })
+      });
+
+      const result = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        setAdmissionFeedback({
+          type: "error",
+          message: result.message ?? "Falha ao cadastrar internação."
+        });
+        return;
+      }
+
+      setAdmissionFeedback({ type: "success", message: "Internação cadastrada com sucesso." });
+      setAdmissionForm({
+        patientId: patients[0] ? String(patients[0].id) : "",
+        admissionDate: "",
+        bed: "",
+        admissionReason: "",
+        teamId: teams[0] ? String(teams[0].id) : ""
+      });
+      router.refresh();
+    } catch {
+      setAdmissionFeedback({
+        type: "error",
+        message: "Erro de conexão ao cadastrar internação."
+      });
+    } finally {
+      setAdmissionLoading(false);
     }
   }
 
@@ -496,7 +534,7 @@ export default function DashboardConsole({
 
           <div className="dashboard-forms-grid">
             <section className="dashboard-card">
-              <h2>Cadastrar Paciente</h2>
+              <h2>Cadastrar Paciente (Dados fixos)</h2>
               <form className="dashboard-form" onSubmit={handlePatientSubmit}>
                 <input
                   placeholder="Nome completo"
@@ -516,11 +554,7 @@ export default function DashboardConsole({
                     }
                     required
                   />
-                  <input
-                    value={responsibleProfessionalName}
-                    disabled
-                    title="Responsável automático via login"
-                  />
+                  <input value={responsibleProfessionalName} disabled />
                 </div>
 
                 <div className="dashboard-two-columns">
@@ -533,77 +567,6 @@ export default function DashboardConsole({
                     required
                   />
                   <input value={agePreview === null ? "Idade" : `${agePreview} anos`} disabled />
-                </div>
-
-                <div className="dashboard-two-columns">
-                  <input
-                    type="date"
-                    value={patientForm.admissionDate}
-                    onChange={(event) =>
-                      setPatientForm((current) => ({ ...current, admissionDate: event.target.value }))
-                    }
-                    required
-                  />
-                  <input
-                    placeholder="Leito"
-                    value={patientForm.bed}
-                    onChange={(event) =>
-                      setPatientForm((current) => ({ ...current, bed: event.target.value }))
-                    }
-                    required
-                  />
-                </div>
-
-                <textarea
-                  placeholder="Motivo da internação"
-                  value={patientForm.admissionReason}
-                  onChange={(event) =>
-                    setPatientForm((current) => ({
-                      ...current,
-                      admissionReason: event.target.value
-                    }))
-                  }
-                  required
-                />
-
-                <select
-                  value={patientForm.teamId}
-                  onChange={(event) =>
-                    setPatientForm((current) => ({ ...current, teamId: event.target.value }))
-                  }
-                  required
-                >
-                  <option value="">Selecione a equipe</option>
-                  {teams.map((team) => (
-                    <option key={team.id} value={team.id}>
-                      {team.name}
-                    </option>
-                  ))}
-                </select>
-
-                <div className="dashboard-two-columns">
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    placeholder="Peso (kg)"
-                    value={patientForm.weightKg}
-                    onChange={(event) =>
-                      setPatientForm((current) => ({ ...current, weightKg: event.target.value }))
-                    }
-                    required
-                  />
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    placeholder="Altura (cm)"
-                    value={patientForm.heightCm}
-                    onChange={(event) =>
-                      setPatientForm((current) => ({ ...current, heightCm: event.target.value }))
-                    }
-                    required
-                  />
                 </div>
 
                 {patientFeedback ? (
@@ -619,12 +582,12 @@ export default function DashboardConsole({
             </section>
 
             <section className="dashboard-card">
-              <h2>Dados Variáveis (Histórico)</h2>
-              <form className="dashboard-form" onSubmit={handleMeasurementSubmit}>
+              <h2>Cadastrar Internação</h2>
+              <form className="dashboard-form" onSubmit={handleAdmissionSubmit}>
                 <select
-                  value={measurementForm.patientId}
+                  value={admissionForm.patientId}
                   onChange={(event) =>
-                    setMeasurementForm((current) => ({ ...current, patientId: event.target.value }))
+                    setAdmissionForm((current) => ({ ...current, patientId: event.target.value }))
                   }
                   required
                 >
@@ -638,41 +601,117 @@ export default function DashboardConsole({
 
                 <div className="dashboard-two-columns">
                   <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    placeholder="Peso atual (kg)"
-                    value={measurementForm.weightKg}
+                    type="date"
+                    value={admissionForm.admissionDate}
                     onChange={(event) =>
-                      setMeasurementForm((current) => ({ ...current, weightKg: event.target.value }))
+                      setAdmissionForm((current) => ({ ...current, admissionDate: event.target.value }))
                     }
                     required
                   />
                   <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    placeholder="Altura atual (cm)"
-                    value={measurementForm.heightCm}
+                    placeholder="Leito"
+                    value={admissionForm.bed}
                     onChange={(event) =>
-                      setMeasurementForm((current) => ({ ...current, heightCm: event.target.value }))
+                      setAdmissionForm((current) => ({ ...current, bed: event.target.value }))
                     }
                     required
                   />
                 </div>
 
-                {measurementFeedback ? (
-                  <p className={`dashboard-feedback dashboard-feedback-${measurementFeedback.type}`}>
-                    {measurementFeedback.message}
+                <textarea
+                  placeholder="Motivo da internação"
+                  value={admissionForm.admissionReason}
+                  onChange={(event) =>
+                    setAdmissionForm((current) => ({
+                      ...current,
+                      admissionReason: event.target.value
+                    }))
+                  }
+                  required
+                />
+
+                <select
+                  value={admissionForm.teamId}
+                  onChange={(event) =>
+                    setAdmissionForm((current) => ({ ...current, teamId: event.target.value }))
+                  }
+                  required
+                >
+                  <option value="">Selecione a equipe</option>
+                  {teams.map((team) => (
+                    <option key={team.id} value={team.id}>
+                      {team.name}
+                    </option>
+                  ))}
+                </select>
+
+                {admissionFeedback ? (
+                  <p className={`dashboard-feedback dashboard-feedback-${admissionFeedback.type}`}>
+                    {admissionFeedback.message}
                   </p>
                 ) : null}
 
-                <button type="submit" disabled={measurementLoading}>
-                  {measurementLoading ? "Salvando..." : "Registrar no histórico"}
+                <button type="submit" disabled={admissionLoading}>
+                  {admissionLoading ? "Salvando..." : "Salvar internação"}
                 </button>
               </form>
             </section>
           </div>
+
+          <section className="dashboard-card">
+            <h2>Dados Variáveis (Histórico)</h2>
+            <form className="dashboard-form" onSubmit={handleMeasurementSubmit}>
+              <select
+                value={measurementForm.patientId}
+                onChange={(event) =>
+                  setMeasurementForm((current) => ({ ...current, patientId: event.target.value }))
+                }
+                required
+              >
+                <option value="">Selecione o paciente</option>
+                {patients.map((patient) => (
+                  <option key={patient.id} value={patient.id}>
+                    {patient.fullName} ({patient.chartNumber})
+                  </option>
+                ))}
+              </select>
+
+              <div className="dashboard-two-columns">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="Peso atual (kg)"
+                  value={measurementForm.weightKg}
+                  onChange={(event) =>
+                    setMeasurementForm((current) => ({ ...current, weightKg: event.target.value }))
+                  }
+                  required
+                />
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="Altura atual (cm)"
+                  value={measurementForm.heightCm}
+                  onChange={(event) =>
+                    setMeasurementForm((current) => ({ ...current, heightCm: event.target.value }))
+                  }
+                  required
+                />
+              </div>
+
+              {measurementFeedback ? (
+                <p className={`dashboard-feedback dashboard-feedback-${measurementFeedback.type}`}>
+                  {measurementFeedback.message}
+                </p>
+              ) : null}
+
+              <button type="submit" disabled={measurementLoading}>
+                {measurementLoading ? "Salvando..." : "Registrar no histórico"}
+              </button>
+            </form>
+          </section>
 
           <section className="dashboard-card">
             <h2>Profissionais cadastrados</h2>
@@ -713,8 +752,8 @@ export default function DashboardConsole({
                     <th>Nome</th>
                     <th>Prontuário</th>
                     <th>Idade</th>
-                    <th>Equipe</th>
-                    <th>Leito</th>
+                    <th>Última internação</th>
+                    <th>Último leito</th>
                     <th>Peso/Altura</th>
                     <th>IMC</th>
                     <th>SC</th>
@@ -726,8 +765,10 @@ export default function DashboardConsole({
                       <td>{patient.fullName}</td>
                       <td>{patient.chartNumber}</td>
                       <td>{patient.ageYears} anos</td>
-                      <td>{patient.teamName ?? "-"}</td>
-                      <td>{patient.bed}</td>
+                      <td>
+                        {patient.latestAdmission ? formatTimestamp(patient.latestAdmission.createdAt) : "-"}
+                      </td>
+                      <td>{patient.latestAdmission?.bed ?? "-"}</td>
                       <td>
                         {patient.latestMeasurement
                           ? `${formatNumber(patient.latestMeasurement.weightKg)} kg / ${formatNumber(patient.latestMeasurement.heightCm)} cm`
@@ -741,6 +782,38 @@ export default function DashboardConsole({
                           ? formatNumber(patient.latestMeasurement.bodySurfaceArea)
                           : "-"}
                       </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="dashboard-card">
+            <h2>Internações recentes</h2>
+            <div className="dashboard-table-wrap">
+              <table className="dashboard-table">
+                <thead>
+                  <tr>
+                    <th>Paciente</th>
+                    <th>Prontuário</th>
+                    <th>Data de admissão</th>
+                    <th>Equipe</th>
+                    <th>Leito</th>
+                    <th>Motivo</th>
+                    <th>Cadastro</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentAdmissions.map((admission) => (
+                    <tr key={admission.id}>
+                      <td>{admission.patientName}</td>
+                      <td>{admission.chartNumber}</td>
+                      <td>{admission.admissionDate}</td>
+                      <td>{admission.teamName ?? "-"}</td>
+                      <td>{admission.bed}</td>
+                      <td>{admission.admissionReason}</td>
+                      <td>{formatTimestamp(admission.createdAt)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -782,3 +855,4 @@ export default function DashboardConsole({
     </section>
   );
 }
+
