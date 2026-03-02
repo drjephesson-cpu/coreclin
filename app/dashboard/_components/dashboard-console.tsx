@@ -87,22 +87,6 @@ function calculateAge(dateString: string): number | null {
   return age >= 0 ? age : null;
 }
 
-function formatTimestamp(timestamp: string): string {
-  if (!timestamp) {
-    return "-";
-  }
-
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) {
-    return "-";
-  }
-
-  return new Intl.DateTimeFormat("pt-BR", {
-    dateStyle: "short",
-    timeStyle: "short"
-  }).format(date);
-}
-
 function formatNumber(value: number): string {
   return value.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -134,10 +118,15 @@ export default function DashboardConsole({
   const teams = data?.teams ?? [];
   const patients = data?.patients ?? [];
   const recentAdmissions = data?.recentAdmissions ?? [];
-  const recentMeasurements = data?.recentMeasurements ?? [];
   const currentProfessional = data?.currentProfessional ?? null;
 
   const [activeSection, setActiveSection] = useState<DashboardSectionId>("professional");
+  const [listVisibility, setListVisibility] = useState<Record<DashboardSectionId, boolean>>({
+    professional: false,
+    team: false,
+    patient: false,
+    admission: false
+  });
 
   const [professionalForm, setProfessionalForm] = useState({
     fullName: "",
@@ -202,6 +191,10 @@ export default function DashboardConsole({
   const selectedBsaFormula = BSA_FORMULA_OPTIONS.find(
     (formula) => formula.id === admissionForm.bsaFormula
   );
+
+  function toggleList(sectionId: DashboardSectionId): void {
+    setListVisibility((current) => ({ ...current, [sectionId]: !current[sectionId] }));
+  }
 
   async function handleProfessionalSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -523,6 +516,50 @@ export default function DashboardConsole({
                       {professionalLoading ? "Salvando..." : "Salvar profissional"}
                     </button>
                   </form>
+
+                  <div className="dashboard-list-box">
+                    <button
+                      type="button"
+                      className="dashboard-list-toggle"
+                      onClick={() => toggleList("professional")}
+                    >
+                      {listVisibility.professional
+                        ? "Ocultar profissionais cadastrados"
+                        : "Ver profissionais cadastrados"}
+                    </button>
+                    {listVisibility.professional ? (
+                      professionals.length === 0 ? (
+                        <p className="dashboard-muted">Nenhum profissional cadastrado.</p>
+                      ) : (
+                        <div className="dashboard-table-wrap">
+                          <table className="dashboard-table">
+                            <thead>
+                              <tr>
+                                <th>Nome</th>
+                                <th>Profissão</th>
+                                <th>Conselho</th>
+                                <th>Login</th>
+                                <th>Instituição</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {professionals.map((professional) => (
+                                <tr key={professional.id}>
+                                  <td>{professional.fullName}</td>
+                                  <td>{professional.profession}</td>
+                                  <td>
+                                    {professional.councilType}/{professional.stateUf}: {professional.councilNumber}
+                                  </td>
+                                  <td>{professional.login}</td>
+                                  <td>{professional.institution}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )
+                    ) : null}
+                  </div>
                 </section>
               ) : null}
 
@@ -549,16 +586,20 @@ export default function DashboardConsole({
                   </form>
 
                   <div className="dashboard-list-box">
-                    <h3>Equipes cadastradas</h3>
-                    {teams.length === 0 ? (
-                      <p className="dashboard-muted">Nenhuma equipe cadastrada.</p>
-                    ) : (
-                      <ul className="dashboard-chip-list">
-                        {teams.map((team) => (
-                          <li key={team.id}>{team.name}</li>
-                        ))}
-                      </ul>
-                    )}
+                    <button type="button" className="dashboard-list-toggle" onClick={() => toggleList("team")}>
+                      {listVisibility.team ? "Ocultar equipes cadastradas" : "Ver equipes cadastradas"}
+                    </button>
+                    {listVisibility.team ? (
+                      teams.length === 0 ? (
+                        <p className="dashboard-muted">Nenhuma equipe cadastrada.</p>
+                      ) : (
+                        <ul className="dashboard-chip-list">
+                          {teams.map((team) => (
+                            <li key={team.id}>{team.name}</li>
+                          ))}
+                        </ul>
+                      )
+                    ) : null}
                   </div>
                 </section>
               ) : null}
@@ -610,6 +651,48 @@ export default function DashboardConsole({
                       {patientLoading ? "Salvando..." : "Salvar paciente"}
                     </button>
                   </form>
+
+                  <div className="dashboard-list-box">
+                    <button
+                      type="button"
+                      className="dashboard-list-toggle"
+                      onClick={() => toggleList("patient")}
+                    >
+                      {listVisibility.patient ? "Ocultar pacientes cadastrados" : "Ver pacientes cadastrados"}
+                    </button>
+                    {listVisibility.patient ? (
+                      patients.length === 0 ? (
+                        <p className="dashboard-muted">Nenhum paciente cadastrado.</p>
+                      ) : (
+                        <div className="dashboard-table-wrap">
+                          <table className="dashboard-table">
+                            <thead>
+                              <tr>
+                                <th>Nome</th>
+                                <th>Prontuário</th>
+                                <th>Idade</th>
+                                <th>Profissional</th>
+                                <th>Última internação</th>
+                                <th>Último leito</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {patients.map((patient) => (
+                                <tr key={patient.id}>
+                                  <td>{patient.fullName}</td>
+                                  <td>{patient.chartNumber}</td>
+                                  <td>{patient.ageYears} anos</td>
+                                  <td>{patient.responsibleProfessionalName}</td>
+                                  <td>{patient.latestAdmission ? patient.latestAdmission.admissionDate : "-"}</td>
+                                  <td>{patient.latestAdmission?.bed ?? "-"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )
+                    ) : null}
+                  </div>
                 </section>
               ) : null}
 
@@ -775,135 +858,68 @@ export default function DashboardConsole({
                       {admissionLoading ? "Salvando..." : "Salvar internação"}
                     </button>
                   </form>
+
+                  <div className="dashboard-list-box">
+                    <button
+                      type="button"
+                      className="dashboard-list-toggle"
+                      onClick={() => toggleList("admission")}
+                    >
+                      {listVisibility.admission ? "Ocultar pacientes internados" : "Ver pacientes internados"}
+                    </button>
+                    {listVisibility.admission ? (
+                      recentAdmissions.length === 0 ? (
+                        <p className="dashboard-muted">Nenhuma internação cadastrada.</p>
+                      ) : (
+                        <div className="dashboard-table-wrap">
+                          <table className="dashboard-table">
+                            <thead>
+                              <tr>
+                                <th>Paciente</th>
+                                <th>Admissão</th>
+                                <th>Leito</th>
+                                <th>Equipe</th>
+                                <th>Peso/Altura</th>
+                                <th>IMC</th>
+                                <th>Fórmula IMC</th>
+                                <th>SC</th>
+                                <th>Fórmula SC</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {recentAdmissions.map((admission) => (
+                                <tr key={admission.id}>
+                                  <td>{admission.patientName}</td>
+                                  <td>{admission.admissionDate}</td>
+                                  <td>{admission.bed}</td>
+                                  <td>{admission.teamName ?? "-"}</td>
+                                  <td>
+                                    {admission.weightKg !== null && admission.heightCm !== null
+                                      ? `${formatNumber(admission.weightKg)} kg / ${formatNumber(admission.heightCm)} cm`
+                                      : "-"}
+                                  </td>
+                                  <td>{admission.bmi !== null ? formatNumber(admission.bmi) : "-"}</td>
+                                  <td>{getBmiFormulaLabel(admission.bmiFormula)}</td>
+                                  <td>
+                                    {admission.bodySurfaceArea !== null
+                                      ? formatNumber(admission.bodySurfaceArea)
+                                      : "-"}
+                                  </td>
+                                  <td>{getBsaFormulaLabel(admission.bsaFormula)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )
+                    ) : null}
+                  </div>
                 </section>
               ) : null}
             </div>
           </div>
-
-          <section className="dashboard-card">
-            <h2>Internações recentes</h2>
-            <div className="dashboard-table-wrap">
-              <table className="dashboard-table">
-                <thead>
-                  <tr>
-                    <th>Paciente</th>
-                    <th>Admissão</th>
-                    <th>Leito</th>
-                    <th>Equipe</th>
-                    <th>Peso/Altura</th>
-                    <th>IMC</th>
-                    <th>Fórmula IMC</th>
-                    <th>SC</th>
-                    <th>Fórmula SC</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentAdmissions.map((admission) => (
-                    <tr key={admission.id}>
-                      <td>{admission.patientName}</td>
-                      <td>{admission.admissionDate}</td>
-                      <td>{admission.bed}</td>
-                      <td>{admission.teamName ?? "-"}</td>
-                      <td>
-                        {admission.weightKg !== null && admission.heightCm !== null
-                          ? `${formatNumber(admission.weightKg)} kg / ${formatNumber(admission.heightCm)} cm`
-                          : "-"}
-                      </td>
-                      <td>{admission.bmi !== null ? formatNumber(admission.bmi) : "-"}</td>
-                      <td>{getBmiFormulaLabel(admission.bmiFormula)}</td>
-                      <td>
-                        {admission.bodySurfaceArea !== null
-                          ? formatNumber(admission.bodySurfaceArea)
-                          : "-"}
-                      </td>
-                      <td>{getBsaFormulaLabel(admission.bsaFormula)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <section className="dashboard-card">
-            <h2>Pacientes cadastrados</h2>
-            <div className="dashboard-table-wrap">
-              <table className="dashboard-table">
-                <thead>
-                  <tr>
-                    <th>Nome</th>
-                    <th>Prontuário</th>
-                    <th>Idade</th>
-                    <th>Última internação</th>
-                    <th>Último leito</th>
-                    <th>Peso/Altura</th>
-                    <th>IMC</th>
-                    <th>SC</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {patients.map((patient) => (
-                    <tr key={patient.id}>
-                      <td>{patient.fullName}</td>
-                      <td>{patient.chartNumber}</td>
-                      <td>{patient.ageYears} anos</td>
-                      <td>{patient.latestAdmission ? patient.latestAdmission.admissionDate : "-"}</td>
-                      <td>{patient.latestAdmission?.bed ?? "-"}</td>
-                      <td>
-                        {patient.latestMeasurement
-                          ? `${formatNumber(patient.latestMeasurement.weightKg)} kg / ${formatNumber(patient.latestMeasurement.heightCm)} cm`
-                          : "-"}
-                      </td>
-                      <td>
-                        {patient.latestMeasurement ? formatNumber(patient.latestMeasurement.bmi) : "-"}
-                      </td>
-                      <td>
-                        {patient.latestMeasurement
-                          ? formatNumber(patient.latestMeasurement.bodySurfaceArea)
-                          : "-"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <section className="dashboard-card">
-            <h2>Histórico recente de medidas</h2>
-            <div className="dashboard-table-wrap">
-              <table className="dashboard-table">
-                <thead>
-                  <tr>
-                    <th>Paciente</th>
-                    <th>Peso</th>
-                    <th>Altura</th>
-                    <th>IMC</th>
-                    <th>Fórmula IMC</th>
-                    <th>SC</th>
-                    <th>Fórmula SC</th>
-                    <th>Registro</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentMeasurements.map((measurement) => (
-                    <tr key={measurement.id}>
-                      <td>{measurement.patientName}</td>
-                      <td>{formatNumber(measurement.weightKg)}</td>
-                      <td>{formatNumber(measurement.heightCm)}</td>
-                      <td>{formatNumber(measurement.bmi)}</td>
-                      <td>{getBmiFormulaLabel(measurement.bmiFormula)}</td>
-                      <td>{formatNumber(measurement.bodySurfaceArea)}</td>
-                      <td>{getBsaFormulaLabel(measurement.bsaFormula)}</td>
-                      <td>{formatTimestamp(measurement.recordedAt)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
         </>
       )}
     </section>
   );
 }
-

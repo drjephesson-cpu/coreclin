@@ -398,6 +398,25 @@ body {
   gap: 8px;
 }
 
+.dashboard-list-toggle {
+  width: fit-content;
+  border: 1px solid #c5dbd2;
+  border-radius: 10px;
+  min-height: 36px;
+  padding: 0 12px;
+  background: #f8fcfa;
+  color: #24463c;
+  font-weight: 700;
+  font-size: 0.86rem;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.dashboard-list-toggle:hover {
+  border-color: var(--mint);
+  background: #e9f6f1;
+}
+
 .dashboard-muted {
   margin: 0;
   color: #6b837c;
