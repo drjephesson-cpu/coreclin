@@ -1,0 +1,315 @@
+:root {
+  color-scheme: light;
+  --bg-main: #e7f3ee;
+  --bg-card: #f9fcfa;
+  --ink-main: #162925;
+  --ink-soft: #4d6660;
+  --mint: #1c8f6b;
+  --mint-dark: #146d51;
+  --amber: #d98f24;
+  --danger: #b83c3c;
+  --border: #c8ddd5;
+  --shadow: 0 28px 70px rgba(14, 51, 41, 0.15);
+  --font-title: "Avenir Next", "Gill Sans Nova", "Trebuchet MS", sans-serif;
+  --font-body: "Source Sans Pro", "Segoe UI", "Helvetica Neue", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(circle at 8% 12%, #d2f0e2 0%, transparent 30%),
+    radial-gradient(circle at 92% 88%, #f9e5c8 0%, transparent 32%),
+    linear-gradient(145deg, var(--bg-main) 0%, #f4f9f7 60%, #edf5f2 100%);
+  color: var(--ink-main);
+  font-family: var(--font-body);
+}
+
+.auth-shell {
+  position: relative;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: 24px;
+}
+
+.ambient {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(10px);
+  opacity: 0.6;
+}
+
+.ambient-one {
+  width: 280px;
+  height: 280px;
+  left: -70px;
+  top: -60px;
+  background: linear-gradient(160deg, #66c6a2 0%, transparent 70%);
+  animation: float-ambient 8s ease-in-out infinite;
+}
+
+.ambient-two {
+  width: 360px;
+  height: 360px;
+  right: -120px;
+  bottom: -100px;
+  background: linear-gradient(210deg, #f4ca87 0%, transparent 68%);
+  animation: float-ambient 9s ease-in-out infinite reverse;
+}
+
+.auth-card {
+  width: min(520px, 100%);
+  background: linear-gradient(180deg, #fcfffd 0%, var(--bg-card) 100%);
+  border-radius: 28px;
+  border: 1px solid var(--border);
+  padding: 30px 30px 24px;
+  box-shadow: var(--shadow);
+  position: relative;
+  z-index: 1;
+  animation: reveal-card 0.6s ease-out both;
+}
+
+.brand-header {
+  text-align: center;
+  display: grid;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.brand-logo {
+  width: 82px;
+  height: 82px;
+  border-radius: 20px;
+  margin: 0 auto;
+  background: linear-gradient(160deg, #f5fffb 10%, #daf3e9 100%);
+  border: 1px solid #bed7cd;
+  display: grid;
+  place-items: center;
+}
+
+.brand-logo-image {
+  object-fit: contain;
+  border-radius: 12px;
+}
+
+.brand-tag {
+  margin: 0;
+  color: var(--mint);
+  letter-spacing: 0.12em;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.brand-header h1 {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: clamp(1.62rem, 2.5vw, 2rem);
+  line-height: 1.2;
+}
+
+.brand-subtitle {
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.5;
+  font-size: 0.98rem;
+}
+
+.login-form {
+  display: grid;
+  gap: 10px;
+}
+
+.login-form label {
+  font-weight: 700;
+  color: #264238;
+  font-size: 0.9rem;
+}
+
+.login-form input {
+  border-radius: 13px;
+  border: 1px solid #b5cfc5;
+  background: #ffffff;
+  height: 48px;
+  padding: 0 14px;
+  font-size: 0.97rem;
+  color: #133028;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.login-form input:focus {
+  outline: none;
+  border-color: var(--mint);
+  box-shadow: 0 0 0 4px rgba(28, 143, 107, 0.16);
+}
+
+.login-form button {
+  margin-top: 8px;
+  border: 0;
+  border-radius: 13px;
+  height: 48px;
+  font-size: 0.97rem;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(120deg, var(--mint) 0%, var(--mint-dark) 100%);
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+}
+
+.login-form button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 20px rgba(20, 109, 81, 0.24);
+}
+
+.login-form button:disabled {
+  opacity: 0.72;
+  cursor: default;
+}
+
+.form-error {
+  margin: 2px 0 0;
+  color: var(--danger);
+  font-size: 0.89rem;
+  font-weight: 600;
+}
+
+.auth-footer {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px dashed #c7ddd3;
+  text-align: center;
+  color: #5e7a71;
+  font-size: 0.82rem;
+}
+
+.dashboard-shell {
+  min-height: 100dvh;
+  padding: 24px;
+  display: grid;
+  place-items: center;
+}
+
+.dashboard-panel {
+  width: min(980px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 30px;
+  background: linear-gradient(180deg, #fbfffd 0%, #f2faf6 100%);
+  box-shadow: var(--shadow);
+  padding: 30px;
+  display: grid;
+  gap: 24px;
+  animation: reveal-card 0.6s ease-out both;
+}
+
+.dashboard-tag {
+  margin: 0 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--amber);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.dashboard-panel h1 {
+  margin: 0;
+  font-family: var(--font-title);
+}
+
+.dashboard-panel p {
+  margin: 8px 0 0;
+  color: var(--ink-soft);
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.dashboard-grid article {
+  border: 1px solid #c8ddd4;
+  border-radius: 18px;
+  background: #fff;
+  padding: 18px;
+}
+
+.dashboard-grid h2 {
+  margin-top: 0;
+  font-family: var(--font-title);
+  font-size: 1.1rem;
+}
+
+.dashboard-grid ul {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: #3f5b53;
+}
+
+.logout-button {
+  justify-self: start;
+  border: 1px solid #c5dbd2;
+  border-radius: 11px;
+  height: 42px;
+  padding: 0 16px;
+  background: #ffffff;
+  font-weight: 700;
+  color: #27453b;
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.16s ease;
+}
+
+.logout-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: var(--mint);
+}
+
+@keyframes reveal-card {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.99);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes float-ambient {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(14px);
+  }
+}
+
+@media (max-width: 900px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .auth-card {
+    border-radius: 22px;
+    padding: 22px 18px 18px;
+  }
+
+  .dashboard-panel {
+    border-radius: 22px;
+    padding: 22px 16px;
+  }
+}
