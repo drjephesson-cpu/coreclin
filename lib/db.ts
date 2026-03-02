@@ -365,7 +365,6 @@ async function setupDatabase(): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_admissions_patient_id ON admissions (patient_id);
     CREATE INDEX IF NOT EXISTS idx_admissions_date ON admissions (admission_date DESC, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_measurements_admission_id ON patient_measurements (admission_id);
     CREATE INDEX IF NOT EXISTS idx_measurements_patient_id ON patient_measurements (patient_id);
     CREATE INDEX IF NOT EXISTS idx_measurements_recorded_at ON patient_measurements (recorded_at DESC);
   `);
@@ -379,6 +378,10 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE patient_measurements
     ADD COLUMN IF NOT EXISTS bsa_formula TEXT NOT NULL DEFAULT 'mosteller';
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_measurements_admission_id ON patient_measurements (admission_id);
   `);
 
   const patientColumns = await getPatientsColumns(pool);
