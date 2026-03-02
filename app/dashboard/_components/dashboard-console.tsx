@@ -4,9 +4,14 @@ import { FormEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import LogoutButton from "@/app/_components/logout-button";
+import { calculateClinicalIndexes } from "@/lib/clinical";
 import {
+  BSA_FORMULA_OPTIONS,
+  BMI_FORMULA_OPTIONS,
   COUNCIL_OPTIONS,
   PROFESSION_OPTIONS,
+  type BmiFormulaId,
+  type BsaFormulaId,
   type CouncilOption,
   type DashboardData,
   type ProfessionOption
@@ -42,6 +47,14 @@ const UF_OPTIONS = [
   "TO"
 ] as const;
 
+const DASHBOARD_NAV_ITEMS = [
+  { id: "professional", label: "Cadastrar Profissional" },
+  { id: "team", label: "Cadastrar Equipe" },
+  { id: "patient", label: "Cadastrar Paciente" },
+  { id: "admission", label: "Internação" }
+] as const;
+
+type DashboardSectionId = (typeof DASHBOARD_NAV_ITEMS)[number]["id"];
 type FeedbackType = "success" | "error";
 
 type FeedbackState = {
@@ -94,6 +107,22 @@ function formatNumber(value: number): string {
   return value.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function getBmiFormulaLabel(formulaId: BmiFormulaId | null): string {
+  if (!formulaId) {
+    return "-";
+  }
+  const found = BMI_FORMULA_OPTIONS.find((item) => item.id === formulaId);
+  return found?.label ?? formulaId;
+}
+
+function getBsaFormulaLabel(formulaId: BsaFormulaId | null): string {
+  if (!formulaId) {
+    return "-";
+  }
+  const found = BSA_FORMULA_OPTIONS.find((item) => item.id === formulaId);
+  return found?.label ?? formulaId;
+}
+
 export default function DashboardConsole({
   currentLogin,
   data,
@@ -107,6 +136,8 @@ export default function DashboardConsole({
   const recentAdmissions = data?.recentAdmissions ?? [];
   const recentMeasurements = data?.recentMeasurements ?? [];
   const currentProfessional = data?.currentProfessional ?? null;
+
+  const [activeSection, setActiveSection] = useState<DashboardSectionId>("professional");
 
   const [professionalForm, setProfessionalForm] = useState({
     fullName: "",
@@ -138,21 +169,39 @@ export default function DashboardConsole({
     admissionDate: "",
     bed: "",
     admissionReason: "",
-    teamId: teams[0] ? String(teams[0].id) : ""
+    teamId: teams[0] ? String(teams[0].id) : "",
+    weightKg: "",
+    heightCm: "",
+    bmiFormula: "quetelet" as BmiFormulaId,
+    bsaFormula: "mosteller" as BsaFormulaId
   });
   const [admissionFeedback, setAdmissionFeedback] = useState<FeedbackState>(null);
   const [admissionLoading, setAdmissionLoading] = useState(false);
 
-  const [measurementForm, setMeasurementForm] = useState({
-    patientId: patients[0] ? String(patients[0].id) : "",
-    weightKg: "",
-    heightCm: ""
-  });
-  const [measurementFeedback, setMeasurementFeedback] = useState<FeedbackState>(null);
-  const [measurementLoading, setMeasurementLoading] = useState(false);
-
   const agePreview = useMemo(() => calculateAge(patientForm.birthDate), [patientForm.birthDate]);
   const responsibleProfessionalName = currentProfessional?.fullName ?? currentLogin;
+
+  const admissionPreview = useMemo(() => {
+    const weight = Number(admissionForm.weightKg);
+    const height = Number(admissionForm.heightCm);
+    if (!Number.isFinite(weight) || weight <= 0 || !Number.isFinite(height) || height <= 0) {
+      return null;
+    }
+
+    return calculateClinicalIndexes(weight, height, admissionForm.bmiFormula, admissionForm.bsaFormula);
+  }, [
+    admissionForm.weightKg,
+    admissionForm.heightCm,
+    admissionForm.bmiFormula,
+    admissionForm.bsaFormula
+  ]);
+
+  const selectedBmiFormula = BMI_FORMULA_OPTIONS.find(
+    (formula) => formula.id === admissionForm.bmiFormula
+  );
+  const selectedBsaFormula = BSA_FORMULA_OPTIONS.find(
+    (formula) => formula.id === admissionForm.bsaFormula
+  );
 
   async function handleProfessionalSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -275,7 +324,9 @@ export default function DashboardConsole({
         body: JSON.stringify({
           ...admissionForm,
           patientId: Number(admissionForm.patientId),
-          teamId: Number(admissionForm.teamId)
+          teamId: Number(admissionForm.teamId),
+          weightKg: Number(admissionForm.weightKg),
+          heightCm: Number(admissionForm.heightCm)
         })
       });
 
@@ -294,7 +345,11 @@ export default function DashboardConsole({
         admissionDate: "",
         bed: "",
         admissionReason: "",
-        teamId: teams[0] ? String(teams[0].id) : ""
+        teamId: teams[0] ? String(teams[0].id) : "",
+        weightKg: "",
+        heightCm: "",
+        bmiFormula: "quetelet",
+        bsaFormula: "mosteller"
       });
       router.refresh();
     } catch {
@@ -304,50 +359,6 @@ export default function DashboardConsole({
       });
     } finally {
       setAdmissionLoading(false);
-    }
-  }
-
-  async function handleMeasurementSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
-    setMeasurementFeedback(null);
-    setMeasurementLoading(true);
-
-    try {
-      const response = await fetch(`/api/patients/${measurementForm.patientId}/measurements`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          weightKg: Number(measurementForm.weightKg),
-          heightCm: Number(measurementForm.heightCm)
-        })
-      });
-
-      const result = (await response.json()) as { message?: string };
-      if (!response.ok) {
-        setMeasurementFeedback({
-          type: "error",
-          message: result.message ?? "Falha ao atualizar medidas."
-        });
-        return;
-      }
-
-      setMeasurementFeedback({
-        type: "success",
-        message: "Dados variáveis registrados no histórico."
-      });
-      setMeasurementForm({
-        patientId: patients[0] ? String(patients[0].id) : "",
-        weightKg: "",
-        heightCm: ""
-      });
-      router.refresh();
-    } catch {
-      setMeasurementFeedback({
-        type: "error",
-        message: "Erro de conexão ao salvar dados variáveis."
-      });
-    } finally {
-      setMeasurementLoading(false);
     }
   }
 
@@ -378,364 +389,434 @@ export default function DashboardConsole({
             <h2>Profissional logado</h2>
             <p>
               <strong>{responsibleProfessionalName}</strong> é o farmacêutico responsável padrão para novos
-              pacientes vinculados ao seu login.
+              registros.
             </p>
           </section>
 
-          <div className="dashboard-forms-grid">
-            <section className="dashboard-card">
-              <h2>Cadastrar Profissional</h2>
-              <form className="dashboard-form" onSubmit={handleProfessionalSubmit}>
-                <input
-                  placeholder="Nome completo"
-                  value={professionalForm.fullName}
-                  onChange={(event) =>
-                    setProfessionalForm((current) => ({ ...current, fullName: event.target.value }))
-                  }
-                  required
-                />
-
-                <div className="dashboard-two-columns">
-                  <select
-                    value={professionalForm.profession}
-                    onChange={(event) =>
-                      setProfessionalForm((current) => ({
-                        ...current,
-                        profession: event.target.value as ProfessionOption
-                      }))
-                    }
+          <div className="dashboard-layout">
+            <aside className="dashboard-sidebar">
+              <h2>Menu</h2>
+              <nav>
+                {DASHBOARD_NAV_ITEMS.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`dashboard-sidebar-link ${activeSection === item.id ? "is-active" : ""}`}
+                    onClick={() => setActiveSection(item.id)}
                   >
-                    {PROFESSION_OPTIONS.map((profession) => (
-                      <option key={profession} value={profession}>
-                        {profession}
-                      </option>
-                    ))}
-                  </select>
-
-                  <select
-                    value={professionalForm.councilType}
-                    onChange={(event) =>
-                      setProfessionalForm((current) => ({
-                        ...current,
-                        councilType: event.target.value as CouncilOption
-                      }))
-                    }
-                  >
-                    {COUNCIL_OPTIONS.map((council) => (
-                      <option key={council} value={council}>
-                        {council}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="dashboard-two-columns">
-                  <input
-                    placeholder="Número do conselho"
-                    value={professionalForm.councilNumber}
-                    onChange={(event) =>
-                      setProfessionalForm((current) => ({
-                        ...current,
-                        councilNumber: event.target.value
-                      }))
-                    }
-                    required
-                  />
-                  <select
-                    value={professionalForm.stateUf}
-                    onChange={(event) =>
-                      setProfessionalForm((current) => ({ ...current, stateUf: event.target.value }))
-                    }
-                  >
-                    {UF_OPTIONS.map((uf) => (
-                      <option key={uf} value={uf}>
-                        {uf}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="dashboard-two-columns">
-                  <input
-                    placeholder="Login"
-                    value={professionalForm.login}
-                    onChange={(event) =>
-                      setProfessionalForm((current) => ({ ...current, login: event.target.value }))
-                    }
-                    required
-                  />
-                  <input
-                    type="password"
-                    placeholder="Senha"
-                    value={professionalForm.password}
-                    onChange={(event) =>
-                      setProfessionalForm((current) => ({ ...current, password: event.target.value }))
-                    }
-                    required
-                  />
-                </div>
-
-                <input
-                  placeholder="Instituição"
-                  value={professionalForm.institution}
-                  onChange={(event) =>
-                    setProfessionalForm((current) => ({ ...current, institution: event.target.value }))
-                  }
-                  required
-                />
-
-                {professionalFeedback ? (
-                  <p className={`dashboard-feedback dashboard-feedback-${professionalFeedback.type}`}>
-                    {professionalFeedback.message}
-                  </p>
-                ) : null}
-
-                <button type="submit" disabled={professionalLoading}>
-                  {professionalLoading ? "Salvando..." : "Salvar profissional"}
-                </button>
-              </form>
-            </section>
-
-            <section className="dashboard-card">
-              <h2>Cadastrar Equipe</h2>
-              <form className="dashboard-form" onSubmit={handleTeamSubmit}>
-                <input
-                  placeholder="Nome da equipe"
-                  value={teamName}
-                  onChange={(event) => setTeamName(event.target.value)}
-                  required
-                />
-
-                {teamFeedback ? (
-                  <p className={`dashboard-feedback dashboard-feedback-${teamFeedback.type}`}>
-                    {teamFeedback.message}
-                  </p>
-                ) : null}
-
-                <button type="submit" disabled={teamLoading}>
-                  {teamLoading ? "Salvando..." : "Salvar equipe"}
-                </button>
-              </form>
-
-              <div className="dashboard-list-box">
-                <h3>Equipes cadastradas</h3>
-                {teams.length === 0 ? (
-                  <p className="dashboard-muted">Nenhuma equipe cadastrada.</p>
-                ) : (
-                  <ul className="dashboard-chip-list">
-                    {teams.map((team) => (
-                      <li key={team.id}>{team.name}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </section>
-          </div>
-
-          <div className="dashboard-forms-grid">
-            <section className="dashboard-card">
-              <h2>Cadastrar Paciente (Dados fixos)</h2>
-              <form className="dashboard-form" onSubmit={handlePatientSubmit}>
-                <input
-                  placeholder="Nome completo"
-                  value={patientForm.fullName}
-                  onChange={(event) =>
-                    setPatientForm((current) => ({ ...current, fullName: event.target.value }))
-                  }
-                  required
-                />
-
-                <div className="dashboard-two-columns">
-                  <input
-                    placeholder="Prontuário"
-                    value={patientForm.chartNumber}
-                    onChange={(event) =>
-                      setPatientForm((current) => ({ ...current, chartNumber: event.target.value }))
-                    }
-                    required
-                  />
-                  <input value={responsibleProfessionalName} disabled />
-                </div>
-
-                <div className="dashboard-two-columns">
-                  <input
-                    type="date"
-                    value={patientForm.birthDate}
-                    onChange={(event) =>
-                      setPatientForm((current) => ({ ...current, birthDate: event.target.value }))
-                    }
-                    required
-                  />
-                  <input value={agePreview === null ? "Idade" : `${agePreview} anos`} disabled />
-                </div>
-
-                {patientFeedback ? (
-                  <p className={`dashboard-feedback dashboard-feedback-${patientFeedback.type}`}>
-                    {patientFeedback.message}
-                  </p>
-                ) : null}
-
-                <button type="submit" disabled={patientLoading}>
-                  {patientLoading ? "Salvando..." : "Salvar paciente"}
-                </button>
-              </form>
-            </section>
-
-            <section className="dashboard-card">
-              <h2>Cadastrar Internação</h2>
-              <form className="dashboard-form" onSubmit={handleAdmissionSubmit}>
-                <select
-                  value={admissionForm.patientId}
-                  onChange={(event) =>
-                    setAdmissionForm((current) => ({ ...current, patientId: event.target.value }))
-                  }
-                  required
-                >
-                  <option value="">Selecione o paciente</option>
-                  {patients.map((patient) => (
-                    <option key={patient.id} value={patient.id}>
-                      {patient.fullName} ({patient.chartNumber})
-                    </option>
-                  ))}
-                </select>
-
-                <div className="dashboard-two-columns">
-                  <input
-                    type="date"
-                    value={admissionForm.admissionDate}
-                    onChange={(event) =>
-                      setAdmissionForm((current) => ({ ...current, admissionDate: event.target.value }))
-                    }
-                    required
-                  />
-                  <input
-                    placeholder="Leito"
-                    value={admissionForm.bed}
-                    onChange={(event) =>
-                      setAdmissionForm((current) => ({ ...current, bed: event.target.value }))
-                    }
-                    required
-                  />
-                </div>
-
-                <textarea
-                  placeholder="Motivo da internação"
-                  value={admissionForm.admissionReason}
-                  onChange={(event) =>
-                    setAdmissionForm((current) => ({
-                      ...current,
-                      admissionReason: event.target.value
-                    }))
-                  }
-                  required
-                />
-
-                <select
-                  value={admissionForm.teamId}
-                  onChange={(event) =>
-                    setAdmissionForm((current) => ({ ...current, teamId: event.target.value }))
-                  }
-                  required
-                >
-                  <option value="">Selecione a equipe</option>
-                  {teams.map((team) => (
-                    <option key={team.id} value={team.id}>
-                      {team.name}
-                    </option>
-                  ))}
-                </select>
-
-                {admissionFeedback ? (
-                  <p className={`dashboard-feedback dashboard-feedback-${admissionFeedback.type}`}>
-                    {admissionFeedback.message}
-                  </p>
-                ) : null}
-
-                <button type="submit" disabled={admissionLoading}>
-                  {admissionLoading ? "Salvando..." : "Salvar internação"}
-                </button>
-              </form>
-            </section>
-          </div>
-
-          <section className="dashboard-card">
-            <h2>Dados Variáveis (Histórico)</h2>
-            <form className="dashboard-form" onSubmit={handleMeasurementSubmit}>
-              <select
-                value={measurementForm.patientId}
-                onChange={(event) =>
-                  setMeasurementForm((current) => ({ ...current, patientId: event.target.value }))
-                }
-                required
-              >
-                <option value="">Selecione o paciente</option>
-                {patients.map((patient) => (
-                  <option key={patient.id} value={patient.id}>
-                    {patient.fullName} ({patient.chartNumber})
-                  </option>
+                    {item.label}
+                  </button>
                 ))}
-              </select>
+              </nav>
+            </aside>
 
-              <div className="dashboard-two-columns">
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  placeholder="Peso atual (kg)"
-                  value={measurementForm.weightKg}
-                  onChange={(event) =>
-                    setMeasurementForm((current) => ({ ...current, weightKg: event.target.value }))
-                  }
-                  required
-                />
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  placeholder="Altura atual (cm)"
-                  value={measurementForm.heightCm}
-                  onChange={(event) =>
-                    setMeasurementForm((current) => ({ ...current, heightCm: event.target.value }))
-                  }
-                  required
-                />
-              </div>
+            <div className="dashboard-content">
+              {activeSection === "professional" ? (
+                <section className="dashboard-card">
+                  <h2>Cadastrar Profissional</h2>
+                  <form className="dashboard-form" onSubmit={handleProfessionalSubmit}>
+                    <input
+                      placeholder="Nome completo"
+                      value={professionalForm.fullName}
+                      onChange={(event) =>
+                        setProfessionalForm((current) => ({ ...current, fullName: event.target.value }))
+                      }
+                      required
+                    />
 
-              {measurementFeedback ? (
-                <p className={`dashboard-feedback dashboard-feedback-${measurementFeedback.type}`}>
-                  {measurementFeedback.message}
-                </p>
+                    <div className="dashboard-two-columns">
+                      <select
+                        value={professionalForm.profession}
+                        onChange={(event) =>
+                          setProfessionalForm((current) => ({
+                            ...current,
+                            profession: event.target.value as ProfessionOption
+                          }))
+                        }
+                      >
+                        {PROFESSION_OPTIONS.map((profession) => (
+                          <option key={profession} value={profession}>
+                            {profession}
+                          </option>
+                        ))}
+                      </select>
+
+                      <select
+                        value={professionalForm.councilType}
+                        onChange={(event) =>
+                          setProfessionalForm((current) => ({
+                            ...current,
+                            councilType: event.target.value as CouncilOption
+                          }))
+                        }
+                      >
+                        {COUNCIL_OPTIONS.map((council) => (
+                          <option key={council} value={council}>
+                            {council}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="dashboard-two-columns">
+                      <input
+                        placeholder="Número do conselho"
+                        value={professionalForm.councilNumber}
+                        onChange={(event) =>
+                          setProfessionalForm((current) => ({
+                            ...current,
+                            councilNumber: event.target.value
+                          }))
+                        }
+                        required
+                      />
+                      <select
+                        value={professionalForm.stateUf}
+                        onChange={(event) =>
+                          setProfessionalForm((current) => ({ ...current, stateUf: event.target.value }))
+                        }
+                      >
+                        {UF_OPTIONS.map((uf) => (
+                          <option key={uf} value={uf}>
+                            {uf}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="dashboard-two-columns">
+                      <input
+                        placeholder="Login"
+                        value={professionalForm.login}
+                        onChange={(event) =>
+                          setProfessionalForm((current) => ({ ...current, login: event.target.value }))
+                        }
+                        required
+                      />
+                      <input
+                        type="password"
+                        placeholder="Senha"
+                        value={professionalForm.password}
+                        onChange={(event) =>
+                          setProfessionalForm((current) => ({ ...current, password: event.target.value }))
+                        }
+                        required
+                      />
+                    </div>
+
+                    <input
+                      placeholder="Instituição"
+                      value={professionalForm.institution}
+                      onChange={(event) =>
+                        setProfessionalForm((current) => ({ ...current, institution: event.target.value }))
+                      }
+                      required
+                    />
+
+                    {professionalFeedback ? (
+                      <p className={`dashboard-feedback dashboard-feedback-${professionalFeedback.type}`}>
+                        {professionalFeedback.message}
+                      </p>
+                    ) : null}
+
+                    <button type="submit" disabled={professionalLoading}>
+                      {professionalLoading ? "Salvando..." : "Salvar profissional"}
+                    </button>
+                  </form>
+                </section>
               ) : null}
 
-              <button type="submit" disabled={measurementLoading}>
-                {measurementLoading ? "Salvando..." : "Registrar no histórico"}
-              </button>
-            </form>
-          </section>
+              {activeSection === "team" ? (
+                <section className="dashboard-card">
+                  <h2>Cadastrar Equipe</h2>
+                  <form className="dashboard-form" onSubmit={handleTeamSubmit}>
+                    <input
+                      placeholder="Nome da equipe"
+                      value={teamName}
+                      onChange={(event) => setTeamName(event.target.value)}
+                      required
+                    />
+
+                    {teamFeedback ? (
+                      <p className={`dashboard-feedback dashboard-feedback-${teamFeedback.type}`}>
+                        {teamFeedback.message}
+                      </p>
+                    ) : null}
+
+                    <button type="submit" disabled={teamLoading}>
+                      {teamLoading ? "Salvando..." : "Salvar equipe"}
+                    </button>
+                  </form>
+
+                  <div className="dashboard-list-box">
+                    <h3>Equipes cadastradas</h3>
+                    {teams.length === 0 ? (
+                      <p className="dashboard-muted">Nenhuma equipe cadastrada.</p>
+                    ) : (
+                      <ul className="dashboard-chip-list">
+                        {teams.map((team) => (
+                          <li key={team.id}>{team.name}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </section>
+              ) : null}
+
+              {activeSection === "patient" ? (
+                <section className="dashboard-card">
+                  <h2>Cadastrar Paciente</h2>
+                  <form className="dashboard-form" onSubmit={handlePatientSubmit}>
+                    <input
+                      placeholder="Nome completo"
+                      value={patientForm.fullName}
+                      onChange={(event) =>
+                        setPatientForm((current) => ({ ...current, fullName: event.target.value }))
+                      }
+                      required
+                    />
+
+                    <div className="dashboard-two-columns">
+                      <input
+                        placeholder="Prontuário"
+                        value={patientForm.chartNumber}
+                        onChange={(event) =>
+                          setPatientForm((current) => ({ ...current, chartNumber: event.target.value }))
+                        }
+                        required
+                      />
+                      <input value={responsibleProfessionalName} disabled />
+                    </div>
+
+                    <div className="dashboard-two-columns">
+                      <input
+                        type="date"
+                        value={patientForm.birthDate}
+                        onChange={(event) =>
+                          setPatientForm((current) => ({ ...current, birthDate: event.target.value }))
+                        }
+                        required
+                      />
+                      <input value={agePreview === null ? "Idade" : `${agePreview} anos`} disabled />
+                    </div>
+
+                    {patientFeedback ? (
+                      <p className={`dashboard-feedback dashboard-feedback-${patientFeedback.type}`}>
+                        {patientFeedback.message}
+                      </p>
+                    ) : null}
+
+                    <button type="submit" disabled={patientLoading}>
+                      {patientLoading ? "Salvando..." : "Salvar paciente"}
+                    </button>
+                  </form>
+                </section>
+              ) : null}
+
+              {activeSection === "admission" ? (
+                <section className="dashboard-card">
+                  <h2>Internação</h2>
+                  <form className="dashboard-form" onSubmit={handleAdmissionSubmit}>
+                    <select
+                      value={admissionForm.patientId}
+                      onChange={(event) =>
+                        setAdmissionForm((current) => ({ ...current, patientId: event.target.value }))
+                      }
+                      required
+                    >
+                      <option value="">Selecione o paciente</option>
+                      {patients.map((patient) => (
+                        <option key={patient.id} value={patient.id}>
+                          {patient.fullName} ({patient.chartNumber})
+                        </option>
+                      ))}
+                    </select>
+
+                    <div className="dashboard-two-columns">
+                      <input
+                        type="date"
+                        value={admissionForm.admissionDate}
+                        onChange={(event) =>
+                          setAdmissionForm((current) => ({
+                            ...current,
+                            admissionDate: event.target.value
+                          }))
+                        }
+                        required
+                      />
+                      <input
+                        placeholder="Leito"
+                        value={admissionForm.bed}
+                        onChange={(event) =>
+                          setAdmissionForm((current) => ({ ...current, bed: event.target.value }))
+                        }
+                        required
+                      />
+                    </div>
+
+                    <textarea
+                      placeholder="Motivo da internação"
+                      value={admissionForm.admissionReason}
+                      onChange={(event) =>
+                        setAdmissionForm((current) => ({
+                          ...current,
+                          admissionReason: event.target.value
+                        }))
+                      }
+                      required
+                    />
+
+                    <select
+                      value={admissionForm.teamId}
+                      onChange={(event) =>
+                        setAdmissionForm((current) => ({ ...current, teamId: event.target.value }))
+                      }
+                      required
+                    >
+                      <option value="">Selecione a equipe</option>
+                      {teams.map((team) => (
+                        <option key={team.id} value={team.id}>
+                          {team.name}
+                        </option>
+                      ))}
+                    </select>
+
+                    <div className="dashboard-two-columns">
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="Peso (kg)"
+                        value={admissionForm.weightKg}
+                        onChange={(event) =>
+                          setAdmissionForm((current) => ({ ...current, weightKg: event.target.value }))
+                        }
+                        required
+                      />
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="Altura (cm)"
+                        value={admissionForm.heightCm}
+                        onChange={(event) =>
+                          setAdmissionForm((current) => ({ ...current, heightCm: event.target.value }))
+                        }
+                        required
+                      />
+                    </div>
+
+                    <div className="dashboard-two-columns">
+                      <select
+                        value={admissionForm.bmiFormula}
+                        onChange={(event) =>
+                          setAdmissionForm((current) => ({
+                            ...current,
+                            bmiFormula: event.target.value as BmiFormulaId
+                          }))
+                        }
+                      >
+                        {BMI_FORMULA_OPTIONS.map((formula) => (
+                          <option key={formula.id} value={formula.id}>
+                            IMC: {formula.label}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={admissionForm.bsaFormula}
+                        onChange={(event) =>
+                          setAdmissionForm((current) => ({
+                            ...current,
+                            bsaFormula: event.target.value as BsaFormulaId
+                          }))
+                        }
+                      >
+                        {BSA_FORMULA_OPTIONS.map((formula) => (
+                          <option key={formula.id} value={formula.id}>
+                            SC: {formula.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="dashboard-calculation-box">
+                      <h3>Cálculo automático</h3>
+                      <p>
+                        {selectedBmiFormula?.label}:{" "}
+                        <span>{selectedBmiFormula?.equation ?? "-"}</span>
+                      </p>
+                      <p>
+                        {selectedBsaFormula?.label}:{" "}
+                        <span>{selectedBsaFormula?.equation ?? "-"}</span>
+                      </p>
+                      <div className="dashboard-two-columns">
+                        <input
+                          value={admissionPreview ? formatNumber(admissionPreview.bmi) : "IMC calculado"}
+                          disabled
+                        />
+                        <input
+                          value={
+                            admissionPreview
+                              ? formatNumber(admissionPreview.bodySurfaceArea)
+                              : "Superfície corporal calculada"
+                          }
+                          disabled
+                        />
+                      </div>
+                    </div>
+
+                    {admissionFeedback ? (
+                      <p className={`dashboard-feedback dashboard-feedback-${admissionFeedback.type}`}>
+                        {admissionFeedback.message}
+                      </p>
+                    ) : null}
+
+                    <button type="submit" disabled={admissionLoading}>
+                      {admissionLoading ? "Salvando..." : "Salvar internação"}
+                    </button>
+                  </form>
+                </section>
+              ) : null}
+            </div>
+          </div>
 
           <section className="dashboard-card">
-            <h2>Profissionais cadastrados</h2>
+            <h2>Internações recentes</h2>
             <div className="dashboard-table-wrap">
               <table className="dashboard-table">
                 <thead>
                   <tr>
-                    <th>Nome</th>
-                    <th>Profissão</th>
-                    <th>Conselho</th>
-                    <th>Login</th>
-                    <th>Instituição</th>
+                    <th>Paciente</th>
+                    <th>Admissão</th>
+                    <th>Leito</th>
+                    <th>Equipe</th>
+                    <th>Peso/Altura</th>
+                    <th>IMC</th>
+                    <th>Fórmula IMC</th>
+                    <th>SC</th>
+                    <th>Fórmula SC</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {professionals.map((professional) => (
-                    <tr key={professional.id}>
-                      <td>{professional.fullName}</td>
-                      <td>{professional.profession}</td>
+                  {recentAdmissions.map((admission) => (
+                    <tr key={admission.id}>
+                      <td>{admission.patientName}</td>
+                      <td>{admission.admissionDate}</td>
+                      <td>{admission.bed}</td>
+                      <td>{admission.teamName ?? "-"}</td>
                       <td>
-                        {professional.councilType}/{professional.stateUf}: {professional.councilNumber}
+                        {admission.weightKg !== null && admission.heightCm !== null
+                          ? `${formatNumber(admission.weightKg)} kg / ${formatNumber(admission.heightCm)} cm`
+                          : "-"}
                       </td>
-                      <td>{professional.login}</td>
-                      <td>{professional.institution}</td>
+                      <td>{admission.bmi !== null ? formatNumber(admission.bmi) : "-"}</td>
+                      <td>{getBmiFormulaLabel(admission.bmiFormula)}</td>
+                      <td>
+                        {admission.bodySurfaceArea !== null
+                          ? formatNumber(admission.bodySurfaceArea)
+                          : "-"}
+                      </td>
+                      <td>{getBsaFormulaLabel(admission.bsaFormula)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -765,9 +846,7 @@ export default function DashboardConsole({
                       <td>{patient.fullName}</td>
                       <td>{patient.chartNumber}</td>
                       <td>{patient.ageYears} anos</td>
-                      <td>
-                        {patient.latestAdmission ? formatTimestamp(patient.latestAdmission.createdAt) : "-"}
-                      </td>
+                      <td>{patient.latestAdmission ? patient.latestAdmission.admissionDate : "-"}</td>
                       <td>{patient.latestAdmission?.bed ?? "-"}</td>
                       <td>
                         {patient.latestMeasurement
@@ -790,60 +869,32 @@ export default function DashboardConsole({
           </section>
 
           <section className="dashboard-card">
-            <h2>Internações recentes</h2>
+            <h2>Histórico recente de medidas</h2>
             <div className="dashboard-table-wrap">
               <table className="dashboard-table">
                 <thead>
                   <tr>
                     <th>Paciente</th>
-                    <th>Prontuário</th>
-                    <th>Data de admissão</th>
-                    <th>Equipe</th>
-                    <th>Leito</th>
-                    <th>Motivo</th>
-                    <th>Cadastro</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentAdmissions.map((admission) => (
-                    <tr key={admission.id}>
-                      <td>{admission.patientName}</td>
-                      <td>{admission.chartNumber}</td>
-                      <td>{admission.admissionDate}</td>
-                      <td>{admission.teamName ?? "-"}</td>
-                      <td>{admission.bed}</td>
-                      <td>{admission.admissionReason}</td>
-                      <td>{formatTimestamp(admission.createdAt)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <section className="dashboard-card">
-            <h2>Histórico recente de dados variáveis</h2>
-            <div className="dashboard-table-wrap">
-              <table className="dashboard-table">
-                <thead>
-                  <tr>
-                    <th>Paciente</th>
-                    <th>Peso (kg)</th>
-                    <th>Altura (cm)</th>
+                    <th>Peso</th>
+                    <th>Altura</th>
                     <th>IMC</th>
-                    <th>Superfície corporal</th>
+                    <th>Fórmula IMC</th>
+                    <th>SC</th>
+                    <th>Fórmula SC</th>
                     <th>Registro</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {recentMeasurements.map((item) => (
-                    <tr key={item.id}>
-                      <td>{item.patientName}</td>
-                      <td>{formatNumber(item.weightKg)}</td>
-                      <td>{formatNumber(item.heightCm)}</td>
-                      <td>{formatNumber(item.bmi)}</td>
-                      <td>{formatNumber(item.bodySurfaceArea)}</td>
-                      <td>{formatTimestamp(item.recordedAt)}</td>
+                  {recentMeasurements.map((measurement) => (
+                    <tr key={measurement.id}>
+                      <td>{measurement.patientName}</td>
+                      <td>{formatNumber(measurement.weightKg)}</td>
+                      <td>{formatNumber(measurement.heightCm)}</td>
+                      <td>{formatNumber(measurement.bmi)}</td>
+                      <td>{getBmiFormulaLabel(measurement.bmiFormula)}</td>
+                      <td>{formatNumber(measurement.bodySurfaceArea)}</td>
+                      <td>{getBsaFormulaLabel(measurement.bsaFormula)}</td>
+                      <td>{formatTimestamp(measurement.recordedAt)}</td>
                     </tr>
                   ))}
                 </tbody>

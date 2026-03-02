@@ -5,6 +5,8 @@ import {
   COUNCIL_OPTIONS,
   PROFESSION_OPTIONS,
   type AdmissionRecord,
+  type BmiFormulaId,
+  type BsaFormulaId,
   type CouncilOption,
   type DashboardData,
   type MeasurementHistoryRecord,
@@ -41,6 +43,10 @@ export type CreateAdmissionInput = {
   bed: string;
   admissionReason: string;
   teamId: number;
+  weightKg: number;
+  heightCm: number;
+  bmiFormula: BmiFormulaId;
+  bsaFormula: BsaFormulaId;
   responsibleLogin: string;
 };
 
@@ -111,6 +117,14 @@ function mapAdmission(row: DbRow): AdmissionRecord {
     teamName: row.team_name === null ? null : String(row.team_name),
     responsibleProfessionalId: toNumber(row.responsible_professional_id),
     responsibleProfessionalName: String(row.responsible_professional_name ?? ""),
+    weightKg: row.weight_kg === null ? null : toNumber(row.weight_kg),
+    heightCm: row.height_cm === null ? null : toNumber(row.height_cm),
+    bmi: row.bmi === null ? null : toNumber(row.bmi),
+    bmiFormula:
+      row.bmi_formula === null ? null : (String(row.bmi_formula) as BmiFormulaId),
+    bodySurfaceArea: row.body_surface_area === null ? null : toNumber(row.body_surface_area),
+    bsaFormula:
+      row.bsa_formula === null ? null : (String(row.bsa_formula) as BsaFormulaId),
     createdAt: toIso(row.created_at)
   };
 }
@@ -123,7 +137,9 @@ function mapMeasurement(row: DbRow): MeasurementHistoryRecord {
     weightKg: toNumber(row.weight_kg),
     heightCm: toNumber(row.height_cm),
     bmi: toNumber(row.bmi),
+    bmiFormula: String(row.bmi_formula ?? "quetelet") as BmiFormulaId,
     bodySurfaceArea: toNumber(row.body_surface_area),
+    bsaFormula: String(row.bsa_formula ?? "mosteller") as BsaFormulaId,
     recordedAt: toIso(row.recorded_at)
   };
 }
@@ -154,6 +170,12 @@ function mapPatient(row: DbRow): PatientRecord {
           teamName: row.latest_admission_team_name === null ? null : String(row.latest_admission_team_name),
           responsibleProfessionalId: toNumber(row.latest_admission_responsible_professional_id),
           responsibleProfessionalName: String(row.latest_admission_responsible_professional_name ?? ""),
+          weightKg: null,
+          heightCm: null,
+          bmi: null,
+          bmiFormula: null,
+          bodySurfaceArea: null,
+          bsaFormula: null,
           createdAt: toIso(row.latest_admission_created_at)
         }
       : null,
@@ -162,7 +184,9 @@ function mapPatient(row: DbRow): PatientRecord {
           weightKg: toNumber(row.weight_kg),
           heightCm: toNumber(row.height_cm),
           bmi: toNumber(row.bmi),
+          bmiFormula: String(row.bmi_formula ?? "quetelet") as BmiFormulaId,
           bodySurfaceArea: toNumber(row.body_surface_area),
+          bsaFormula: String(row.bsa_formula ?? "mosteller") as BsaFormulaId,
           recordedAt: toIso(row.recorded_at)
         }
       : null
@@ -329,17 +353,32 @@ async function setupDatabase(): Promise<void> {
     CREATE TABLE IF NOT EXISTS patient_measurements (
       id SERIAL PRIMARY KEY,
       patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+      admission_id INTEGER REFERENCES admissions(id) ON DELETE SET NULL,
       weight_kg NUMERIC(6, 2) NOT NULL,
       height_cm NUMERIC(6, 2) NOT NULL,
       bmi NUMERIC(6, 2) NOT NULL,
+      bmi_formula TEXT NOT NULL DEFAULT 'quetelet',
       body_surface_area NUMERIC(6, 2) NOT NULL,
+      bsa_formula TEXT NOT NULL DEFAULT 'mosteller',
       recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
     CREATE INDEX IF NOT EXISTS idx_admissions_patient_id ON admissions (patient_id);
     CREATE INDEX IF NOT EXISTS idx_admissions_date ON admissions (admission_date DESC, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_measurements_admission_id ON patient_measurements (admission_id);
     CREATE INDEX IF NOT EXISTS idx_measurements_patient_id ON patient_measurements (patient_id);
     CREATE INDEX IF NOT EXISTS idx_measurements_recorded_at ON patient_measurements (recorded_at DESC);
+  `);
+
+  await pool.query(`
+    ALTER TABLE patient_measurements
+    ADD COLUMN IF NOT EXISTS admission_id INTEGER REFERENCES admissions(id) ON DELETE SET NULL;
+
+    ALTER TABLE patient_measurements
+    ADD COLUMN IF NOT EXISTS bmi_formula TEXT NOT NULL DEFAULT 'quetelet';
+
+    ALTER TABLE patient_measurements
+    ADD COLUMN IF NOT EXISTS bsa_formula TEXT NOT NULL DEFAULT 'mosteller';
   `);
 
   const patientColumns = await getPatientsColumns(pool);
@@ -593,6 +632,12 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
   try {
     await client.query("BEGIN");
     const responsibleProfessionalId = await findProfessionalIdByLogin(client, input.responsibleLogin);
+    const indexes = calculateClinicalIndexes(
+      input.weightKg,
+      input.heightCm,
+      input.bmiFormula,
+      input.bsaFormula
+    );
 
     const inserted = await client.query(
       `
@@ -617,8 +662,35 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
       ]
     );
 
-    await client.query("COMMIT");
     const admissionId = toNumber((inserted.rows[0] as DbRow).id);
+
+    await client.query(
+      `
+        INSERT INTO patient_measurements (
+          patient_id,
+          admission_id,
+          weight_kg,
+          height_cm,
+          bmi,
+          bmi_formula,
+          body_surface_area,
+          bsa_formula
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `,
+      [
+        input.patientId,
+        admissionId,
+        input.weightKg,
+        input.heightCm,
+        indexes.bmi,
+        input.bmiFormula,
+        indexes.bodySurfaceArea,
+        input.bsaFormula
+      ]
+    );
+
+    await client.query("COMMIT");
     const admissions = await listRecentAdmissions(200);
     const createdAdmission = admissions.find((admission) => admission.id === admissionId);
     if (!createdAdmission) {
@@ -640,25 +712,40 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
 export async function addPatientMeasurement(
   patientId: number,
   weightKg: number,
-  heightCm: number
+  heightCm: number,
+  bmiFormula: BmiFormulaId = "quetelet",
+  bsaFormula: BsaFormulaId = "mosteller",
+  admissionId?: number
 ): Promise<MeasurementHistoryRecord> {
   await ensureDatabaseReady();
   const pool = getPool();
-  const indexes = calculateClinicalIndexes(weightKg, heightCm);
+  const indexes = calculateClinicalIndexes(weightKg, heightCm, bmiFormula, bsaFormula);
 
   const inserted = await pool.query(
     `
       INSERT INTO patient_measurements (
         patient_id,
+        admission_id,
         weight_kg,
         height_cm,
         bmi,
-        body_surface_area
+        bmi_formula,
+        body_surface_area,
+        bsa_formula
       )
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING id, patient_id, weight_kg::float8 AS weight_kg, height_cm::float8 AS height_cm, bmi::float8 AS bmi, body_surface_area::float8 AS body_surface_area, recorded_at
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING id, patient_id, weight_kg::float8 AS weight_kg, height_cm::float8 AS height_cm, bmi::float8 AS bmi, bmi_formula, body_surface_area::float8 AS body_surface_area, bsa_formula, recorded_at
     `,
-    [patientId, weightKg, heightCm, indexes.bmi, indexes.bodySurfaceArea]
+    [
+      patientId,
+      admissionId ?? null,
+      weightKg,
+      heightCm,
+      indexes.bmi,
+      bmiFormula,
+      indexes.bodySurfaceArea,
+      bsaFormula
+    ]
   );
 
   const patientResult = await pool.query(
@@ -707,7 +794,9 @@ export async function listPatients(): Promise<PatientRecord[]> {
       latest_m.weight_kg::float8 AS weight_kg,
       latest_m.height_cm::float8 AS height_cm,
       latest_m.bmi::float8 AS bmi,
+      latest_m.bmi_formula,
       latest_m.body_surface_area::float8 AS body_surface_area,
+      latest_m.bsa_formula,
       latest_m.recorded_at
     FROM patients p
     INNER JOIN professionals rp ON rp.id = p.responsible_professional_id
@@ -732,7 +821,9 @@ export async function listPatients(): Promise<PatientRecord[]> {
         m.weight_kg,
         m.height_cm,
         m.bmi,
+        m.bmi_formula,
         m.body_surface_area,
+        m.bsa_formula,
         m.recorded_at
       FROM patient_measurements m
       WHERE m.patient_id = p.id
@@ -764,11 +855,30 @@ export async function listRecentAdmissions(limit = 40): Promise<AdmissionRecord[
         t.name AS team_name,
         a.responsible_professional_id,
         rp.full_name AS responsible_professional_name,
+        am.weight_kg::float8 AS weight_kg,
+        am.height_cm::float8 AS height_cm,
+        am.bmi::float8 AS bmi,
+        am.bmi_formula,
+        am.body_surface_area::float8 AS body_surface_area,
+        am.bsa_formula,
         a.created_at
       FROM admissions a
       INNER JOIN patients p ON p.id = a.patient_id
       INNER JOIN professionals rp ON rp.id = a.responsible_professional_id
       LEFT JOIN teams t ON t.id = a.team_id
+      LEFT JOIN LATERAL (
+        SELECT
+          m.weight_kg,
+          m.height_cm,
+          m.bmi,
+          m.bmi_formula,
+          m.body_surface_area,
+          m.bsa_formula
+        FROM patient_measurements m
+        WHERE m.admission_id = a.id
+        ORDER BY m.recorded_at DESC, m.id DESC
+        LIMIT 1
+      ) am ON TRUE
       ORDER BY a.admission_date DESC, a.created_at DESC, a.id DESC
       LIMIT $1
     `,
@@ -792,7 +902,9 @@ export async function listRecentMeasurements(limit = 30): Promise<MeasurementHis
         m.weight_kg::float8 AS weight_kg,
         m.height_cm::float8 AS height_cm,
         m.bmi::float8 AS bmi,
+        m.bmi_formula,
         m.body_surface_area::float8 AS body_surface_area,
+        m.bsa_formula,
         m.recorded_at
       FROM patient_measurements m
       INNER JOIN patients p ON p.id = m.patient_id
@@ -827,4 +939,3 @@ export async function getDashboardData(currentLogin: string): Promise<DashboardD
     recentMeasurements
   };
 }
-
