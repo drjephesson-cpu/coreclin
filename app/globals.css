@@ -453,6 +453,20 @@ body {
   background: #e9f6f1;
 }
 
+.dashboard-link-button {
+  border: 0;
+  background: transparent;
+  color: #1d5d49;
+  font-weight: 700;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+
+.dashboard-link-button:hover {
+  text-decoration: underline;
+}
+
 .dashboard-form .dashboard-mini-button-inline {
   margin-top: 0;
   width: fit-content;
@@ -529,6 +543,27 @@ body {
   transform: none;
   box-shadow: none;
   text-decoration: underline;
+}
+
+.dashboard-status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.dashboard-status-pill.is-valid {
+  color: #1f7c5d;
+  background: #e7f6ef;
+  border: 1px solid #b9dfcf;
+}
+
+.dashboard-status-pill.is-invalid {
+  color: #a33a3a;
+  background: #fdeeee;
+  border: 1px solid #f1c8c8;
 }
 
 .dashboard-table-wrap {

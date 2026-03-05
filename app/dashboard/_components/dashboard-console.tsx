@@ -74,13 +74,27 @@ const PATIENT_VIEW_ITEMS = [
 
 type DashboardSectionId = (typeof DASHBOARD_NAV_ITEMS)[number]["id"];
 type PatientViewId = (typeof PATIENT_VIEW_ITEMS)[number]["id"];
-type PrescriptionMode = "view" | "create";
+type PrescriptionMode = "view" | "create" | "raw";
 type FeedbackType = "success" | "error";
 
 type FeedbackState = {
   type: FeedbackType;
   message: string;
 } | null;
+
+type RawPrescriptionDraft = {
+  lineNumber: number;
+  rawLine: string;
+  medicationId: number | null;
+  medicationName: string;
+  dose: number | null;
+  doseUnit: string;
+  frequency: string;
+  shifts: string;
+  notes: string;
+  isValid: boolean;
+  validationMessage: string;
+};
 
 type DashboardConsoleProps = {
   currentLogin: string;
@@ -141,6 +155,28 @@ function getBsaFormulaLabel(formulaId: BsaFormulaId | null): string {
   }
   const found = BSA_FORMULA_OPTIONS.find((item) => item.id === formulaId);
   return found?.label ?? formulaId;
+}
+
+function parseDosePart(input: string): { dose: number | null; doseUnit: string } {
+  const normalized = input.trim().replace(",", ".");
+  if (!normalized) {
+    return { dose: null, doseUnit: "" };
+  }
+
+  const match = normalized.match(/^(\d+(?:\.\d+)?)\s*([^\d\s].+)?$/);
+  if (!match) {
+    return { dose: null, doseUnit: "" };
+  }
+
+  const dose = Number(match[1]);
+  if (!Number.isFinite(dose) || dose <= 0) {
+    return { dose: null, doseUnit: "" };
+  }
+
+  return {
+    dose,
+    doseUnit: match[2]?.trim() ?? ""
+  };
 }
 
 export default function DashboardConsole({
@@ -227,6 +263,7 @@ export default function DashboardConsole({
   const [selectedPatientId, setSelectedPatientId] = useState<string>(
     patients[0] ? String(patients[0].id) : ""
   );
+  const [patientDetailsOpen, setPatientDetailsOpen] = useState(false);
   const [patientView, setPatientView] = useState<PatientViewId>("allergies");
   const [prescriptionMode, setPrescriptionMode] = useState<PrescriptionMode>("view");
 
@@ -263,6 +300,11 @@ export default function DashboardConsole({
   });
   const [prescriptionFeedback, setPrescriptionFeedback] = useState<FeedbackState>(null);
   const [prescriptionLoading, setPrescriptionLoading] = useState(false);
+  const [rawPrescriptionInput, setRawPrescriptionInput] = useState("");
+  const [rawPrescriptionAdmissionId, setRawPrescriptionAdmissionId] = useState("");
+  const [rawPrescriptionDrafts, setRawPrescriptionDrafts] = useState<RawPrescriptionDraft[]>([]);
+  const [rawPrescriptionFeedback, setRawPrescriptionFeedback] = useState<FeedbackState>(null);
+  const [rawPrescriptionLoading, setRawPrescriptionLoading] = useState(false);
 
   useEffect(() => {
     if (patients.length === 0) {
@@ -339,6 +381,19 @@ export default function DashboardConsole({
     [prescriptions, selectedPatient]
   );
 
+  useEffect(() => {
+    if (!rawPrescriptionAdmissionId) {
+      return;
+    }
+
+    const hasAdmission = selectedPatientAdmissions.some(
+      (admission) => String(admission.id) === rawPrescriptionAdmissionId
+    );
+    if (!hasAdmission) {
+      setRawPrescriptionAdmissionId("");
+    }
+  }, [rawPrescriptionAdmissionId, selectedPatientAdmissions]);
+
   const selectedAdmissionPatientAllergies = useMemo(() => {
     const patientId = Number(admissionForm.patientId);
     if (!Number.isInteger(patientId) || patientId <= 0) {
@@ -350,6 +405,94 @@ export default function DashboardConsole({
 
   function toggleList(sectionId: DashboardSectionId): void {
     setListVisibility((current) => ({ ...current, [sectionId]: !current[sectionId] }));
+  }
+
+  function openPatientDetails(patientId: number, targetView: PatientViewId = "admission-info"): void {
+    setSelectedPatientId(String(patientId));
+    setPatientView(targetView);
+    setPatientDetailsOpen(true);
+  }
+
+  function buildRawPrescriptionDrafts(rawInput: string): RawPrescriptionDraft[] {
+    const lines = rawInput
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    return lines.map((line, index) => {
+      const splitParts = line.includes(";")
+        ? line.split(";")
+        : line.includes("|")
+          ? line.split("|")
+          : line.split(/\s+-\s+/);
+      const parts = splitParts.map((part) => part.trim()).filter((part) => part.length > 0);
+
+      const medicationName = parts[0] ?? "";
+      const parsedDose = parseDosePart(parts[1] ?? "");
+      const frequency = parts[2] ?? "";
+      const shifts = parts[3] ?? "";
+      const notes = parts[4] ?? "";
+
+      const matchedMedication = medications.find(
+        (medication) => medication.name.toLocaleLowerCase() === medicationName.toLocaleLowerCase()
+      );
+
+      const fallbackUnit = matchedMedication?.defaultUnit ?? "";
+      const doseUnit = parsedDose.doseUnit || fallbackUnit;
+
+      let validationMessage = "";
+      if (parts.length < 4) {
+        validationMessage = "Formato inválido. Use: medicamento; dose unidade; frequência; turnos; observações";
+      } else if (!medicationName) {
+        validationMessage = "Nome do medicamento ausente.";
+      } else if (!parsedDose.dose || parsedDose.dose <= 0) {
+        validationMessage = "Dose inválida.";
+      } else if (!doseUnit) {
+        validationMessage = "Unidade da dose ausente.";
+      } else if (!frequency) {
+        validationMessage = "Frequência ausente.";
+      } else if (!shifts) {
+        validationMessage = "Turnos ausentes.";
+      }
+
+      return {
+        lineNumber: index + 1,
+        rawLine: line,
+        medicationId: matchedMedication?.id ?? null,
+        medicationName,
+        dose: parsedDose.dose,
+        doseUnit,
+        frequency,
+        shifts,
+        notes,
+        isValid: validationMessage.length === 0,
+        validationMessage: validationMessage || "Linha pronta para importação."
+      };
+    });
+  }
+
+  function handleProcessRawPrescription(): void {
+    setRawPrescriptionFeedback(null);
+    const drafts = buildRawPrescriptionDrafts(rawPrescriptionInput);
+
+    if (drafts.length === 0) {
+      setRawPrescriptionFeedback({
+        type: "error",
+        message: "Cole ao menos uma linha de prescrição bruta para tratar."
+      });
+      setRawPrescriptionDrafts([]);
+      return;
+    }
+
+    const validCount = drafts.filter((draft) => draft.isValid).length;
+    setRawPrescriptionDrafts(drafts);
+    setRawPrescriptionFeedback({
+      type: validCount > 0 ? "success" : "error",
+      message:
+        validCount > 0
+          ? `${validCount} linha(s) tratada(s) e pronta(s) para importação.`
+          : "Nenhuma linha válida encontrada. Ajuste o formato e tente novamente."
+    });
   }
 
   function resolveDraftInitialAllergy(): string {
@@ -741,6 +884,75 @@ export default function DashboardConsole({
       });
     } finally {
       setPrescriptionLoading(false);
+    }
+  }
+
+  async function handleImportRawPrescriptions(): Promise<void> {
+    setRawPrescriptionFeedback(null);
+
+    if (!selectedPatient) {
+      setRawPrescriptionFeedback({
+        type: "error",
+        message: "Selecione um paciente para importar prescrições."
+      });
+      return;
+    }
+
+    const validDrafts = rawPrescriptionDrafts.filter((draft) => draft.isValid);
+    if (validDrafts.length === 0) {
+      setRawPrescriptionFeedback({
+        type: "error",
+        message: "Não há linhas válidas para importar."
+      });
+      return;
+    }
+
+    setRawPrescriptionLoading(true);
+    try {
+      const failedLines: number[] = [];
+      for (const draft of validDrafts) {
+        const response = await fetch(`/api/patients/${selectedPatient.id}/prescriptions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            admissionId: rawPrescriptionAdmissionId || undefined,
+            medicationId: draft.medicationId ?? undefined,
+            medicationName: draft.medicationName,
+            dose: draft.dose,
+            doseUnit: draft.doseUnit,
+            frequency: draft.frequency,
+            shifts: draft.shifts,
+            notes: draft.notes
+          })
+        });
+
+        if (!response.ok) {
+          failedLines.push(draft.lineNumber);
+        }
+      }
+
+      if (failedLines.length > 0) {
+        setRawPrescriptionFeedback({
+          type: "error",
+          message: `Algumas linhas falharam na importação: ${failedLines.join(", ")}.`
+        });
+      } else {
+        setRawPrescriptionFeedback({
+          type: "success",
+          message: `${validDrafts.length} linha(s) importada(s) com sucesso.`
+        });
+        setRawPrescriptionInput("");
+        setRawPrescriptionDrafts([]);
+        setPrescriptionMode("view");
+        router.refresh();
+      }
+    } catch {
+      setRawPrescriptionFeedback({
+        type: "error",
+        message: "Erro de conexão ao importar prescrições."
+      });
+    } finally {
+      setRawPrescriptionLoading(false);
     }
   }
 
@@ -1155,17 +1367,35 @@ export default function DashboardConsole({
                                 <th>Profissional</th>
                                 <th>Última internação</th>
                                 <th>Último leito</th>
+                                <th>Ações</th>
                               </tr>
                             </thead>
                             <tbody>
                               {patients.map((patient) => (
                                 <tr key={patient.id}>
-                                  <td>{patient.fullName}</td>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="dashboard-link-button"
+                                      onClick={() => openPatientDetails(patient.id)}
+                                    >
+                                      {patient.fullName}
+                                    </button>
+                                  </td>
                                   <td>{patient.chartNumber}</td>
                                   <td>{patient.ageYears} anos</td>
                                   <td>{patient.responsibleProfessionalName}</td>
                                   <td>{patient.latestAdmission ? patient.latestAdmission.admissionDate : "-"}</td>
                                   <td>{patient.latestAdmission?.bed ?? "-"}</td>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="dashboard-mini-button"
+                                      onClick={() => openPatientDetails(patient.id)}
+                                    >
+                                      Abrir detalhes
+                                    </button>
+                                  </td>
                                 </tr>
                               ))}
                             </tbody>
@@ -1176,10 +1406,13 @@ export default function DashboardConsole({
                   </div>
 
                   <section className="dashboard-subsection">
-                    <h3>Paciente selecionado</h3>
+                    <h3>Detalhes do paciente</h3>
                     <select
                       value={selectedPatientId}
-                      onChange={(event) => setSelectedPatientId(event.target.value)}
+                      onChange={(event) => {
+                        setSelectedPatientId(event.target.value);
+                        setPatientDetailsOpen(event.target.value.length > 0);
+                      }}
                       disabled={patients.length === 0}
                     >
                       {patients.length === 0 ? <option value="">Nenhum paciente cadastrado</option> : null}
@@ -1190,8 +1423,18 @@ export default function DashboardConsole({
                       ))}
                     </select>
 
-                    {selectedPatient ? (
+                    {selectedPatient && patientDetailsOpen ? (
                       <>
+                        <div className="dashboard-inline-actions">
+                          <button
+                            type="button"
+                            className="dashboard-mini-button"
+                            onClick={() => setPatientDetailsOpen(false)}
+                          >
+                            Fechar detalhes
+                          </button>
+                        </div>
+
                         <div className="dashboard-inline-actions">
                           {PATIENT_VIEW_ITEMS.map((item) => (
                             <button
@@ -1477,6 +1720,15 @@ export default function DashboardConsole({
                               >
                                 Cadastrar prescrição
                               </button>
+                              <button
+                                type="button"
+                                className={`dashboard-mini-button ${
+                                  prescriptionMode === "raw" ? "is-active" : ""
+                                }`}
+                                onClick={() => setPrescriptionMode("raw")}
+                              >
+                                Tratar dados brutos
+                              </button>
                             </div>
 
                             {prescriptionMode === "create" ? (
@@ -1598,6 +1850,105 @@ export default function DashboardConsole({
                               </form>
                             ) : null}
 
+                            {prescriptionMode === "raw" ? (
+                              <div className="dashboard-subsection-block">
+                                <h3>Entrada de prescrição por dados brutos</h3>
+                                <p className="dashboard-muted">
+                                  Formato esperado por linha: `medicamento; dose unidade; frequência; turnos;
+                                  observações`.
+                                </p>
+
+                                <select
+                                  value={rawPrescriptionAdmissionId}
+                                  onChange={(event) => setRawPrescriptionAdmissionId(event.target.value)}
+                                >
+                                  <option value="">Sem vínculo com internação</option>
+                                  {selectedPatientAdmissions.map((admission) => (
+                                    <option key={admission.id} value={admission.id}>
+                                      {admission.admissionDate} | Leito {admission.bed} | {admission.teamName ?? "-"}
+                                    </option>
+                                  ))}
+                                </select>
+
+                                <textarea
+                                  placeholder="Cole aqui as linhas da prescrição bruta"
+                                  value={rawPrescriptionInput}
+                                  onChange={(event) => setRawPrescriptionInput(event.target.value)}
+                                />
+
+                                <div className="dashboard-inline-actions">
+                                  <button
+                                    type="button"
+                                    className="dashboard-mini-button"
+                                    onClick={handleProcessRawPrescription}
+                                  >
+                                    Tratar prescrição
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="dashboard-mini-button"
+                                    onClick={handleImportRawPrescriptions}
+                                    disabled={rawPrescriptionLoading}
+                                  >
+                                    {rawPrescriptionLoading
+                                      ? "Importando..."
+                                      : "Salvar linhas válidas"}
+                                  </button>
+                                </div>
+
+                                {rawPrescriptionFeedback ? (
+                                  <p className={`dashboard-feedback dashboard-feedback-${rawPrescriptionFeedback.type}`}>
+                                    {rawPrescriptionFeedback.message}
+                                  </p>
+                                ) : null}
+
+                                <div className="dashboard-table-wrap">
+                                  <table className="dashboard-table">
+                                    <thead>
+                                      <tr>
+                                        <th>Linha</th>
+                                        <th>Medicamento</th>
+                                        <th>Dose</th>
+                                        <th>Frequência</th>
+                                        <th>Turnos</th>
+                                        <th>Status</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {rawPrescriptionDrafts.length === 0 ? (
+                                        <tr>
+                                          <td colSpan={6}>Nenhuma linha tratada ainda.</td>
+                                        </tr>
+                                      ) : (
+                                        rawPrescriptionDrafts.map((draft) => (
+                                          <tr key={`${draft.lineNumber}-${draft.rawLine}`}>
+                                            <td>{draft.lineNumber}</td>
+                                            <td>{draft.medicationName || "-"}</td>
+                                            <td>
+                                              {draft.dose !== null
+                                                ? `${formatNumber(draft.dose)} ${draft.doseUnit || ""}`.trim()
+                                                : "-"}
+                                            </td>
+                                            <td>{draft.frequency || "-"}</td>
+                                            <td>{draft.shifts || "-"}</td>
+                                            <td>
+                                              <span
+                                                className={`dashboard-status-pill ${
+                                                  draft.isValid ? "is-valid" : "is-invalid"
+                                                }`}
+                                              >
+                                                {draft.validationMessage}
+                                              </span>
+                                            </td>
+                                          </tr>
+                                        ))
+                                      )}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            ) : null}
+
                             {prescriptionMode === "view" ? (
                               <div className="dashboard-table-wrap">
                                 <table className="dashboard-table">
@@ -1644,7 +1995,9 @@ export default function DashboardConsole({
                         ) : null}
                       </>
                     ) : (
-                      <p className="dashboard-muted">Cadastre um paciente para habilitar os módulos clínicos.</p>
+                      <p className="dashboard-muted">
+                        Clique em um paciente na tabela para abrir os detalhes clínicos.
+                      </p>
                     )}
                   </section>
                 </section>
