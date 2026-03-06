@@ -124,6 +124,10 @@ function toIso(value: unknown): string {
   return "";
 }
 
+function normalizeMedicationCatalogName(name: string): string {
+  return name.trim().replace(/\s+/g, " ");
+}
+
 function mapProfessional(row: DbRow): ProfessionalRecord {
   return {
     id: toNumber(row.id),
@@ -750,19 +754,32 @@ export async function listMedicationCatalog(): Promise<MedicationRecord[]> {
 export async function createMedication(input: CreateMedicationInput): Promise<MedicationRecord> {
   await ensureDatabaseReady();
   const pool = getPool();
+  const normalizedMedicationName = normalizeMedicationCatalogName(input.name);
+  const normalizedDefaultUnit = input.defaultUnit.trim();
+  const normalizedTherapeuticClass = input.therapeuticClass.trim() || null;
 
   try {
+    const duplicateCheck = await pool.query(
+      `
+        SELECT id
+        FROM medication_catalog
+        WHERE LOWER(REGEXP_REPLACE(name, '[[:space:]]+', ' ', 'g')) = LOWER($1)
+        LIMIT 1
+      `,
+      [normalizedMedicationName]
+    );
+
+    if (duplicateCheck.rows.length > 0) {
+      throw new Error("Medicamento já cadastrado.");
+    }
+
     const result = await pool.query(
       `
         INSERT INTO medication_catalog (name, default_unit, therapeutic_class)
         VALUES ($1, $2, $3)
         RETURNING id, name, default_unit, therapeutic_class, created_at
       `,
-      [
-        input.name.trim(),
-        input.defaultUnit.trim(),
-        input.therapeuticClass.trim() || null
-      ]
+      [normalizedMedicationName, normalizedDefaultUnit, normalizedTherapeuticClass]
     );
     return mapMedication(result.rows[0] as DbRow);
   } catch (error) {
@@ -820,7 +837,7 @@ async function resolveMedicationNameFromCatalog(
   client: PoolClient,
   medicationName: string
 ): Promise<string> {
-  const normalizedMedicationName = medicationName.trim();
+  const normalizedMedicationName = normalizeMedicationCatalogName(medicationName);
   if (!normalizedMedicationName) {
     throw new Error("Selecione um medicamento para registrar alergia.");
   }
@@ -829,7 +846,7 @@ async function resolveMedicationNameFromCatalog(
     `
       SELECT name
       FROM medication_catalog
-      WHERE LOWER(name) = LOWER($1)
+      WHERE LOWER(REGEXP_REPLACE(name, '[[:space:]]+', ' ', 'g')) = LOWER($1)
       LIMIT 1
     `,
     [normalizedMedicationName]

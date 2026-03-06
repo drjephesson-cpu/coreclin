@@ -1011,6 +1011,20 @@ export default function DashboardConsole({
   async function handleMedicationSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setMedicationFeedback(null);
+
+    const medicationNameInput = medicationForm.name.trim();
+    const hasDuplicateMedication = medications.some((medication) =>
+      isMedicationNameCompatible(medication.name, medicationNameInput)
+    );
+
+    if (hasDuplicateMedication) {
+      setMedicationFeedback({
+        type: "error",
+        message: "Medicamento já cadastrado. Evite duplicidade no nome."
+      });
+      return;
+    }
+
     setMedicationLoading(true);
 
     try {
