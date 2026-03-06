@@ -219,6 +219,21 @@ function normalizeHospitalDateTime(input: string): string | null {
   return parsed.toISOString();
 }
 
+function isWithinPrescriptionValidity(startAt: string | null, endAt: string | null): boolean {
+  if (!startAt || !endAt) {
+    return false;
+  }
+
+  const start = new Date(startAt).getTime();
+  const end = new Date(endAt).getTime();
+  const now = Date.now();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    return false;
+  }
+
+  return now >= start && now <= end;
+}
+
 export default function DashboardConsole({
   currentLogin,
   data,
@@ -471,6 +486,56 @@ export default function DashboardConsole({
     [prescriptions, selectedPatient]
   );
 
+  const selectedPatientPrescriptionGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        key: string;
+        admissionDate: string | null;
+        bed: string | null;
+        validationStartAt: string | null;
+        validationEndAt: string | null;
+        validationStatus: string | null;
+        prescriptions: typeof selectedPatientPrescriptions;
+      }
+    >();
+
+    for (const prescription of selectedPatientPrescriptions) {
+      const key = [
+        prescription.admissionId ?? "sem-admissao",
+        prescription.validationStartAt ?? "sem-inicio",
+        prescription.validationEndAt ?? "sem-fim",
+        prescription.validationStatus ?? "sem-status"
+      ].join("|");
+
+      const currentGroup = groups.get(key);
+      if (currentGroup) {
+        currentGroup.prescriptions.push(prescription);
+        continue;
+      }
+
+      groups.set(key, {
+        key,
+        admissionDate: prescription.admissionDate,
+        bed: prescription.bed,
+        validationStartAt: prescription.validationStartAt,
+        validationEndAt: prescription.validationEndAt,
+        validationStatus: prescription.validationStatus,
+        prescriptions: [prescription]
+      });
+    }
+
+    return Array.from(groups.values()).sort((firstGroup, secondGroup) => {
+      const firstTime = firstGroup.validationStartAt
+        ? new Date(firstGroup.validationStartAt).getTime()
+        : 0;
+      const secondTime = secondGroup.validationStartAt
+        ? new Date(secondGroup.validationStartAt).getTime()
+        : 0;
+      return secondTime - firstTime;
+    });
+  }, [selectedPatientPrescriptions]);
+
   useEffect(() => {
     if (!rawPrescriptionAdmissionId) {
       return;
@@ -493,6 +558,10 @@ export default function DashboardConsole({
     return patientAllergies.filter((allergy) => allergy.patientId === patientId);
   }, [patientAllergies, admissionForm.patientId]);
 
+  const prescriptionSetStartAt = normalizeHospitalDateTime(prescriptionSetForm.startAt);
+  const prescriptionSetEndAt = normalizeHospitalDateTime(prescriptionSetForm.endAt);
+  const prescriptionSetStatus = prescriptionSetForm.status.trim() || "Validado";
+
   function toggleList(sectionId: DashboardSectionId): void {
     setListVisibility((current) => ({ ...current, [sectionId]: !current[sectionId] }));
   }
@@ -505,7 +574,10 @@ export default function DashboardConsole({
     setPatientDetailsOpen(true);
   }
 
-  function buildRawPrescriptionDrafts(rawInput: string): RawPrescriptionDraft[] {
+  function buildRawPrescriptionDrafts(
+    rawInput: string,
+    sharedSet: { startAt: string; endAt: string; status: string }
+  ): RawPrescriptionDraft[] {
     const lines = rawInput
       .split("\n")
       .map((line) => line.trim())
@@ -514,9 +586,10 @@ export default function DashboardConsole({
     return lines.map((line, index) => {
       const tabParts = line.split("\t").map((part) => part.trim()).filter((part) => part.length > 0);
       const prescriptionContent = tabParts[0] ?? line;
-      const validationStartRaw = tabParts[1] ?? "";
-      const validationEndRaw = tabParts[2] ?? "";
-      const validationStatus = tabParts[3] ?? "Validado";
+      const hasInlineSet = tabParts.length >= 4;
+      const validationStartRaw = hasInlineSet ? (tabParts[1] ?? "") : sharedSet.startAt;
+      const validationEndRaw = hasInlineSet ? (tabParts[2] ?? "") : sharedSet.endAt;
+      const validationStatus = (hasInlineSet ? tabParts[3] : sharedSet.status).trim() || "Validado";
       const validationStartAt = normalizeHospitalDateTime(validationStartRaw);
       const validationEndAt = normalizeHospitalDateTime(validationEndRaw);
 
@@ -574,7 +647,7 @@ export default function DashboardConsole({
       } else if (!frequency) {
         validationMessage = "Frequência ausente.";
       } else if (!validationStartRaw || !validationEndRaw) {
-        validationMessage = "Informe data de início e data de fim da validação.";
+        validationMessage = "Defina data de início e data de fim da vigência da prescrição.";
       } else if (!validationStartAt || !validationEndAt) {
         validationMessage = "Formato de data inválido. Use dd/mm/aaaa hh:mm.";
       }
@@ -601,7 +674,7 @@ export default function DashboardConsole({
 
   function handleProcessRawPrescription(): void {
     setRawPrescriptionFeedback(null);
-    const drafts = buildRawPrescriptionDrafts(rawPrescriptionInput);
+    const drafts = buildRawPrescriptionDrafts(rawPrescriptionInput, prescriptionSetForm);
 
     if (drafts.length === 0) {
       setRawPrescriptionFeedback({
@@ -968,6 +1041,14 @@ export default function DashboardConsole({
       return;
     }
 
+    if (!prescriptionSetStartAt || !prescriptionSetEndAt) {
+      setPrescriptionFeedback({
+        type: "error",
+        message: "Defina a data de início e a data de fim da vigência do conjunto da prescrição."
+      });
+      return;
+    }
+
     setPrescriptionLoading(true);
     try {
       const response = await fetch(`/api/patients/${selectedPatient.id}/prescriptions`, {
@@ -983,9 +1064,9 @@ export default function DashboardConsole({
           frequency: prescriptionForm.frequency,
           shifts: prescriptionForm.shifts,
           notes: prescriptionForm.notes,
-          validationStartAt: prescriptionForm.validationStartAt,
-          validationEndAt: prescriptionForm.validationEndAt,
-          validationStatus: prescriptionForm.validationStatus
+          validationStartAt: prescriptionSetStartAt,
+          validationEndAt: prescriptionSetEndAt,
+          validationStatus: prescriptionSetStatus
         })
       });
 
@@ -1006,10 +1087,7 @@ export default function DashboardConsole({
         frequency: "",
         shifts: "",
         notes: "",
-        administrationRoute: "",
-        validationStartAt: "",
-        validationEndAt: "",
-        validationStatus: "Validado"
+        administrationRoute: ""
       }));
       setPrescriptionMode("view");
       router.refresh();
@@ -1060,9 +1138,9 @@ export default function DashboardConsole({
             frequency: draft.frequency,
             shifts: draft.shifts,
             notes: draft.notes,
-            validationStartAt: draft.validationStartAt ?? undefined,
-            validationEndAt: draft.validationEndAt ?? undefined,
-            validationStatus: draft.validationStatus
+            validationStartAt: draft.validationStartAt ?? prescriptionSetStartAt ?? undefined,
+            validationEndAt: draft.validationEndAt ?? prescriptionSetEndAt ?? undefined,
+            validationStatus: draft.validationStatus || prescriptionSetStatus
           })
         });
 
@@ -1912,6 +1990,47 @@ export default function DashboardConsole({
                               </button>
                             </div>
 
+                            <div className="dashboard-calculation-box">
+                              <h3>Vigência do conjunto da prescrição</h3>
+                              <div className="dashboard-two-columns">
+                                <input
+                                  type="datetime-local"
+                                  aria-label="Data início da vigência do conjunto"
+                                  value={prescriptionSetForm.startAt}
+                                  onChange={(event) =>
+                                    setPrescriptionSetForm((current) => ({
+                                      ...current,
+                                      startAt: event.target.value
+                                    }))
+                                  }
+                                />
+                                <input
+                                  type="datetime-local"
+                                  aria-label="Data fim da vigência do conjunto"
+                                  value={prescriptionSetForm.endAt}
+                                  onChange={(event) =>
+                                    setPrescriptionSetForm((current) => ({
+                                      ...current,
+                                      endAt: event.target.value
+                                    }))
+                                  }
+                                />
+                              </div>
+                              <input
+                                placeholder="Status da vigência (ex.: Validado)"
+                                value={prescriptionSetForm.status}
+                                onChange={(event) =>
+                                  setPrescriptionSetForm((current) => ({
+                                    ...current,
+                                    status: event.target.value
+                                  }))
+                                }
+                              />
+                              <p>
+                                Esta vigência vale para o conjunto atual de medicamentos, sem repetir por item.
+                              </p>
+                            </div>
+
                             {prescriptionMode === "create" ? (
                               <form className="dashboard-form" onSubmit={handlePrescriptionSubmit}>
                                 <select
@@ -2008,56 +2127,16 @@ export default function DashboardConsole({
                                   />
                                 </div>
 
-                                <div className="dashboard-two-columns">
-                                  <input
-                                    placeholder="Turnos (opcional)"
-                                    value={prescriptionForm.shifts}
-                                    onChange={(event) =>
-                                      setPrescriptionForm((current) => ({
-                                        ...current,
-                                        shifts: event.target.value
-                                      }))
-                                    }
-                                  />
-                                  <input
-                                    placeholder="Status da validação (ex.: Validado)"
-                                    value={prescriptionForm.validationStatus}
-                                    onChange={(event) =>
-                                      setPrescriptionForm((current) => ({
-                                        ...current,
-                                        validationStatus: event.target.value
-                                      }))
-                                    }
-                                  />
-                                </div>
-
-                                <p className="dashboard-muted">
-                                  Validação da prescrição: data início e data fim.
-                                </p>
-                                <div className="dashboard-two-columns">
-                                  <input
-                                    type="datetime-local"
-                                    aria-label="Data início da validação"
-                                    value={prescriptionForm.validationStartAt}
-                                    onChange={(event) =>
-                                      setPrescriptionForm((current) => ({
-                                        ...current,
-                                        validationStartAt: event.target.value
-                                      }))
-                                    }
-                                  />
-                                  <input
-                                    type="datetime-local"
-                                    aria-label="Data fim da validação"
-                                    value={prescriptionForm.validationEndAt}
-                                    onChange={(event) =>
-                                      setPrescriptionForm((current) => ({
-                                        ...current,
-                                        validationEndAt: event.target.value
-                                      }))
-                                    }
-                                  />
-                                </div>
+                                <input
+                                  placeholder="Turnos (opcional)"
+                                  value={prescriptionForm.shifts}
+                                  onChange={(event) =>
+                                    setPrescriptionForm((current) => ({
+                                      ...current,
+                                      shifts: event.target.value
+                                    }))
+                                  }
+                                />
 
                                 <textarea
                                   placeholder="Observações da prescrição (opcional)"
@@ -2086,11 +2165,22 @@ export default function DashboardConsole({
                               <div className="dashboard-subsection-block">
                                 <h3>Entrada de prescrição por dados brutos</h3>
                                 <p className="dashboard-muted">
-                                  Cole no padrão do hospital:
-                                  `MEDICAMENTOS[TAB]Data início[TAB]Data fim[TAB]Status`.
+                                  Cole as linhas de medicamentos no padrão hospitalar:
+                                  `Medicamento - Administrar Dose Unidade; Via; Frequência; Obs;`.
                                 </p>
                                 <p className="dashboard-muted">
-                                  Em `MEDICAMENTOS`, use: `Nome - Administrar Dose Unidade; Via; Frequência; Obs;`.
+                                  A vigência do conjunto (início, fim e status) é aplicada uma única vez para todos.
+                                </p>
+                                <p className="dashboard-muted">
+                                  Vigência atual:
+                                  {" "}
+                                  {prescriptionSetStartAt ? formatTimestamp(prescriptionSetStartAt) : "não definida"}
+                                  {" "}
+                                  até
+                                  {" "}
+                                  {prescriptionSetEndAt ? formatTimestamp(prescriptionSetEndAt) : "não definida"}
+                                  {" "}
+                                  | Status: {prescriptionSetStatus}
                                 </p>
 
                                 <select
@@ -2148,16 +2238,13 @@ export default function DashboardConsole({
                                         <th>Via</th>
                                         <th>Frequência</th>
                                         <th>Obs.</th>
-                                        <th>Data início</th>
-                                        <th>Data fim</th>
-                                        <th>Status validação</th>
                                         <th>Resultado</th>
                                       </tr>
                                     </thead>
                                     <tbody>
                                       {rawPrescriptionDrafts.length === 0 ? (
                                         <tr>
-                                          <td colSpan={11}>Nenhuma linha tratada ainda.</td>
+                                          <td colSpan={8}>Nenhuma linha tratada ainda.</td>
                                         </tr>
                                       ) : (
                                         rawPrescriptionDrafts.map((draft) => (
@@ -2169,9 +2256,6 @@ export default function DashboardConsole({
                                             <td>{draft.administrationRoute || "-"}</td>
                                             <td>{draft.frequency || "-"}</td>
                                             <td>{draft.notes || "-"}</td>
-                                            <td>{draft.validationStartAt ? formatTimestamp(draft.validationStartAt) : "-"}</td>
-                                            <td>{draft.validationEndAt ? formatTimestamp(draft.validationEndAt) : "-"}</td>
-                                            <td>{draft.validationStatus || "-"}</td>
                                             <td>
                                               <span
                                                 className={`dashboard-status-pill ${
@@ -2191,60 +2275,78 @@ export default function DashboardConsole({
                             ) : null}
 
                             {prescriptionMode === "view" ? (
-                              <div className="dashboard-table-wrap">
-                                <table className="dashboard-table">
-                                  <thead>
-                                    <tr>
-                                      <th>Internação</th>
-                                      <th>Medicamentos</th>
-                                      <th>Dose</th>
-                                      <th>Unidade</th>
-                                      <th>Via</th>
-                                      <th>Frequência</th>
-                                      <th>Obs.</th>
-                                      <th>Data início</th>
-                                      <th>Data fim</th>
-                                      <th>Status validação</th>
-                                      <th>Registro</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {selectedPatientPrescriptions.length === 0 ? (
-                                      <tr>
-                                        <td colSpan={11}>Nenhuma prescrição cadastrada para este paciente.</td>
-                                      </tr>
-                                    ) : (
-                                      selectedPatientPrescriptions.map((prescription) => (
-                                        <tr key={prescription.id}>
-                                          <td>
-                                            {prescription.admissionDate
-                                              ? `${prescription.admissionDate} | Leito ${prescription.bed ?? "-"}`
-                                              : "Sem vínculo"}
-                                          </td>
-                                          <td>{prescription.medicationName}</td>
-                                          <td>{formatNumber(prescription.dose)}</td>
-                                          <td>{prescription.doseUnit}</td>
-                                          <td>{prescription.administrationRoute ?? "-"}</td>
-                                          <td>{prescription.frequency}</td>
-                                          <td>{prescription.notes ?? "-"}</td>
-                                          <td>
-                                            {prescription.validationStartAt
-                                              ? formatTimestamp(prescription.validationStartAt)
-                                              : "-"}
-                                          </td>
-                                          <td>
-                                            {prescription.validationEndAt
-                                              ? formatTimestamp(prescription.validationEndAt)
-                                              : "-"}
-                                          </td>
-                                          <td>{prescription.validationStatus ?? "-"}</td>
-                                          <td>{formatTimestamp(prescription.createdAt)}</td>
-                                        </tr>
-                                      ))
-                                    )}
-                                  </tbody>
-                                </table>
-                              </div>
+                              selectedPatientPrescriptionGroups.length === 0 ? (
+                                <p className="dashboard-muted">
+                                  Nenhuma prescrição cadastrada para este paciente.
+                                </p>
+                              ) : (
+                                <div className="dashboard-list-box">
+                                  {selectedPatientPrescriptionGroups.map((group, index) => (
+                                    <div key={group.key} className="dashboard-subsection-block">
+                                      <h3>Conjunto de prescrição {index + 1}</h3>
+                                      <p className="dashboard-muted">
+                                        Internação:
+                                        {" "}
+                                        {group.admissionDate
+                                          ? `${group.admissionDate} | Leito ${group.bed ?? "-"}`
+                                          : "Sem vínculo"}
+                                      </p>
+                                      <p className="dashboard-muted">
+                                        Vigência:
+                                        {" "}
+                                        {group.validationStartAt
+                                          ? formatTimestamp(group.validationStartAt)
+                                          : "não definida"}
+                                        {" "}
+                                        até
+                                        {" "}
+                                        {group.validationEndAt
+                                          ? formatTimestamp(group.validationEndAt)
+                                          : "não definida"}
+                                        {" "}
+                                        | Status: {group.validationStatus ?? "Sem status"}
+                                        {" "}
+                                        | Vigência atual:
+                                        {" "}
+                                        {isWithinPrescriptionValidity(
+                                          group.validationStartAt,
+                                          group.validationEndAt
+                                        )
+                                          ? "Ativa"
+                                          : "Fora da vigência"}
+                                      </p>
+                                      <div className="dashboard-table-wrap">
+                                        <table className="dashboard-table">
+                                          <thead>
+                                            <tr>
+                                              <th>Medicamentos</th>
+                                              <th>Dose</th>
+                                              <th>Unidade</th>
+                                              <th>Via</th>
+                                              <th>Frequência</th>
+                                              <th>Obs.</th>
+                                              <th>Registro</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {group.prescriptions.map((prescription) => (
+                                              <tr key={prescription.id}>
+                                                <td>{prescription.medicationName}</td>
+                                                <td>{formatNumber(prescription.dose)}</td>
+                                                <td>{prescription.doseUnit}</td>
+                                                <td>{prescription.administrationRoute ?? "-"}</td>
+                                                <td>{prescription.frequency}</td>
+                                                <td>{prescription.notes ?? "-"}</td>
+                                                <td>{formatTimestamp(prescription.createdAt)}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )
                             ) : null}
                           </div>
                         ) : null}
