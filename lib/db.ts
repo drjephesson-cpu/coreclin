@@ -82,9 +82,13 @@ export type AddMedicalPrescriptionInput = {
   medicationName: string;
   dose: number;
   doseUnit: string;
+  administrationRoute?: string;
   frequency: string;
-  shifts: string;
+  shifts?: string;
   notes?: string;
+  validationStartAt?: string;
+  validationEndAt?: string;
+  validationStatus?: string;
 };
 
 type GlobalDbState = typeof globalThis & {
@@ -227,9 +231,15 @@ function mapMedicalPrescription(row: DbRow): MedicalPrescriptionRecord {
     medicationName: String(row.medication_name ?? ""),
     dose: toNumber(row.dose),
     doseUnit: String(row.dose_unit ?? ""),
+    administrationRoute:
+      row.administration_route === null ? null : String(row.administration_route),
     frequency: String(row.frequency ?? ""),
     shifts: String(row.shifts ?? ""),
     notes: row.notes === null ? null : String(row.notes),
+    validationStartAt:
+      row.validation_start_at === null ? null : toIso(row.validation_start_at),
+    validationEndAt: row.validation_end_at === null ? null : toIso(row.validation_end_at),
+    validationStatus: row.validation_status === null ? null : String(row.validation_status),
     createdAt: toIso(row.created_at)
   };
 }
@@ -488,9 +498,13 @@ async function setupDatabase(): Promise<void> {
       medication_name TEXT NOT NULL,
       dose NUMERIC(10, 2) NOT NULL,
       dose_unit TEXT NOT NULL,
+      administration_route TEXT,
       frequency TEXT NOT NULL,
       shifts TEXT NOT NULL,
       notes TEXT,
+      validation_start_at TIMESTAMPTZ,
+      validation_end_at TIMESTAMPTZ,
+      validation_status TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -513,6 +527,20 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE patient_measurements
     ADD COLUMN IF NOT EXISTS bsa_formula TEXT NOT NULL DEFAULT 'mosteller';
+  `);
+
+  await pool.query(`
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS administration_route TEXT;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS validation_start_at TIMESTAMPTZ;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS validation_end_at TIMESTAMPTZ;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS validation_status TEXT;
   `);
 
   await pool.query(`
@@ -1107,11 +1135,15 @@ export async function addMedicalPrescription(
           medication_name,
           dose,
           dose_unit,
+          administration_route,
           frequency,
           shifts,
-          notes
+          notes,
+          validation_start_at,
+          validation_end_at,
+          validation_status
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         RETURNING id
       `,
       [
@@ -1121,9 +1153,13 @@ export async function addMedicalPrescription(
         medicationData.medicationName,
         input.dose,
         input.doseUnit.trim(),
+        input.administrationRoute?.trim() ? input.administrationRoute.trim() : null,
         input.frequency.trim(),
-        input.shifts.trim(),
-        input.notes?.trim() ? input.notes.trim() : null
+        input.shifts?.trim() ? input.shifts.trim() : "-",
+        input.notes?.trim() ? input.notes.trim() : null,
+        input.validationStartAt ?? null,
+        input.validationEndAt ?? null,
+        input.validationStatus?.trim() ? input.validationStatus.trim() : null
       ]
     );
 
@@ -1141,9 +1177,13 @@ export async function addMedicalPrescription(
           mp.medication_name,
           mp.dose::float8 AS dose,
           mp.dose_unit,
+          mp.administration_route,
           mp.frequency,
           mp.shifts,
           mp.notes,
+          mp.validation_start_at,
+          mp.validation_end_at,
+          mp.validation_status,
           mp.created_at
         FROM medical_prescriptions mp
         INNER JOIN patients p ON p.id = mp.patient_id
@@ -1432,9 +1472,13 @@ export async function listMedicalPrescriptions(): Promise<MedicalPrescriptionRec
       mp.medication_name,
       mp.dose::float8 AS dose,
       mp.dose_unit,
+      mp.administration_route,
       mp.frequency,
       mp.shifts,
       mp.notes,
+      mp.validation_start_at,
+      mp.validation_end_at,
+      mp.validation_status,
       mp.created_at
     FROM medical_prescriptions mp
     INNER JOIN patients p ON p.id = mp.patient_id

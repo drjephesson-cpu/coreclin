@@ -158,9 +158,13 @@ export type MedicalPrescriptionRecord = {
   medicationName: string;
   dose: number;
   doseUnit: string;
+  administrationRoute: string | null;
   frequency: string;
   shifts: string;
   notes: string | null;
+  validationStartAt: string | null;
+  validationEndAt: string | null;
+  validationStatus: string | null;
   createdAt: string;
 };
 

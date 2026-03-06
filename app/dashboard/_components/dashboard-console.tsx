@@ -90,9 +90,13 @@ type RawPrescriptionDraft = {
   medicationName: string;
   dose: number | null;
   doseUnit: string;
+  administrationRoute: string;
   frequency: string;
   shifts: string;
   notes: string;
+  validationStartAt: string | null;
+  validationEndAt: string | null;
+  validationStatus: string;
   isValid: boolean;
   validationMessage: string;
 };
@@ -178,6 +182,41 @@ function parseDosePart(input: string): { dose: number | null; doseUnit: string }
     dose,
     doseUnit: match[2]?.trim() ?? ""
   };
+}
+
+function normalizeHospitalDateTime(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const directParsed = new Date(trimmed);
+  if (!Number.isNaN(directParsed.getTime())) {
+    return directParsed.toISOString();
+  }
+
+  const brMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/);
+  if (!brMatch) {
+    return null;
+  }
+
+  const day = Number(brMatch[1]);
+  const month = Number(brMatch[2]);
+  const year = Number(brMatch[3]);
+  const hour = Number(brMatch[4] ?? "0");
+  const minute = Number(brMatch[5] ?? "0");
+  const parsed = new Date(year, month - 1, day, hour, minute, 0, 0);
+
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return parsed.toISOString();
 }
 
 export default function DashboardConsole({
@@ -296,9 +335,15 @@ export default function DashboardConsole({
     medicationName: "",
     dose: "",
     doseUnit: medications[0]?.defaultUnit ?? "mg",
+    administrationRoute: "",
     frequency: "",
     shifts: "",
     notes: ""
+  });
+  const [prescriptionSetForm, setPrescriptionSetForm] = useState({
+    startAt: "",
+    endAt: "",
+    status: "Validado"
   });
   const [prescriptionFeedback, setPrescriptionFeedback] = useState<FeedbackState>(null);
   const [prescriptionLoading, setPrescriptionLoading] = useState(false);
@@ -467,18 +512,48 @@ export default function DashboardConsole({
       .filter((line) => line.length > 0);
 
     return lines.map((line, index) => {
-      const splitParts = line.includes(";")
-        ? line.split(";")
-        : line.includes("|")
-          ? line.split("|")
-          : line.split(/\s+-\s+/);
-      const parts = splitParts.map((part) => part.trim()).filter((part) => part.length > 0);
+      const tabParts = line.split("\t").map((part) => part.trim()).filter((part) => part.length > 0);
+      const prescriptionContent = tabParts[0] ?? line;
+      const validationStartRaw = tabParts[1] ?? "";
+      const validationEndRaw = tabParts[2] ?? "";
+      const validationStatus = tabParts[3] ?? "Validado";
+      const validationStartAt = normalizeHospitalDateTime(validationStartRaw);
+      const validationEndAt = normalizeHospitalDateTime(validationEndRaw);
 
-      const medicationName = parts[0] ?? "";
-      const parsedDose = parseDosePart(parts[1] ?? "");
-      const frequency = parts[2] ?? "";
-      const shifts = parts[3] ?? "";
-      const notes = parts[4] ?? "";
+      let medicationName = "";
+      let parsedDose = { dose: null as number | null, doseUnit: "" };
+      let administrationRoute = "";
+      let frequency = "";
+      let shifts = "";
+      let notes = "";
+
+      const hospitalPattern = prescriptionContent.match(/^(.*?)\s+-\s+Administrar\s+(.+)$/i);
+      if (hospitalPattern) {
+        medicationName = hospitalPattern[1].replace(/^\([^)]*\)\s*/, "").trim();
+        const administrationParts = hospitalPattern[2]
+          .split(";")
+          .map((part) => part.trim())
+          .filter((part) => part.length > 0);
+
+        parsedDose = parseDosePart(administrationParts[0] ?? "");
+        administrationRoute = administrationParts[1] ?? "";
+        frequency = administrationParts[2] ?? "";
+        shifts = administrationParts[3] ?? "";
+        notes = administrationParts.slice(4).join("; ");
+      } else {
+        const splitParts = prescriptionContent.includes(";")
+          ? prescriptionContent.split(";")
+          : prescriptionContent.includes("|")
+            ? prescriptionContent.split("|")
+            : prescriptionContent.split(/\s+-\s+/);
+        const parts = splitParts.map((part) => part.trim()).filter((part) => part.length > 0);
+        medicationName = (parts[0] ?? "").replace(/^\([^)]*\)\s*/, "").trim();
+        parsedDose = parseDosePart(parts[1] ?? "");
+        administrationRoute = parts[2] ?? "";
+        frequency = parts[3] ?? "";
+        shifts = parts[4] ?? "";
+        notes = parts[5] ?? "";
+      }
 
       const matchedMedication = medications.find(
         (medication) => medication.name.toLocaleLowerCase() === medicationName.toLocaleLowerCase()
@@ -488,18 +563,20 @@ export default function DashboardConsole({
       const doseUnit = parsedDose.doseUnit || fallbackUnit;
 
       let validationMessage = "";
-      if (parts.length < 4) {
-        validationMessage = "Formato inválido. Use: medicamento; dose unidade; frequência; turnos; observações";
-      } else if (!medicationName) {
+      if (!medicationName) {
         validationMessage = "Nome do medicamento ausente.";
       } else if (!parsedDose.dose || parsedDose.dose <= 0) {
         validationMessage = "Dose inválida.";
       } else if (!doseUnit) {
         validationMessage = "Unidade da dose ausente.";
+      } else if (!administrationRoute) {
+        validationMessage = "Via de administração ausente.";
       } else if (!frequency) {
         validationMessage = "Frequência ausente.";
-      } else if (!shifts) {
-        validationMessage = "Turnos ausentes.";
+      } else if (!validationStartRaw || !validationEndRaw) {
+        validationMessage = "Informe data de início e data de fim da validação.";
+      } else if (!validationStartAt || !validationEndAt) {
+        validationMessage = "Formato de data inválido. Use dd/mm/aaaa hh:mm.";
       }
 
       return {
@@ -509,9 +586,13 @@ export default function DashboardConsole({
         medicationName,
         dose: parsedDose.dose,
         doseUnit,
+        administrationRoute,
         frequency,
-        shifts,
+        shifts: shifts || "-",
         notes,
+        validationStartAt,
+        validationEndAt,
+        validationStatus,
         isValid: validationMessage.length === 0,
         validationMessage: validationMessage || "Linha pronta para importação."
       };
@@ -898,9 +979,13 @@ export default function DashboardConsole({
           medicationName: prescriptionForm.medicationName,
           dose: Number(prescriptionForm.dose),
           doseUnit: prescriptionForm.doseUnit,
+          administrationRoute: prescriptionForm.administrationRoute,
           frequency: prescriptionForm.frequency,
           shifts: prescriptionForm.shifts,
-          notes: prescriptionForm.notes
+          notes: prescriptionForm.notes,
+          validationStartAt: prescriptionForm.validationStartAt,
+          validationEndAt: prescriptionForm.validationEndAt,
+          validationStatus: prescriptionForm.validationStatus
         })
       });
 
@@ -920,7 +1005,11 @@ export default function DashboardConsole({
         dose: "",
         frequency: "",
         shifts: "",
-        notes: ""
+        notes: "",
+        administrationRoute: "",
+        validationStartAt: "",
+        validationEndAt: "",
+        validationStatus: "Validado"
       }));
       setPrescriptionMode("view");
       router.refresh();
@@ -967,9 +1056,13 @@ export default function DashboardConsole({
             medicationName: draft.medicationName,
             dose: draft.dose,
             doseUnit: draft.doseUnit,
+            administrationRoute: draft.administrationRoute,
             frequency: draft.frequency,
             shifts: draft.shifts,
-            notes: draft.notes
+            notes: draft.notes,
+            validationStartAt: draft.validationStartAt ?? undefined,
+            validationEndAt: draft.validationEndAt ?? undefined,
+            validationStatus: draft.validationStatus
           })
         });
 
@@ -1892,6 +1985,17 @@ export default function DashboardConsole({
 
                                 <div className="dashboard-two-columns">
                                   <input
+                                    placeholder="Via (ex.: EV, VO, IM)"
+                                    value={prescriptionForm.administrationRoute}
+                                    onChange={(event) =>
+                                      setPrescriptionForm((current) => ({
+                                        ...current,
+                                        administrationRoute: event.target.value
+                                      }))
+                                    }
+                                    required
+                                  />
+                                  <input
                                     placeholder="Frequência"
                                     value={prescriptionForm.frequency}
                                     onChange={(event) =>
@@ -1902,8 +2006,11 @@ export default function DashboardConsole({
                                     }
                                     required
                                   />
+                                </div>
+
+                                <div className="dashboard-two-columns">
                                   <input
-                                    placeholder="Turnos"
+                                    placeholder="Turnos (opcional)"
                                     value={prescriptionForm.shifts}
                                     onChange={(event) =>
                                       setPrescriptionForm((current) => ({
@@ -1911,7 +2018,44 @@ export default function DashboardConsole({
                                         shifts: event.target.value
                                       }))
                                     }
-                                    required
+                                  />
+                                  <input
+                                    placeholder="Status da validação (ex.: Validado)"
+                                    value={prescriptionForm.validationStatus}
+                                    onChange={(event) =>
+                                      setPrescriptionForm((current) => ({
+                                        ...current,
+                                        validationStatus: event.target.value
+                                      }))
+                                    }
+                                  />
+                                </div>
+
+                                <p className="dashboard-muted">
+                                  Validação da prescrição: data início e data fim.
+                                </p>
+                                <div className="dashboard-two-columns">
+                                  <input
+                                    type="datetime-local"
+                                    aria-label="Data início da validação"
+                                    value={prescriptionForm.validationStartAt}
+                                    onChange={(event) =>
+                                      setPrescriptionForm((current) => ({
+                                        ...current,
+                                        validationStartAt: event.target.value
+                                      }))
+                                    }
+                                  />
+                                  <input
+                                    type="datetime-local"
+                                    aria-label="Data fim da validação"
+                                    value={prescriptionForm.validationEndAt}
+                                    onChange={(event) =>
+                                      setPrescriptionForm((current) => ({
+                                        ...current,
+                                        validationEndAt: event.target.value
+                                      }))
+                                    }
                                   />
                                 </div>
 
@@ -1942,8 +2086,11 @@ export default function DashboardConsole({
                               <div className="dashboard-subsection-block">
                                 <h3>Entrada de prescrição por dados brutos</h3>
                                 <p className="dashboard-muted">
-                                  Formato esperado por linha: `medicamento; dose unidade; frequência; turnos;
-                                  observações`.
+                                  Cole no padrão do hospital:
+                                  `MEDICAMENTOS[TAB]Data início[TAB]Data fim[TAB]Status`.
+                                </p>
+                                <p className="dashboard-muted">
+                                  Em `MEDICAMENTOS`, use: `Nome - Administrar Dose Unidade; Via; Frequência; Obs;`.
                                 </p>
 
                                 <select
@@ -1995,30 +2142,36 @@ export default function DashboardConsole({
                                     <thead>
                                       <tr>
                                         <th>Linha</th>
-                                        <th>Medicamento</th>
+                                        <th>Medicamentos</th>
                                         <th>Dose</th>
+                                        <th>Unidade</th>
+                                        <th>Via</th>
                                         <th>Frequência</th>
-                                        <th>Turnos</th>
-                                        <th>Status</th>
+                                        <th>Obs.</th>
+                                        <th>Data início</th>
+                                        <th>Data fim</th>
+                                        <th>Status validação</th>
+                                        <th>Resultado</th>
                                       </tr>
                                     </thead>
                                     <tbody>
                                       {rawPrescriptionDrafts.length === 0 ? (
                                         <tr>
-                                          <td colSpan={6}>Nenhuma linha tratada ainda.</td>
+                                          <td colSpan={11}>Nenhuma linha tratada ainda.</td>
                                         </tr>
                                       ) : (
                                         rawPrescriptionDrafts.map((draft) => (
                                           <tr key={`${draft.lineNumber}-${draft.rawLine}`}>
                                             <td>{draft.lineNumber}</td>
                                             <td>{draft.medicationName || "-"}</td>
-                                            <td>
-                                              {draft.dose !== null
-                                                ? `${formatNumber(draft.dose)} ${draft.doseUnit || ""}`.trim()
-                                                : "-"}
-                                            </td>
+                                            <td>{draft.dose !== null ? formatNumber(draft.dose) : "-"}</td>
+                                            <td>{draft.doseUnit || "-"}</td>
+                                            <td>{draft.administrationRoute || "-"}</td>
                                             <td>{draft.frequency || "-"}</td>
-                                            <td>{draft.shifts || "-"}</td>
+                                            <td>{draft.notes || "-"}</td>
+                                            <td>{draft.validationStartAt ? formatTimestamp(draft.validationStartAt) : "-"}</td>
+                                            <td>{draft.validationEndAt ? formatTimestamp(draft.validationEndAt) : "-"}</td>
+                                            <td>{draft.validationStatus || "-"}</td>
                                             <td>
                                               <span
                                                 className={`dashboard-status-pill ${
@@ -2043,18 +2196,22 @@ export default function DashboardConsole({
                                   <thead>
                                     <tr>
                                       <th>Internação</th>
-                                      <th>Medicamento</th>
+                                      <th>Medicamentos</th>
                                       <th>Dose</th>
+                                      <th>Unidade</th>
+                                      <th>Via</th>
                                       <th>Frequência</th>
-                                      <th>Turnos</th>
-                                      <th>Observações</th>
+                                      <th>Obs.</th>
+                                      <th>Data início</th>
+                                      <th>Data fim</th>
+                                      <th>Status validação</th>
                                       <th>Registro</th>
                                     </tr>
                                   </thead>
                                   <tbody>
                                     {selectedPatientPrescriptions.length === 0 ? (
                                       <tr>
-                                        <td colSpan={7}>Nenhuma prescrição cadastrada para este paciente.</td>
+                                        <td colSpan={11}>Nenhuma prescrição cadastrada para este paciente.</td>
                                       </tr>
                                     ) : (
                                       selectedPatientPrescriptions.map((prescription) => (
@@ -2065,12 +2222,22 @@ export default function DashboardConsole({
                                               : "Sem vínculo"}
                                           </td>
                                           <td>{prescription.medicationName}</td>
-                                          <td>
-                                            {formatNumber(prescription.dose)} {prescription.doseUnit}
-                                          </td>
+                                          <td>{formatNumber(prescription.dose)}</td>
+                                          <td>{prescription.doseUnit}</td>
+                                          <td>{prescription.administrationRoute ?? "-"}</td>
                                           <td>{prescription.frequency}</td>
-                                          <td>{prescription.shifts}</td>
                                           <td>{prescription.notes ?? "-"}</td>
+                                          <td>
+                                            {prescription.validationStartAt
+                                              ? formatTimestamp(prescription.validationStartAt)
+                                              : "-"}
+                                          </td>
+                                          <td>
+                                            {prescription.validationEndAt
+                                              ? formatTimestamp(prescription.validationEndAt)
+                                              : "-"}
+                                          </td>
+                                          <td>{prescription.validationStatus ?? "-"}</td>
                                           <td>{formatTimestamp(prescription.createdAt)}</td>
                                         </tr>
                                       ))

@@ -5,6 +5,45 @@ import { addMedicalPrescription } from "@/lib/db";
 
 export const runtime = "nodejs";
 
+function normalizeDateTimeInput(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const directParsed = new Date(trimmed);
+  if (!Number.isNaN(directParsed.getTime())) {
+    return directParsed.toISOString();
+  }
+
+  const brMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/);
+  if (!brMatch) {
+    return undefined;
+  }
+
+  const day = Number(brMatch[1]);
+  const month = Number(brMatch[2]);
+  const year = Number(brMatch[3]);
+  const hour = Number(brMatch[4] ?? "0");
+  const minute = Number(brMatch[5] ?? "0");
+  const parsed = new Date(year, month - 1, day, hour, minute, 0, 0);
+
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return undefined;
+  }
+
+  return parsed.toISOString();
+}
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -42,9 +81,18 @@ export async function POST(
   const doseRaw = body.dose;
   const dose = typeof doseRaw === "number" ? doseRaw : Number(doseRaw);
   const doseUnit = typeof body.doseUnit === "string" ? body.doseUnit.trim() : "";
+  const administrationRoute =
+    typeof body.administrationRoute === "string" ? body.administrationRoute.trim() : "";
   const frequency = typeof body.frequency === "string" ? body.frequency.trim() : "";
   const shifts = typeof body.shifts === "string" ? body.shifts.trim() : "";
   const notes = typeof body.notes === "string" ? body.notes.trim() : "";
+  const validationStatus =
+    typeof body.validationStatus === "string" ? body.validationStatus.trim() : "";
+  const validationStartAtRaw =
+    typeof body.validationStartAt === "string" ? body.validationStartAt.trim() : "";
+  const validationEndAtRaw = typeof body.validationEndAt === "string" ? body.validationEndAt.trim() : "";
+  const validationStartAt = normalizeDateTimeInput(validationStartAtRaw);
+  const validationEndAt = normalizeDateTimeInput(validationEndAtRaw);
 
   if (admissionId !== undefined && (!Number.isInteger(admissionId) || admissionId <= 0)) {
     return NextResponse.json({ message: "Internação inválida." }, { status: 400 });
@@ -54,9 +102,9 @@ export async function POST(
     return NextResponse.json({ message: "Medicamento inválido." }, { status: 400 });
   }
 
-  if (!Number.isFinite(dose) || dose <= 0 || !doseUnit || !frequency || !shifts) {
+  if (!Number.isFinite(dose) || dose <= 0 || !doseUnit || !frequency) {
     return NextResponse.json(
-      { message: "Preencha dose, unidade, frequência e turnos." },
+      { message: "Preencha dose, unidade e frequência." },
       { status: 400 }
     );
   }
@@ -64,6 +112,20 @@ export async function POST(
   if (!medicationId && !medicationName) {
     return NextResponse.json(
       { message: "Selecione um medicamento cadastrado ou informe o nome." },
+      { status: 400 }
+    );
+  }
+
+  if (validationStartAtRaw && !validationStartAt) {
+    return NextResponse.json(
+      { message: "Data de início da validação inválida." },
+      { status: 400 }
+    );
+  }
+
+  if (validationEndAtRaw && !validationEndAt) {
+    return NextResponse.json(
+      { message: "Data de fim da validação inválida." },
       { status: 400 }
     );
   }
@@ -76,9 +138,13 @@ export async function POST(
       medicationName,
       dose,
       doseUnit,
+      administrationRoute,
       frequency,
       shifts,
-      notes
+      notes,
+      validationStartAt,
+      validationEndAt,
+      validationStatus
     });
 
     return NextResponse.json({ ok: true, prescription });
