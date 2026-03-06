@@ -566,6 +566,12 @@ body {
   border: 1px solid #f1c8c8;
 }
 
+.dashboard-status-pill.is-allergy {
+  color: #8a2f2f;
+  background: #fde7e7;
+  border: 1px solid #efbcbc;
+}
+
 .dashboard-table-wrap {
   margin-top: 12px;
   overflow-x: auto;

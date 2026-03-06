@@ -58,6 +58,7 @@ export type CreateAdmissionInput = {
 export type CreateMedicationInput = {
   name: string;
   defaultUnit: string;
+  therapeuticClass: string;
 };
 
 export type AddPatientAllergyInput = {
@@ -190,6 +191,8 @@ function mapMedication(row: DbRow): MedicationRecord {
     id: toNumber(row.id),
     name: String(row.name ?? ""),
     defaultUnit: String(row.default_unit ?? ""),
+    therapeuticClass:
+      row.therapeutic_class === null ? null : String(row.therapeutic_class),
     createdAt: toIso(row.created_at)
   };
 }
@@ -467,6 +470,7 @@ async function setupDatabase(): Promise<void> {
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
       default_unit TEXT NOT NULL,
+      therapeutic_class TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -530,6 +534,9 @@ async function setupDatabase(): Promise<void> {
   `);
 
   await pool.query(`
+    ALTER TABLE medication_catalog
+    ADD COLUMN IF NOT EXISTS therapeutic_class TEXT;
+
     ALTER TABLE medical_prescriptions
     ADD COLUMN IF NOT EXISTS administration_route TEXT;
 
@@ -732,7 +739,7 @@ export async function listMedicationCatalog(): Promise<MedicationRecord[]> {
   await ensureDatabaseReady();
   const pool = getPool();
   const result = await pool.query(`
-    SELECT id, name, default_unit, created_at
+    SELECT id, name, default_unit, therapeutic_class, created_at
     FROM medication_catalog
     ORDER BY name ASC
   `);
@@ -747,11 +754,15 @@ export async function createMedication(input: CreateMedicationInput): Promise<Me
   try {
     const result = await pool.query(
       `
-        INSERT INTO medication_catalog (name, default_unit)
-        VALUES ($1, $2)
-        RETURNING id, name, default_unit, created_at
+        INSERT INTO medication_catalog (name, default_unit, therapeutic_class)
+        VALUES ($1, $2, $3)
+        RETURNING id, name, default_unit, therapeutic_class, created_at
       `,
-      [input.name.trim(), input.defaultUnit.trim()]
+      [
+        input.name.trim(),
+        input.defaultUnit.trim(),
+        input.therapeuticClass.trim() || null
+      ]
     );
     return mapMedication(result.rows[0] as DbRow);
   } catch (error) {
@@ -803,6 +814,32 @@ async function resolveMedicationData(
     medicationId: null,
     medicationName: normalizedName
   };
+}
+
+async function resolveMedicationNameFromCatalog(
+  client: PoolClient,
+  medicationName: string
+): Promise<string> {
+  const normalizedMedicationName = medicationName.trim();
+  if (!normalizedMedicationName) {
+    throw new Error("Selecione um medicamento para registrar alergia.");
+  }
+
+  const result = await client.query(
+    `
+      SELECT name
+      FROM medication_catalog
+      WHERE LOWER(name) = LOWER($1)
+      LIMIT 1
+    `,
+    [normalizedMedicationName]
+  );
+
+  if (result.rows.length === 0) {
+    throw new Error("Alergia deve ser vinculada a um medicamento cadastrado.");
+  }
+
+  return String((result.rows[0] as DbRow).name ?? "");
 }
 
 async function findProfessionalIdByLogin(client: PoolClient, login: string): Promise<number> {
@@ -859,13 +896,14 @@ export async function createPatient(input: CreatePatientInput): Promise<PatientR
       );
 
       for (const allergy of uniqueAllergies) {
+        const catalogMedicationName = await resolveMedicationNameFromCatalog(client, allergy);
         await client.query(
           `
             INSERT INTO patient_allergies (patient_id, allergy_name)
             VALUES ($1, $2)
             ON CONFLICT (patient_id, allergy_name) DO NOTHING
           `,
-          [patientId, allergy]
+          [patientId, catalogMedicationName]
         );
       }
     }
@@ -983,7 +1021,7 @@ export async function addPatientAllergy(input: AddPatientAllergyInput): Promise<
     await client.query("BEGIN");
     await ensurePatientExists(client, input.patientId);
 
-    const normalizedAllergy = input.allergyName.trim();
+    const normalizedAllergy = await resolveMedicationNameFromCatalog(client, input.allergyName);
     const inserted = await client.query(
       `
         INSERT INTO patient_allergies (patient_id, allergy_name)

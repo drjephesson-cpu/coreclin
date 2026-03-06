@@ -47,16 +47,6 @@ const UF_OPTIONS = [
   "TO"
 ] as const;
 
-const ALLERGY_OPTIONS = [
-  "Penicilina",
-  "Dipirona",
-  "AINEs",
-  "Iodo",
-  "Látex",
-  "Sulfas",
-  "Outra"
-] as const;
-
 const DASHBOARD_NAV_ITEMS = [
   { id: "professional", label: "Cadastrar Profissional" },
   { id: "team", label: "Cadastrar Equipe" },
@@ -97,6 +87,7 @@ type RawPrescriptionDraft = {
   validationStartAt: string | null;
   validationEndAt: string | null;
   validationStatus: string;
+  allergyConflictName: string | null;
   isValid: boolean;
   validationMessage: string;
 };
@@ -182,6 +173,14 @@ function parseDosePart(input: string): { dose: number | null; doseUnit: string }
     dose,
     doseUnit: match[2]?.trim() ?? ""
   };
+}
+
+function normalizeMedicationName(input: string): string {
+  return input
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLocaleLowerCase();
 }
 
 function normalizeHospitalDateTime(input: string): string | null {
@@ -287,12 +286,8 @@ export default function DashboardConsole({
   const [patientFeedback, setPatientFeedback] = useState<FeedbackState>(null);
   const [patientLoading, setPatientLoading] = useState(false);
 
-  const [patientInitialAllergyForm, setPatientInitialAllergyForm] = useState<{
-    allergyName: (typeof ALLERGY_OPTIONS)[number];
-    customAllergy: string;
-  }>({
-    allergyName: ALLERGY_OPTIONS[0],
-    customAllergy: ""
+  const [patientInitialAllergyForm, setPatientInitialAllergyForm] = useState({
+    medicationId: medications[0] ? String(medications[0].id) : ""
   });
 
   const [admissionForm, setAdmissionForm] = useState({
@@ -323,12 +318,8 @@ export default function DashboardConsole({
   const [patientView, setPatientView] = useState<PatientViewId>("allergies");
   const [prescriptionMode, setPrescriptionMode] = useState<PrescriptionMode>("view");
 
-  const [allergyForm, setAllergyForm] = useState<{
-    allergyName: (typeof ALLERGY_OPTIONS)[number];
-    customAllergy: string;
-  }>({
-    allergyName: ALLERGY_OPTIONS[0],
-    customAllergy: ""
+  const [allergyForm, setAllergyForm] = useState({
+    medicationId: medications[0] ? String(medications[0].id) : ""
   });
   const [allergyFeedback, setAllergyFeedback] = useState<FeedbackState>(null);
   const [allergyLoading, setAllergyLoading] = useState(false);
@@ -379,6 +370,34 @@ export default function DashboardConsole({
       setSelectedPatientId(String(patients[0].id));
     }
   }, [patients, selectedPatientId]);
+
+  useEffect(() => {
+    if (medications.length === 0) {
+      setPatientInitialAllergyForm({ medicationId: "" });
+      return;
+    }
+
+    const hasMedication = medications.some(
+      (medication) => String(medication.id) === patientInitialAllergyForm.medicationId
+    );
+    if (!hasMedication) {
+      setPatientInitialAllergyForm({ medicationId: String(medications[0].id) });
+    }
+  }, [medications, patientInitialAllergyForm.medicationId]);
+
+  useEffect(() => {
+    if (medications.length === 0) {
+      setAllergyForm({ medicationId: "" });
+      return;
+    }
+
+    const hasMedication = medications.some(
+      (medication) => String(medication.id) === allergyForm.medicationId
+    );
+    if (!hasMedication) {
+      setAllergyForm({ medicationId: String(medications[0].id) });
+    }
+  }, [medications, allergyForm.medicationId]);
 
   const agePreview = useMemo(() => calculateAge(patientForm.birthDate), [patientForm.birthDate]);
   const responsibleProfessionalName = currentProfessional?.fullName ?? currentLogin;
@@ -470,6 +489,38 @@ export default function DashboardConsole({
     [patientAllergies, selectedPatient]
   );
 
+  const selectedPatientAllergyLookup = useMemo(() => {
+    const lookup = new Map<string, string>();
+    for (const allergy of selectedPatientAllergies) {
+      lookup.set(normalizeMedicationName(allergy.allergyName), allergy.allergyName);
+    }
+    return lookup;
+  }, [selectedPatientAllergies]);
+
+  function resolveAllergyConflictName(medicationName: string): string | null {
+    const normalizedMedication = normalizeMedicationName(medicationName);
+    if (!normalizedMedication) {
+      return null;
+    }
+    return selectedPatientAllergyLookup.get(normalizedMedication) ?? null;
+  }
+
+  const selectedInitialAllergyMedication = useMemo(
+    () =>
+      medications.find(
+        (medication) => String(medication.id) === patientInitialAllergyForm.medicationId
+      ) ?? null,
+    [medications, patientInitialAllergyForm.medicationId]
+  );
+
+  const selectedAllergyMedication = useMemo(
+    () =>
+      medications.find(
+        (medication) => String(medication.id) === allergyForm.medicationId
+      ) ?? null,
+    [medications, allergyForm.medicationId]
+  );
+
   const selectedPatientPriorMedications = useMemo(
     () =>
       priorMedications.filter(
@@ -485,6 +536,26 @@ export default function DashboardConsole({
       ),
     [prescriptions, selectedPatient]
   );
+
+  const prescriptionMedicationNameForAlert = useMemo(() => {
+    if (prescriptionForm.medicationId) {
+      const selectedMedication = medications.find(
+        (medication) => String(medication.id) === prescriptionForm.medicationId
+      );
+      if (selectedMedication) {
+        return selectedMedication.name;
+      }
+    }
+    return prescriptionForm.medicationName.trim();
+  }, [prescriptionForm.medicationId, prescriptionForm.medicationName, medications]);
+
+  const prescriptionAllergyConflictName = useMemo(() => {
+    const normalizedMedication = normalizeMedicationName(prescriptionMedicationNameForAlert);
+    if (!normalizedMedication) {
+      return null;
+    }
+    return selectedPatientAllergyLookup.get(normalizedMedication) ?? null;
+  }, [prescriptionMedicationNameForAlert, selectedPatientAllergyLookup]);
 
   const selectedPatientPrescriptionGroups = useMemo(() => {
     const groups = new Map<
@@ -628,9 +699,11 @@ export default function DashboardConsole({
         notes = parts[5] ?? "";
       }
 
+      const normalizedMedicationName = normalizeMedicationName(medicationName);
       const matchedMedication = medications.find(
-        (medication) => medication.name.toLocaleLowerCase() === medicationName.toLocaleLowerCase()
+        (medication) => normalizeMedicationName(medication.name) === normalizedMedicationName
       );
+      const allergyConflictName = resolveAllergyConflictName(medicationName);
 
       const fallbackUnit = matchedMedication?.defaultUnit ?? "";
       const doseUnit = parsedDose.doseUnit || fallbackUnit;
@@ -666,6 +739,7 @@ export default function DashboardConsole({
         validationStartAt,
         validationEndAt,
         validationStatus,
+        allergyConflictName,
         isValid: validationMessage.length === 0,
         validationMessage: validationMessage || "Linha pronta para importação."
       };
@@ -696,16 +770,8 @@ export default function DashboardConsole({
     });
   }
 
-  function resolveDraftInitialAllergy(): string {
-    if (patientInitialAllergyForm.allergyName === "Outra") {
-      return patientInitialAllergyForm.customAllergy.trim();
-    }
-
-    return patientInitialAllergyForm.allergyName;
-  }
-
   function handleAddInitialPatientAllergy(): void {
-    const nextAllergy = resolveDraftInitialAllergy();
+    const nextAllergy = selectedInitialAllergyMedication?.name ?? "";
     if (!nextAllergy) {
       return;
     }
@@ -724,8 +790,7 @@ export default function DashboardConsole({
     });
 
     setPatientInitialAllergyForm({
-      allergyName: ALLERGY_OPTIONS[0],
-      customAllergy: ""
+      medicationId: medications[0] ? String(medications[0].id) : ""
     });
   }
 
@@ -838,8 +903,7 @@ export default function DashboardConsole({
         allergies: []
       });
       setPatientInitialAllergyForm({
-        allergyName: ALLERGY_OPTIONS[0],
-        customAllergy: ""
+        medicationId: medications[0] ? String(medications[0].id) : ""
       });
       router.refresh();
     } catch {
@@ -942,11 +1006,13 @@ export default function DashboardConsole({
       return;
     }
 
-    const allergyName =
-      allergyForm.allergyName === "Outra" ? allergyForm.customAllergy.trim() : allergyForm.allergyName;
+    const allergyName = selectedAllergyMedication?.name ?? "";
 
     if (!allergyName) {
-      setAllergyFeedback({ type: "error", message: "Informe a alergia antes de salvar." });
+      setAllergyFeedback({
+        type: "error",
+        message: "Selecione um medicamento cadastrado para registrar a alergia."
+      });
       return;
     }
 
@@ -965,7 +1031,7 @@ export default function DashboardConsole({
       }
 
       setAllergyFeedback({ type: "success", message: "Alergia cadastrada com sucesso." });
-      setAllergyForm({ allergyName: ALLERGY_OPTIONS[0], customAllergy: "" });
+      setAllergyForm({ medicationId: medications[0] ? String(medications[0].id) : "" });
       router.refresh();
     } catch {
       setAllergyFeedback({ type: "error", message: "Erro de conexão ao cadastrar alergia." });
@@ -1492,44 +1558,35 @@ export default function DashboardConsole({
                       <h3>Alergias iniciais</h3>
                       <div className="dashboard-two-columns">
                         <select
-                          value={patientInitialAllergyForm.allergyName}
+                          value={patientInitialAllergyForm.medicationId}
                           onChange={(event) =>
-                            setPatientInitialAllergyForm((current) => ({
-                              ...current,
-                              allergyName: event.target.value as (typeof ALLERGY_OPTIONS)[number]
-                            }))
+                            setPatientInitialAllergyForm({ medicationId: event.target.value })
                           }
+                          disabled={medications.length === 0}
                         >
-                          {ALLERGY_OPTIONS.map((allergyOption) => (
-                            <option key={allergyOption} value={allergyOption}>
-                              {allergyOption}
+                          <option value="">Selecione medicamento cadastrado</option>
+                          {medications.map((medication) => (
+                            <option key={medication.id} value={medication.id}>
+                              {medication.name}
                             </option>
                           ))}
                         </select>
-                        {patientInitialAllergyForm.allergyName === "Outra" ? (
-                          <input
-                            placeholder="Descreva a alergia"
-                            value={patientInitialAllergyForm.customAllergy}
-                            onChange={(event) =>
-                              setPatientInitialAllergyForm((current) => ({
-                                ...current,
-                                customAllergy: event.target.value
-                              }))
-                            }
-                          />
-                        ) : (
-                          <input
-                            value={resolveDraftInitialAllergy()}
-                            disabled
-                            aria-label="Alergia selecionada"
-                          />
-                        )}
+                        <input
+                          value={selectedInitialAllergyMedication?.name ?? "Cadastre o medicamento primeiro"}
+                          disabled
+                          aria-label="Alergia selecionada"
+                        />
                       </div>
+
+                      <p className="dashboard-muted">
+                        Alergia só pode ser adicionada com medicamento previamente cadastrado.
+                      </p>
 
                       <button
                         type="button"
                         className="dashboard-mini-button dashboard-mini-button-inline"
                         onClick={handleAddInitialPatientAllergy}
+                        disabled={!selectedInitialAllergyMedication}
                       >
                         Adicionar alergia
                       </button>
@@ -1712,34 +1769,20 @@ export default function DashboardConsole({
                             <h3>Alergias</h3>
                             <form className="dashboard-form" onSubmit={handleAllergySubmit}>
                               <select
-                                value={allergyForm.allergyName}
-                                onChange={(event) =>
-                                  setAllergyForm((current) => ({
-                                    ...current,
-                                    allergyName: event.target.value as (typeof ALLERGY_OPTIONS)[number]
-                                  }))
-                                }
+                                value={allergyForm.medicationId}
+                                onChange={(event) => setAllergyForm({ medicationId: event.target.value })}
+                                disabled={medications.length === 0}
                               >
-                                {ALLERGY_OPTIONS.map((allergyOption) => (
-                                  <option key={allergyOption} value={allergyOption}>
-                                    {allergyOption}
+                                <option value="">Selecione medicamento cadastrado</option>
+                                {medications.map((medication) => (
+                                  <option key={medication.id} value={medication.id}>
+                                    {medication.name}
                                   </option>
                                 ))}
                               </select>
-
-                              {allergyForm.allergyName === "Outra" ? (
-                                <input
-                                  placeholder="Descreva a alergia"
-                                  value={allergyForm.customAllergy}
-                                  onChange={(event) =>
-                                    setAllergyForm((current) => ({
-                                      ...current,
-                                      customAllergy: event.target.value
-                                    }))
-                                  }
-                                  required
-                                />
-                              ) : null}
+                              <p className="dashboard-muted">
+                                Somente medicamentos cadastrados podem ser registrados como alergia.
+                              </p>
 
                               {allergyFeedback ? (
                                 <p className={`dashboard-feedback dashboard-feedback-${allergyFeedback.type}`}>
@@ -1747,7 +1790,10 @@ export default function DashboardConsole({
                                 </p>
                               ) : null}
 
-                              <button type="submit" disabled={allergyLoading}>
+                              <button
+                                type="submit"
+                                disabled={allergyLoading || !selectedAllergyMedication}
+                              >
                                 {allergyLoading ? "Salvando..." : "Salvar alergia"}
                               </button>
                             </form>
@@ -2074,6 +2120,13 @@ export default function DashboardConsole({
                                   />
                                 </div>
 
+                                {prescriptionAllergyConflictName ? (
+                                  <p className="dashboard-feedback dashboard-feedback-error">
+                                    Flag de alergia: medicamento consta em alergias do paciente (
+                                    {prescriptionAllergyConflictName}).
+                                  </p>
+                                ) : null}
+
                                 <div className="dashboard-two-columns">
                                   <input
                                     type="number"
@@ -2238,13 +2291,14 @@ export default function DashboardConsole({
                                         <th>Via</th>
                                         <th>Frequência</th>
                                         <th>Obs.</th>
+                                        <th>Flag</th>
                                         <th>Resultado</th>
                                       </tr>
                                     </thead>
                                     <tbody>
                                       {rawPrescriptionDrafts.length === 0 ? (
                                         <tr>
-                                          <td colSpan={8}>Nenhuma linha tratada ainda.</td>
+                                          <td colSpan={9}>Nenhuma linha tratada ainda.</td>
                                         </tr>
                                       ) : (
                                         rawPrescriptionDrafts.map((draft) => (
@@ -2256,6 +2310,15 @@ export default function DashboardConsole({
                                             <td>{draft.administrationRoute || "-"}</td>
                                             <td>{draft.frequency || "-"}</td>
                                             <td>{draft.notes || "-"}</td>
+                                            <td>
+                                              {draft.allergyConflictName ? (
+                                                <span className="dashboard-status-pill is-allergy">
+                                                  Alergia ({draft.allergyConflictName})
+                                                </span>
+                                              ) : (
+                                                "-"
+                                              )}
+                                            </td>
                                             <td>
                                               <span
                                                 className={`dashboard-status-pill ${
@@ -2325,6 +2388,7 @@ export default function DashboardConsole({
                                               <th>Via</th>
                                               <th>Frequência</th>
                                               <th>Obs.</th>
+                                              <th>Flag</th>
                                               <th>Registro</th>
                                             </tr>
                                           </thead>
@@ -2337,6 +2401,15 @@ export default function DashboardConsole({
                                                 <td>{prescription.administrationRoute ?? "-"}</td>
                                                 <td>{prescription.frequency}</td>
                                                 <td>{prescription.notes ?? "-"}</td>
+                                                <td>
+                                                  {resolveAllergyConflictName(prescription.medicationName) ? (
+                                                    <span className="dashboard-status-pill is-allergy">
+                                                      Alergia
+                                                    </span>
+                                                  ) : (
+                                                    "-"
+                                                  )}
+                                                </td>
                                                 <td>{formatTimestamp(prescription.createdAt)}</td>
                                               </tr>
                                             ))}

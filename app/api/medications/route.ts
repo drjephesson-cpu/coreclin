@@ -21,6 +21,8 @@ export async function POST(request: Request): Promise<NextResponse> {
   const body = payload as Record<string, unknown>;
   const name = typeof body.name === "string" ? body.name.trim() : "";
   const defaultUnit = typeof body.defaultUnit === "string" ? body.defaultUnit.trim() : "";
+  const therapeuticClass =
+    typeof body.therapeuticClass === "string" ? body.therapeuticClass.trim() : "";
 
   if (!name || !defaultUnit) {
     return NextResponse.json(
@@ -30,7 +32,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   try {
-    const medication = await createMedication({ name, defaultUnit });
+    const medication = await createMedication({ name, defaultUnit, therapeuticClass });
     return NextResponse.json({ ok: true, medication });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao cadastrar medicamento.";

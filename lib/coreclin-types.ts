@@ -123,6 +123,7 @@ export type MedicationRecord = {
   id: number;
   name: string;
   defaultUnit: string;
+  therapeuticClass: string | null;
   createdAt: string;
 };
 
