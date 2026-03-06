@@ -62,6 +62,7 @@ const DASHBOARD_NAV_ITEMS = [
   { id: "team", label: "Cadastrar Equipe" },
   { id: "patient", label: "Cadastrar Paciente" },
   { id: "admission", label: "Internação" },
+  { id: "inpatients", label: "Pacientes Internados" },
   { id: "medication", label: "Cadastro de Medicamentos" }
 ] as const;
 
@@ -202,6 +203,7 @@ export default function DashboardConsole({
     team: false,
     patient: false,
     admission: false,
+    inpatients: false,
     medication: false
   });
 
@@ -349,6 +351,49 @@ export default function DashboardConsole({
       ? patients.find((patient) => patient.id === selectedPatientNumericId) ?? null
       : null;
 
+  const inpatients = useMemo(() => {
+    const uniquePatients = new Map<
+      number,
+      {
+        patientId: number;
+        patientName: string;
+        chartNumber: string;
+        admissionDate: string;
+        bed: string;
+        teamName: string | null;
+      }
+    >();
+
+    for (const admission of recentAdmissions) {
+      if (!uniquePatients.has(admission.patientId)) {
+        uniquePatients.set(admission.patientId, {
+          patientId: admission.patientId,
+          patientName: admission.patientName,
+          chartNumber: admission.chartNumber,
+          admissionDate: admission.admissionDate,
+          bed: admission.bed,
+          teamName: admission.teamName
+        });
+      }
+    }
+
+    return Array.from(uniquePatients.values());
+  }, [recentAdmissions]);
+
+  useEffect(() => {
+    if (inpatients.length === 0) {
+      return;
+    }
+
+    const hasSelectedInpatient = inpatients.some(
+      (inpatient) => String(inpatient.patientId) === selectedPatientId
+    );
+    if (!hasSelectedInpatient) {
+      setSelectedPatientId(String(inpatients[0].patientId));
+      setPatientDetailsOpen(false);
+    }
+  }, [inpatients, selectedPatientId]);
+
   const selectedPatientAdmissions = useMemo(
     () =>
       recentAdmissions.filter(
@@ -408,7 +453,8 @@ export default function DashboardConsole({
   }
 
   function openPatientDetails(patientId: number, targetView: PatientViewId = "admission-info"): void {
-    setActiveSection("patient");
+    setActiveSection("inpatients");
+    setListVisibility((current) => ({ ...current, inpatients: true }));
     setSelectedPatientId(String(patientId));
     setPatientView(targetView);
     setPatientDetailsOpen(true);
@@ -1232,10 +1278,12 @@ export default function DashboardConsole({
                 </section>
               ) : null}
 
-              {activeSection === "patient" ? (
+              {activeSection === "patient" || activeSection === "inpatients" ? (
                 <section className="dashboard-card">
-                  <h2>Cadastrar Paciente</h2>
-                  <form className="dashboard-form" onSubmit={handlePatientSubmit}>
+                  {activeSection === "patient" ? (
+                    <>
+                      <h2>Cadastrar Paciente</h2>
+                      <form className="dashboard-form" onSubmit={handlePatientSubmit}>
                     <input
                       placeholder="Nome completo"
                       value={patientForm.fullName}
@@ -1368,35 +1416,17 @@ export default function DashboardConsole({
                                 <th>Profissional</th>
                                 <th>Última internação</th>
                                 <th>Último leito</th>
-                                <th>Ações</th>
                               </tr>
                             </thead>
                             <tbody>
                               {patients.map((patient) => (
                                 <tr key={patient.id}>
-                                  <td>
-                                    <button
-                                      type="button"
-                                      className="dashboard-link-button"
-                                      onClick={() => openPatientDetails(patient.id)}
-                                    >
-                                      {patient.fullName}
-                                    </button>
-                                  </td>
+                                  <td>{patient.fullName}</td>
                                   <td>{patient.chartNumber}</td>
                                   <td>{patient.ageYears} anos</td>
                                   <td>{patient.responsibleProfessionalName}</td>
                                   <td>{patient.latestAdmission ? patient.latestAdmission.admissionDate : "-"}</td>
                                   <td>{patient.latestAdmission?.bed ?? "-"}</td>
-                                  <td>
-                                    <button
-                                      type="button"
-                                      className="dashboard-mini-button"
-                                      onClick={() => openPatientDetails(patient.id)}
-                                    >
-                                      Abrir detalhes
-                                    </button>
-                                  </td>
                                 </tr>
                               ))}
                             </tbody>
@@ -1405,24 +1435,81 @@ export default function DashboardConsole({
                       )
                     ) : null}
                   </div>
+                    </>
+                  ) : null}
 
-                  <section className="dashboard-subsection">
-                    <h3>Detalhes do paciente</h3>
-                    <select
-                      value={selectedPatientId}
-                      onChange={(event) => {
-                        setSelectedPatientId(event.target.value);
-                        setPatientDetailsOpen(event.target.value.length > 0);
-                      }}
-                      disabled={patients.length === 0}
-                    >
-                      {patients.length === 0 ? <option value="">Nenhum paciente cadastrado</option> : null}
-                      {patients.map((patient) => (
-                        <option key={patient.id} value={patient.id}>
-                          {patient.fullName} ({patient.chartNumber})
-                        </option>
-                      ))}
-                    </select>
+                  {activeSection === "inpatients" ? (
+                    <>
+                      <h2>Pacientes Internados</h2>
+                      <div className="dashboard-list-box">
+                        <button
+                          type="button"
+                          className="dashboard-list-toggle"
+                          onClick={() => toggleList("inpatients")}
+                        >
+                          {listVisibility.inpatients
+                            ? "Ocultar pacientes internados"
+                            : "Ver pacientes internados"}
+                        </button>
+                        {listVisibility.inpatients ? (
+                          inpatients.length === 0 ? (
+                            <p className="dashboard-muted">Nenhum paciente internado no momento.</p>
+                          ) : (
+                            <div className="dashboard-table-wrap">
+                              <table className="dashboard-table">
+                                <thead>
+                                  <tr>
+                                    <th>Paciente</th>
+                                    <th>Prontuário</th>
+                                    <th>Admissão</th>
+                                    <th>Leito</th>
+                                    <th>Equipe</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {inpatients.map((inpatient) => (
+                                    <tr key={inpatient.patientId}>
+                                      <td>
+                                        <button
+                                          type="button"
+                                          className="dashboard-link-button"
+                                          onClick={() =>
+                                            openPatientDetails(inpatient.patientId, "admission-info")
+                                          }
+                                        >
+                                          {inpatient.patientName}
+                                        </button>
+                                      </td>
+                                      <td>{inpatient.chartNumber}</td>
+                                      <td>{inpatient.admissionDate}</td>
+                                      <td>{inpatient.bed}</td>
+                                      <td>{inpatient.teamName ?? "-"}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )
+                        ) : null}
+                      </div>
+
+                      <section className="dashboard-subsection">
+                        <h3>Detalhes do paciente internado</h3>
+                        <select
+                          value={selectedPatientId}
+                          onChange={(event) => {
+                            setSelectedPatientId(event.target.value);
+                            setPatientDetailsOpen(event.target.value.length > 0);
+                          }}
+                          disabled={inpatients.length === 0}
+                        >
+                          {inpatients.length === 0 ? <option value="">Nenhum paciente internado</option> : null}
+                          {inpatients.map((inpatient) => (
+                            <option key={inpatient.patientId} value={inpatient.patientId}>
+                              {inpatient.patientName} ({inpatient.chartNumber})
+                            </option>
+                          ))}
+                        </select>
 
                     {selectedPatient && patientDetailsOpen ? (
                       <>
@@ -1997,10 +2084,12 @@ export default function DashboardConsole({
                       </>
                     ) : (
                       <p className="dashboard-muted">
-                        Clique em um paciente na tabela para abrir os detalhes clínicos.
+                        Clique em um paciente internado para abrir os detalhes clínicos.
                       </p>
                     )}
                   </section>
+                    </>
+                  ) : null}
                 </section>
               ) : null}
 
