@@ -179,8 +179,37 @@ function normalizeMedicationName(input: string): string {
   return input
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
     .trim()
     .toLocaleLowerCase();
+}
+
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasTokenBoundaryMatch(source: string, target: string): boolean {
+  if (!source || !target) {
+    return false;
+  }
+
+  const pattern = new RegExp(`(?:^|\\s)${escapeRegExp(target)}(?:\\s|$)`);
+  return pattern.test(source);
+}
+
+function isMedicationNameCompatible(firstName: string, secondName: string): boolean {
+  const first = normalizeMedicationName(firstName);
+  const second = normalizeMedicationName(secondName);
+  if (!first || !second) {
+    return false;
+  }
+
+  if (first === second) {
+    return true;
+  }
+
+  return hasTokenBoundaryMatch(first, second) || hasTokenBoundaryMatch(second, first);
 }
 
 function normalizeHospitalDateTime(input: string): string | null {
@@ -502,7 +531,19 @@ export default function DashboardConsole({
     if (!normalizedMedication) {
       return null;
     }
-    return selectedPatientAllergyLookup.get(normalizedMedication) ?? null;
+
+    const exactMatch = selectedPatientAllergyLookup.get(normalizedMedication);
+    if (exactMatch) {
+      return exactMatch;
+    }
+
+    for (const [normalizedAllergyName, allergyName] of selectedPatientAllergyLookup.entries()) {
+      if (isMedicationNameCompatible(normalizedMedication, normalizedAllergyName)) {
+        return allergyName;
+      }
+    }
+
+    return null;
   }
 
   const selectedInitialAllergyMedication = useMemo(
@@ -549,13 +590,10 @@ export default function DashboardConsole({
     return prescriptionForm.medicationName.trim();
   }, [prescriptionForm.medicationId, prescriptionForm.medicationName, medications]);
 
-  const prescriptionAllergyConflictName = useMemo(() => {
-    const normalizedMedication = normalizeMedicationName(prescriptionMedicationNameForAlert);
-    if (!normalizedMedication) {
-      return null;
-    }
-    return selectedPatientAllergyLookup.get(normalizedMedication) ?? null;
-  }, [prescriptionMedicationNameForAlert, selectedPatientAllergyLookup]);
+  const prescriptionAllergyConflictName = useMemo(
+    () => resolveAllergyConflictName(prescriptionMedicationNameForAlert),
+    [prescriptionMedicationNameForAlert, selectedPatientAllergyLookup]
+  );
 
   const selectedPatientPrescriptionGroups = useMemo(() => {
     const groups = new Map<
@@ -700,9 +738,13 @@ export default function DashboardConsole({
       }
 
       const normalizedMedicationName = normalizeMedicationName(medicationName);
-      const matchedMedication = medications.find(
-        (medication) => normalizeMedicationName(medication.name) === normalizedMedicationName
-      );
+      const matchedMedication =
+        medications.find(
+          (medication) => normalizeMedicationName(medication.name) === normalizedMedicationName
+        ) ??
+        medications.find((medication) =>
+          isMedicationNameCompatible(normalizedMedicationName, medication.name)
+        );
       const allergyConflictName = resolveAllergyConflictName(medicationName);
 
       const fallbackUnit = matchedMedication?.defaultUnit ?? "";
