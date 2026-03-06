@@ -408,6 +408,7 @@ export default function DashboardConsole({
   }
 
   function openPatientDetails(patientId: number, targetView: PatientViewId = "admission-info"): void {
+    setActiveSection("patient");
     setSelectedPatientId(String(patientId));
     setPatientView(targetView);
     setPatientDetailsOpen(true);
@@ -2207,7 +2208,15 @@ export default function DashboardConsole({
                             <tbody>
                               {recentAdmissions.map((admission) => (
                                 <tr key={admission.id}>
-                                  <td>{admission.patientName}</td>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="dashboard-link-button"
+                                      onClick={() => openPatientDetails(admission.patientId, "admission-info")}
+                                    >
+                                      {admission.patientName}
+                                    </button>
+                                  </td>
                                   <td>{admission.admissionDate}</td>
                                   <td>{admission.bed}</td>
                                   <td>{admission.teamName ?? "-"}</td>
