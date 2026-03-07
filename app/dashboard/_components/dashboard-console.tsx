@@ -1123,18 +1123,14 @@ export default function DashboardConsole({
     });
   }
 
-  function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized: string): boolean {
-    if (!allergyNormalized || !classNormalized) {
-      return false;
-    }
+function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized: string): boolean {
+  if (!allergyNormalized || !classNormalized) {
+    return false;
+  }
 
-    if (hasConceptTermMatch(classNormalized, allergyNormalized)) {
-      return true;
-    }
-
-    for (const rule of THERAPEUTIC_CLASS_RELATION_RULES) {
-      if (!allergyNormalized.includes(rule.allergyToken)) {
-        continue;
+  for (const rule of THERAPEUTIC_CLASS_RELATION_RULES) {
+    if (!allergyNormalized.includes(rule.allergyToken)) {
+      continue;
       }
       if (rule.classTokens.some((classToken) => classNormalized.includes(classToken))) {
         return true;
