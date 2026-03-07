@@ -94,6 +94,34 @@ const INPATIENT_OVERVIEW_ITEMS = [
   { id: "discharged", label: "Pacientes de alta" }
 ] as const;
 const INPATIENT_WORKFLOW_STORAGE_KEY = "coreclin.inpatient-workflow.v1";
+const CONCEPT_STOPWORDS = new Set([
+  "de",
+  "da",
+  "do",
+  "das",
+  "dos",
+  "e",
+  "com",
+  "sem",
+  "para",
+  "uso",
+  "oral",
+  "solucao",
+  "comprimido",
+  "comprimidos",
+  "capsula",
+  "capsulas",
+  "ampola",
+  "ampolas",
+  "mg",
+  "g",
+  "ml",
+  "ui",
+  "ev",
+  "vo",
+  "im",
+  "iv"
+]);
 const THERAPEUTIC_CLASS_RELATION_RULES = [
   { allergyToken: "penicilin", classTokens: ["betalactam"] },
   { allergyToken: "cefalospor", classTokens: ["betalactam"] },
@@ -307,6 +335,22 @@ function splitCatalogTerms(input: string): Array<{ raw: string; normalized: stri
   return Array.from(uniqueTerms.entries()).map(([normalized, raw]) => ({ raw, normalized }));
 }
 
+function extractConceptTokens(input: string): string[] {
+  const normalized = normalizeMedicationName(input);
+  if (!normalized) {
+    return [];
+  }
+
+  const tokens = normalized
+    .split(" ")
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3)
+    .filter((token) => !/^\d+$/.test(token))
+    .filter((token) => !CONCEPT_STOPWORDS.has(token));
+
+  return Array.from(new Set(tokens));
+}
+
 function hasConceptTermMatch(source: string, target: string): boolean {
   if (!source || !target) {
     return false;
@@ -320,7 +364,37 @@ function hasConceptTermMatch(source: string, target: string): boolean {
     return true;
   }
 
-  return target.length >= 5 && source.includes(target);
+  if (target.length >= 5 && source.includes(target)) {
+    return true;
+  }
+
+  const sourceTokens = extractConceptTokens(source);
+  const targetTokens = extractConceptTokens(target);
+  if (sourceTokens.length === 0 || targetTokens.length === 0) {
+    return false;
+  }
+
+  return targetTokens.some((targetToken) =>
+    sourceTokens.some((sourceToken) => {
+      if (sourceToken === targetToken) {
+        return true;
+      }
+
+      if (targetToken.length >= 4) {
+        if (sourceToken.startsWith(targetToken) || targetToken.startsWith(sourceToken)) {
+          return true;
+        }
+      }
+
+      if (targetToken.length >= 5) {
+        if (sourceToken.includes(targetToken) || targetToken.includes(sourceToken)) {
+          return true;
+        }
+      }
+
+      return false;
+    })
+  );
 }
 
 function buildAllergyConflictBadge(conflict: AllergyConflictResult): string {
