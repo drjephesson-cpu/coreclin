@@ -344,13 +344,14 @@ export default function DashboardConsole({
   const [allergyLoading, setAllergyLoading] = useState(false);
 
   const [priorMedicationForm, setPriorMedicationForm] = useState({
-    medicationId: medications[0] ? String(medications[0].id) : "",
+    medicationId: "",
     medicationName: "",
     dose: "",
     doseUnit: medications[0]?.defaultUnit ?? "mg",
     frequency: "",
     shifts: ""
   });
+  const [manualPriorMedicationOptions, setManualPriorMedicationOptions] = useState<string[]>([]);
   const [priorMedicationFeedback, setPriorMedicationFeedback] = useState<FeedbackState>(null);
   const [priorMedicationLoading, setPriorMedicationLoading] = useState(false);
 
@@ -567,6 +568,19 @@ export default function DashboardConsole({
     [medications, allergyForm.medicationId]
   );
 
+  function findCatalogMedicationMatchByName(medicationName: string) {
+    const normalizedName = normalizeMedicationName(medicationName);
+    if (!normalizedName) {
+      return null;
+    }
+
+    return (
+      medications.find((medication) => normalizeMedicationName(medication.name) === normalizedName) ??
+      medications.find((medication) => isMedicationNameCompatible(medication.name, medicationName)) ??
+      null
+    );
+  }
+
   const selectedPatientPriorMedications = useMemo(
     () =>
       priorMedications.filter(
@@ -574,6 +588,40 @@ export default function DashboardConsole({
       ),
     [priorMedications, selectedPatient]
   );
+
+  const priorMedicationCatalogMatch = useMemo(
+    () => findCatalogMedicationMatchByName(priorMedicationForm.medicationName),
+    [priorMedicationForm.medicationName, medications]
+  );
+
+  const priorMedicationQuickOptions = useMemo(() => {
+    const uniqueNames = new Map<string, string>();
+
+    for (const medication of medications) {
+      const normalizedName = normalizeMedicationName(medication.name);
+      if (normalizedName) {
+        uniqueNames.set(normalizedName, medication.name);
+      }
+    }
+
+    for (const medication of selectedPatientPriorMedications) {
+      const normalizedName = normalizeMedicationName(medication.medicationName);
+      if (normalizedName && !uniqueNames.has(normalizedName)) {
+        uniqueNames.set(normalizedName, medication.medicationName);
+      }
+    }
+
+    for (const medicationName of manualPriorMedicationOptions) {
+      const normalizedName = normalizeMedicationName(medicationName);
+      if (normalizedName && !uniqueNames.has(normalizedName)) {
+        uniqueNames.set(normalizedName, medicationName);
+      }
+    }
+
+    return Array.from(uniqueNames.values()).sort((first, second) =>
+      first.localeCompare(second, "pt-BR")
+    );
+  }, [medications, selectedPatientPriorMedications, manualPriorMedicationOptions]);
 
   const selectedPatientPrescriptions = useMemo(
     () =>
@@ -1112,14 +1160,29 @@ export default function DashboardConsole({
       return;
     }
 
+    const typedMedicationName = priorMedicationForm.medicationName.trim();
+    if (!typedMedicationName) {
+      setPriorMedicationFeedback({
+        type: "error",
+        message: "Informe o medicamento para registrar o uso prévio."
+      });
+      return;
+    }
+
+    const matchedCatalogMedication = findCatalogMedicationMatchByName(typedMedicationName);
+    const medicationIdToSave = matchedCatalogMedication ? String(matchedCatalogMedication.id) : "";
+    const medicationNameToSave = matchedCatalogMedication
+      ? matchedCatalogMedication.name
+      : typedMedicationName;
+
     setPriorMedicationLoading(true);
     try {
       const response = await fetch(`/api/patients/${selectedPatient.id}/prior-medications`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          medicationId: priorMedicationForm.medicationId,
-          medicationName: priorMedicationForm.medicationName,
+          medicationId: medicationIdToSave,
+          medicationName: medicationNameToSave,
           dose: Number(priorMedicationForm.dose),
           doseUnit: priorMedicationForm.doseUnit,
           frequency: priorMedicationForm.frequency,
@@ -1140,8 +1203,23 @@ export default function DashboardConsole({
         type: "success",
         message: "Medicamento de uso prévio cadastrado com sucesso."
       });
+
+      if (!matchedCatalogMedication) {
+        setManualPriorMedicationOptions((current) => {
+          const hasMedication = current.some(
+            (medicationName) =>
+              normalizeMedicationName(medicationName) === normalizeMedicationName(medicationNameToSave)
+          );
+          if (hasMedication) {
+            return current;
+          }
+          return [...current, medicationNameToSave];
+        });
+      }
+
       setPriorMedicationForm((current) => ({
         ...current,
+        medicationId: "",
         medicationName: "",
         dose: "",
         frequency: "",
@@ -1300,15 +1378,13 @@ export default function DashboardConsole({
     }
   }
 
-  function handlePriorMedicationCatalogChange(nextMedicationId: string): void {
-    const selectedCatalogMedication = medications.find(
-      (medication) => String(medication.id) === nextMedicationId
-    );
+  function handlePriorMedicationNameChange(nextMedicationName: string): void {
+    const selectedCatalogMedication = findCatalogMedicationMatchByName(nextMedicationName);
 
     setPriorMedicationForm((current) => ({
       ...current,
-      medicationId: nextMedicationId,
-      medicationName: selectedCatalogMedication ? selectedCatalogMedication.name : current.medicationName,
+      medicationId: selectedCatalogMedication ? String(selectedCatalogMedication.id) : "",
+      medicationName: nextMedicationName,
       doseUnit: selectedCatalogMedication ? selectedCatalogMedication.defaultUnit : current.doseUnit
     }));
   }
@@ -2104,28 +2180,30 @@ export default function DashboardConsole({
                             <h3>Medicamentos de uso prévio</h3>
                             <form className="dashboard-form" onSubmit={handlePriorMedicationSubmit}>
                               <div className="dashboard-two-columns">
-                                <select
-                                  value={priorMedicationForm.medicationId}
-                                  onChange={(event) => handlePriorMedicationCatalogChange(event.target.value)}
-                                >
-                                  <option value="">Sem vínculo com cadastro</option>
-                                  {medications.map((medication) => (
-                                    <option key={medication.id} value={medication.id}>
-                                      {medication.name}
-                                    </option>
-                                  ))}
-                                </select>
                                 <input
-                                  placeholder="Nome do medicamento"
+                                  list="prior-medication-options"
+                                  placeholder="Pesquisar no cadastro ou digitar medicamento"
                                   value={priorMedicationForm.medicationName}
-                                  onChange={(event) =>
-                                    setPriorMedicationForm((current) => ({
-                                      ...current,
-                                      medicationName: event.target.value
-                                    }))
+                                  onChange={(event) => handlePriorMedicationNameChange(event.target.value)}
+                                  required
+                                />
+                                <input
+                                  value={
+                                    priorMedicationCatalogMatch
+                                      ? "Vinculado ao cadastro de medicamentos"
+                                      : priorMedicationForm.medicationName.trim()
+                                        ? "Fora do cadastro: será incluído na lista rápida"
+                                        : "Sem medicamento selecionado"
                                   }
+                                  disabled
+                                  aria-label="Status do medicamento"
                                 />
                               </div>
+                              <datalist id="prior-medication-options">
+                                {priorMedicationQuickOptions.map((medicationName) => (
+                                  <option key={medicationName} value={medicationName} />
+                                ))}
+                              </datalist>
 
                               <div className="dashboard-two-columns">
                                 <input
