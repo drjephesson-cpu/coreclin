@@ -123,7 +123,9 @@ export type MedicationRecord = {
   id: number;
   name: string;
   defaultUnit: string;
+  activeIngredients: string | null;
   therapeuticClass: string | null;
+  searchAliases: string | null;
   createdAt: string;
 };
 

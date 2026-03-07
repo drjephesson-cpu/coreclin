@@ -58,7 +58,9 @@ export type CreateAdmissionInput = {
 export type CreateMedicationInput = {
   name: string;
   defaultUnit: string;
+  activeIngredients: string;
   therapeuticClass: string;
+  searchAliases: string;
 };
 
 export type AddPatientAllergyInput = {
@@ -195,8 +197,9 @@ function mapMedication(row: DbRow): MedicationRecord {
     id: toNumber(row.id),
     name: String(row.name ?? ""),
     defaultUnit: String(row.default_unit ?? ""),
-    therapeuticClass:
-      row.therapeutic_class === null ? null : String(row.therapeutic_class),
+    activeIngredients: row.active_ingredients == null ? null : String(row.active_ingredients),
+    therapeuticClass: row.therapeutic_class == null ? null : String(row.therapeutic_class),
+    searchAliases: row.search_aliases == null ? null : String(row.search_aliases),
     createdAt: toIso(row.created_at)
   };
 }
@@ -474,7 +477,9 @@ async function setupDatabase(): Promise<void> {
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
       default_unit TEXT NOT NULL,
+      active_ingredients TEXT,
       therapeutic_class TEXT,
+      search_aliases TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -539,7 +544,13 @@ async function setupDatabase(): Promise<void> {
 
   await pool.query(`
     ALTER TABLE medication_catalog
+    ADD COLUMN IF NOT EXISTS active_ingredients TEXT;
+
+    ALTER TABLE medication_catalog
     ADD COLUMN IF NOT EXISTS therapeutic_class TEXT;
+
+    ALTER TABLE medication_catalog
+    ADD COLUMN IF NOT EXISTS search_aliases TEXT;
 
     ALTER TABLE medical_prescriptions
     ADD COLUMN IF NOT EXISTS administration_route TEXT;
@@ -743,7 +754,14 @@ export async function listMedicationCatalog(): Promise<MedicationRecord[]> {
   await ensureDatabaseReady();
   const pool = getPool();
   const result = await pool.query(`
-    SELECT id, name, default_unit, therapeutic_class, created_at
+    SELECT
+      id,
+      name,
+      default_unit,
+      active_ingredients,
+      therapeutic_class,
+      search_aliases,
+      created_at
     FROM medication_catalog
     ORDER BY name ASC
   `);
@@ -756,7 +774,9 @@ export async function createMedication(input: CreateMedicationInput): Promise<Me
   const pool = getPool();
   const normalizedMedicationName = normalizeMedicationCatalogName(input.name);
   const normalizedDefaultUnit = input.defaultUnit.trim();
+  const normalizedActiveIngredients = input.activeIngredients.trim() || null;
   const normalizedTherapeuticClass = input.therapeuticClass.trim() || null;
+  const normalizedSearchAliases = input.searchAliases.trim() || null;
 
   try {
     const duplicateCheck = await pool.query(
@@ -775,11 +795,30 @@ export async function createMedication(input: CreateMedicationInput): Promise<Me
 
     const result = await pool.query(
       `
-        INSERT INTO medication_catalog (name, default_unit, therapeutic_class)
-        VALUES ($1, $2, $3)
-        RETURNING id, name, default_unit, therapeutic_class, created_at
+        INSERT INTO medication_catalog (
+          name,
+          default_unit,
+          active_ingredients,
+          therapeutic_class,
+          search_aliases
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING
+          id,
+          name,
+          default_unit,
+          active_ingredients,
+          therapeutic_class,
+          search_aliases,
+          created_at
       `,
-      [normalizedMedicationName, normalizedDefaultUnit, normalizedTherapeuticClass]
+      [
+        normalizedMedicationName,
+        normalizedDefaultUnit,
+        normalizedActiveIngredients,
+        normalizedTherapeuticClass,
+        normalizedSearchAliases
+      ]
     );
     return mapMedication(result.rows[0] as DbRow);
   } catch (error) {
@@ -788,6 +827,126 @@ export async function createMedication(input: CreateMedicationInput): Promise<Me
       throw new Error("Medicamento já cadastrado.");
     }
     throw error;
+  }
+}
+
+export async function createMedicationsBulk(
+  items: CreateMedicationInput[]
+): Promise<{
+  inserted: number;
+  updated: number;
+  skipped: number;
+  totalProcessed: number;
+}> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    const normalizedByName = new Map<string, CreateMedicationInput>();
+    for (const item of items) {
+      const normalizedName = normalizeMedicationCatalogName(item.name);
+      if (!normalizedName) {
+        continue;
+      }
+      normalizedByName.set(normalizedName.toLocaleLowerCase(), {
+        name: normalizedName,
+        defaultUnit: item.defaultUnit.trim() || "mg",
+        activeIngredients: item.activeIngredients.trim(),
+        therapeuticClass: item.therapeuticClass.trim(),
+        searchAliases: item.searchAliases.trim()
+      });
+    }
+
+    const normalizedItems = Array.from(normalizedByName.values());
+    if (normalizedItems.length === 0) {
+      return {
+        inserted: 0,
+        updated: 0,
+        skipped: items.length,
+        totalProcessed: 0
+      };
+    }
+
+    await client.query("BEGIN");
+
+    const existingRows = await client.query(
+      `
+        SELECT
+          id,
+          LOWER(REGEXP_REPLACE(name, '[[:space:]]+', ' ', 'g')) AS normalized_name
+        FROM medication_catalog
+      `
+    );
+
+    const existingByName = new Map<string, number>();
+    for (const row of existingRows.rows) {
+      existingByName.set(
+        String((row as DbRow).normalized_name ?? "").toLocaleLowerCase(),
+        toNumber((row as DbRow).id)
+      );
+    }
+
+    let inserted = 0;
+    let updated = 0;
+
+    for (const item of normalizedItems) {
+      const normalizedKey = item.name.toLocaleLowerCase();
+      const medicationId = existingByName.get(normalizedKey);
+      const defaultUnit = item.defaultUnit.trim() || "mg";
+      const activeIngredients = item.activeIngredients.trim() || null;
+      const therapeuticClass = item.therapeuticClass.trim() || null;
+      const searchAliases = item.searchAliases.trim() || null;
+
+      if (!medicationId) {
+        await client.query(
+          `
+            INSERT INTO medication_catalog (
+              name,
+              default_unit,
+              active_ingredients,
+              therapeutic_class,
+              search_aliases
+            )
+            VALUES ($1, $2, $3, $4, $5)
+          `,
+          [item.name, defaultUnit, activeIngredients, therapeuticClass, searchAliases]
+        );
+        inserted += 1;
+        continue;
+      }
+
+      const updateResult = await client.query(
+        `
+          UPDATE medication_catalog
+          SET
+            default_unit = $2,
+            active_ingredients = COALESCE(NULLIF($3, ''), active_ingredients),
+            therapeutic_class = COALESCE(NULLIF($4, ''), therapeutic_class),
+            search_aliases = COALESCE(NULLIF($5, ''), search_aliases)
+          WHERE id = $1
+        `,
+        [medicationId, defaultUnit, activeIngredients, therapeuticClass, searchAliases]
+      );
+
+      if ((updateResult.rowCount ?? 0) > 0) {
+        updated += 1;
+      }
+    }
+
+    await client.query("COMMIT");
+
+    return {
+      inserted,
+      updated,
+      skipped: items.length - normalizedItems.length,
+      totalProcessed: normalizedItems.length
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
   }
 }
 

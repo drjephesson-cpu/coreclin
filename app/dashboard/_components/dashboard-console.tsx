@@ -94,6 +94,16 @@ const INPATIENT_OVERVIEW_ITEMS = [
   { id: "discharged", label: "Pacientes de alta" }
 ] as const;
 const INPATIENT_WORKFLOW_STORAGE_KEY = "coreclin.inpatient-workflow.v1";
+const THERAPEUTIC_CLASS_RELATION_RULES = [
+  { allergyToken: "penicilin", classTokens: ["betalactam"] },
+  { allergyToken: "cefalospor", classTokens: ["betalactam"] },
+  { allergyToken: "carbapen", classTokens: ["betalactam"] },
+  { allergyToken: "monobact", classTokens: ["betalactam"] },
+  {
+    allergyToken: "betalactam",
+    classTokens: ["betalactam", "penicilin", "cefalospor", "carbapen", "monobact"]
+  }
+] as const;
 
 type DashboardSectionId = (typeof DASHBOARD_NAV_ITEMS)[number]["id"];
 type PatientViewId = (typeof PATIENT_VIEW_ITEMS)[number]["id"];
@@ -135,6 +145,14 @@ type FeedbackState = {
   message: string;
 } | null;
 
+type AllergyConflictKind = "direct" | "active-ingredient" | "therapeutic-class";
+
+type AllergyConflictResult = {
+  allergyName: string;
+  kind: AllergyConflictKind;
+  detail: string;
+};
+
 type RawPrescriptionDraft = {
   lineNumber: number;
   rawLine: string;
@@ -149,7 +167,7 @@ type RawPrescriptionDraft = {
   validationStartAt: string | null;
   validationEndAt: string | null;
   validationStatus: string;
-  allergyConflictName: string | null;
+  allergyConflict: AllergyConflictResult | null;
   isValid: boolean;
   validationMessage: string;
 };
@@ -264,6 +282,57 @@ function isMedicationNameCompatible(firstName: string, secondName: string): bool
   }
 
   return hasTokenBoundaryMatch(first, second) || hasTokenBoundaryMatch(second, first);
+}
+
+function splitCatalogTerms(input: string): Array<{ raw: string; normalized: string }> {
+  const normalizedInput = input.trim();
+  if (!normalizedInput) {
+    return [];
+  }
+
+  const fragments = normalizedInput
+    .replace(/\s+[eE]\s+/g, " + ")
+    .split(/[+;,|/]/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  const uniqueTerms = new Map<string, string>();
+  for (const fragment of fragments) {
+    const normalizedFragment = normalizeMedicationName(fragment);
+    if (normalizedFragment && !uniqueTerms.has(normalizedFragment)) {
+      uniqueTerms.set(normalizedFragment, fragment);
+    }
+  }
+
+  return Array.from(uniqueTerms.entries()).map(([normalized, raw]) => ({ raw, normalized }));
+}
+
+function hasConceptTermMatch(source: string, target: string): boolean {
+  if (!source || !target) {
+    return false;
+  }
+
+  if (source === target) {
+    return true;
+  }
+
+  if (hasTokenBoundaryMatch(source, target) || hasTokenBoundaryMatch(target, source)) {
+    return true;
+  }
+
+  return target.length >= 5 && source.includes(target);
+}
+
+function buildAllergyConflictBadge(conflict: AllergyConflictResult): string {
+  if (conflict.kind === "active-ingredient") {
+    return `Alergia (contém: ${conflict.detail})`;
+  }
+
+  if (conflict.kind === "therapeutic-class") {
+    return `Alergia a classe (${conflict.detail})`;
+  }
+
+  return `Alergia (${conflict.allergyName})`;
 }
 
 function normalizeHospitalDateTime(input: string): string | null {
@@ -401,10 +470,16 @@ export default function DashboardConsole({
 
   const [medicationForm, setMedicationForm] = useState({
     name: "",
-    defaultUnit: "mg"
+    defaultUnit: "mg",
+    activeIngredients: "",
+    therapeuticClass: "",
+    searchAliases: ""
   });
+  const [medicationBulkInput, setMedicationBulkInput] = useState("");
+  const [medicationBulkDefaultUnit, setMedicationBulkDefaultUnit] = useState("mg");
   const [medicationFeedback, setMedicationFeedback] = useState<FeedbackState>(null);
   const [medicationLoading, setMedicationLoading] = useState(false);
+  const [medicationBulkLoading, setMedicationBulkLoading] = useState(false);
 
   const [selectedPatientId, setSelectedPatientId] = useState<string>(
     patients[0] ? String(patients[0].id) : ""
@@ -828,28 +903,162 @@ export default function DashboardConsole({
     [patientAllergies, selectedPatient]
   );
 
-  const selectedPatientAllergyLookup = useMemo(() => {
-    const lookup = new Map<string, string>();
-    for (const allergy of selectedPatientAllergies) {
-      lookup.set(normalizeMedicationName(allergy.allergyName), allergy.allergyName);
-    }
-    return lookup;
-  }, [selectedPatientAllergies]);
+  const medicationDescriptors = useMemo(
+    () =>
+      medications.map((medication) => {
+        const activeIngredientTerms = splitCatalogTerms(medication.activeIngredients ?? "");
+        const aliasTerms = splitCatalogTerms(medication.searchAliases ?? "");
+        const normalizedClass = normalizeMedicationName(medication.therapeuticClass ?? "");
 
-  function resolveAllergyConflictName(medicationName: string): string | null {
+        return {
+          medication,
+          normalizedName: normalizeMedicationName(medication.name),
+          normalizedClass,
+          activeIngredientTerms,
+          classTerms: splitCatalogTerms((medication.therapeuticClass ?? "").replace(/-/g, ";")),
+          aliasTerms
+        };
+      }),
+    [medications]
+  );
+
+  function findMedicationDescriptorsByText(searchText: string) {
+    const normalizedSearchText = normalizeMedicationName(searchText);
+    if (!normalizedSearchText) {
+      return [];
+    }
+
+    return medicationDescriptors.filter((descriptor) => {
+      if (isMedicationNameCompatible(descriptor.medication.name, searchText)) {
+        return true;
+      }
+
+      if (descriptor.normalizedName === normalizedSearchText) {
+        return true;
+      }
+
+      return descriptor.aliasTerms.some((aliasTerm) =>
+        hasConceptTermMatch(aliasTerm.normalized, normalizedSearchText)
+      );
+    });
+  }
+
+  function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized: string): boolean {
+    if (!allergyNormalized || !classNormalized) {
+      return false;
+    }
+
+    if (hasConceptTermMatch(classNormalized, allergyNormalized)) {
+      return true;
+    }
+
+    for (const rule of THERAPEUTIC_CLASS_RELATION_RULES) {
+      if (!allergyNormalized.includes(rule.allergyToken)) {
+        continue;
+      }
+      if (rule.classTokens.some((classToken) => classNormalized.includes(classToken))) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function resolveAllergyConflict(medicationName: string): AllergyConflictResult | null {
     const normalizedMedication = normalizeMedicationName(medicationName);
     if (!normalizedMedication) {
       return null;
     }
 
-    const exactMatch = selectedPatientAllergyLookup.get(normalizedMedication);
-    if (exactMatch) {
-      return exactMatch;
-    }
+    const prescribedDescriptors = findMedicationDescriptorsByText(medicationName);
 
-    for (const [normalizedAllergyName, allergyName] of selectedPatientAllergyLookup.entries()) {
-      if (isMedicationNameCompatible(normalizedMedication, normalizedAllergyName)) {
-        return allergyName;
+    for (const allergy of selectedPatientAllergies) {
+      const normalizedAllergy = normalizeMedicationName(allergy.allergyName);
+      if (!normalizedAllergy) {
+        continue;
+      }
+
+      if (isMedicationNameCompatible(medicationName, allergy.allergyName)) {
+        return {
+          allergyName: allergy.allergyName,
+          kind: "direct",
+          detail: allergy.allergyName
+        };
+      }
+
+      for (const descriptor of prescribedDescriptors) {
+        const ingredientMatch = descriptor.activeIngredientTerms.find((ingredientTerm) =>
+          hasConceptTermMatch(ingredientTerm.normalized, normalizedAllergy)
+        );
+        if (ingredientMatch) {
+          return {
+            allergyName: allergy.allergyName,
+            kind: "active-ingredient",
+            detail: ingredientMatch.raw
+          };
+        }
+      }
+
+      const allergyDescriptors = findMedicationDescriptorsByText(allergy.allergyName);
+
+      for (const prescribedDescriptor of prescribedDescriptors) {
+        for (const allergyDescriptor of allergyDescriptors) {
+          for (const allergyIngredientTerm of allergyDescriptor.activeIngredientTerms) {
+            const ingredientOverlap = prescribedDescriptor.activeIngredientTerms.find(
+              (prescribedIngredientTerm) =>
+                hasConceptTermMatch(
+                  prescribedIngredientTerm.normalized,
+                  allergyIngredientTerm.normalized
+                )
+            );
+            if (ingredientOverlap) {
+              return {
+                allergyName: allergy.allergyName,
+                kind: "active-ingredient",
+                detail: ingredientOverlap.raw
+              };
+            }
+          }
+
+          if (
+            allergyDescriptor.normalizedClass &&
+            hasTherapeuticClassRelation(
+              allergyDescriptor.normalizedClass,
+              prescribedDescriptor.normalizedClass
+            )
+          ) {
+            return {
+              allergyName: allergy.allergyName,
+              kind: "therapeutic-class",
+              detail:
+                prescribedDescriptor.medication.therapeuticClass ??
+                allergyDescriptor.medication.therapeuticClass ??
+                allergy.allergyName
+            };
+          }
+        }
+
+        if (
+          prescribedDescriptor.normalizedClass &&
+          hasTherapeuticClassRelation(normalizedAllergy, prescribedDescriptor.normalizedClass)
+        ) {
+          return {
+            allergyName: allergy.allergyName,
+            kind: "therapeutic-class",
+            detail: prescribedDescriptor.medication.therapeuticClass ?? allergy.allergyName
+          };
+        }
+
+        const classTokenMatch = prescribedDescriptor.classTerms.find((classTerm) =>
+          hasConceptTermMatch(classTerm.normalized, normalizedAllergy)
+        );
+        if (classTokenMatch) {
+          return {
+            allergyName: allergy.allergyName,
+            kind: "therapeutic-class",
+            detail: classTokenMatch.raw
+          };
+        }
       }
     }
 
@@ -878,11 +1087,35 @@ export default function DashboardConsole({
       return null;
     }
 
-    return (
-      medications.find((medication) => normalizeMedicationName(medication.name) === normalizedName) ??
-      medications.find((medication) => isMedicationNameCompatible(medication.name, medicationName)) ??
-      null
+    const directMatch = medicationDescriptors.find((descriptor) => {
+      if (descriptor.normalizedName === normalizedName) {
+        return true;
+      }
+
+      if (isMedicationNameCompatible(descriptor.medication.name, medicationName)) {
+        return true;
+      }
+
+      return descriptor.aliasTerms.some((aliasTerm) =>
+        hasConceptTermMatch(aliasTerm.normalized, normalizedName)
+      );
+    });
+
+    if (directMatch) {
+      return directMatch.medication;
+    }
+
+    const ingredientMatches = medicationDescriptors.filter((descriptor) =>
+      descriptor.activeIngredientTerms.some((ingredientTerm) =>
+        hasConceptTermMatch(ingredientTerm.normalized, normalizedName)
+      )
     );
+
+    if (ingredientMatches.length === 1) {
+      return ingredientMatches[0].medication;
+    }
+
+    return null;
   }
 
   const selectedPatientPriorMedications = useMemo(
@@ -947,9 +1180,9 @@ export default function DashboardConsole({
     return prescriptionForm.medicationName.trim();
   }, [prescriptionForm.medicationId, prescriptionForm.medicationName, medications]);
 
-  const prescriptionAllergyConflictName = useMemo(
-    () => resolveAllergyConflictName(prescriptionMedicationNameForAlert),
-    [prescriptionMedicationNameForAlert, selectedPatientAllergyLookup]
+  const prescriptionAllergyConflict = useMemo(
+    () => resolveAllergyConflict(prescriptionMedicationNameForAlert),
+    [prescriptionMedicationNameForAlert, selectedPatientAllergies, medicationDescriptors]
   );
 
   const selectedPatientPrescriptionGroups = useMemo(() => {
@@ -1142,15 +1375,8 @@ export default function DashboardConsole({
         notes = parts[5] ?? "";
       }
 
-      const normalizedMedicationName = normalizeMedicationName(medicationName);
-      const matchedMedication =
-        medications.find(
-          (medication) => normalizeMedicationName(medication.name) === normalizedMedicationName
-        ) ??
-        medications.find((medication) =>
-          isMedicationNameCompatible(normalizedMedicationName, medication.name)
-        );
-      const allergyConflictName = resolveAllergyConflictName(medicationName);
+      const matchedMedication = findCatalogMedicationMatchByName(medicationName);
+      const allergyConflict = resolveAllergyConflict(medicationName);
 
       const fallbackUnit = matchedMedication?.defaultUnit ?? "";
       const doseUnit = parsedDose.doseUnit || fallbackUnit;
@@ -1186,7 +1412,7 @@ export default function DashboardConsole({
         validationStartAt,
         validationEndAt,
         validationStatus,
-        allergyConflictName,
+        allergyConflict,
         isValid: validationMessage.length === 0,
         validationMessage: validationMessage || "Linha pronta para importação."
       };
@@ -1457,12 +1683,121 @@ export default function DashboardConsole({
       }
 
       setMedicationFeedback({ type: "success", message: "Medicamento cadastrado com sucesso." });
-      setMedicationForm({ name: "", defaultUnit: "mg" });
+      setMedicationForm({
+        name: "",
+        defaultUnit: medicationForm.defaultUnit || "mg",
+        activeIngredients: "",
+        therapeuticClass: "",
+        searchAliases: ""
+      });
       router.refresh();
     } catch {
       setMedicationFeedback({ type: "error", message: "Erro de conexão ao cadastrar medicamento." });
     } finally {
       setMedicationLoading(false);
+    }
+  }
+
+  async function handleMedicationBulkImport(): Promise<void> {
+    setMedicationFeedback(null);
+
+    const lines = medicationBulkInput
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    if (lines.length === 0) {
+      setMedicationFeedback({
+        type: "error",
+        message: "Cole ao menos uma linha para importar medicamentos."
+      });
+      return;
+    }
+
+    const parsedItems: Array<{
+      name: string;
+      activeIngredients: string;
+      therapeuticClass: string;
+      searchAliases: string;
+      defaultUnit: string;
+    }> = [];
+
+    for (const [index, line] of lines.entries()) {
+      const columns = line
+        .split(/\t|;|\|/)
+        .map((part) => part.trim())
+        .filter((part) => part.length > 0);
+
+      const firstColumn = columns[0] ?? "";
+      const isHeader =
+        index === 0 &&
+        normalizeSearchValue(firstColumn).includes("medicamento") &&
+        normalizeSearchValue(columns[1] ?? "").includes("princip");
+      if (isHeader) {
+        continue;
+      }
+
+      const medicationName = firstColumn;
+      if (!medicationName) {
+        continue;
+      }
+
+      const activeIngredients = columns[1] ?? "";
+      const therapeuticClass = columns[2] ?? "";
+      const aliases = columns[3] ?? "";
+
+      parsedItems.push({
+        name: medicationName,
+        activeIngredients,
+        therapeuticClass,
+        searchAliases: aliases,
+        defaultUnit: medicationBulkDefaultUnit.trim() || "mg"
+      });
+    }
+
+    if (parsedItems.length === 0) {
+      setMedicationFeedback({
+        type: "error",
+        message: "Nenhuma linha válida encontrada. Use colunas: Nome, Princípio ativo e Classe."
+      });
+      return;
+    }
+
+    setMedicationBulkLoading(true);
+    try {
+      const response = await fetch("/api/medications/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: parsedItems })
+      });
+
+      const result = (await response.json()) as {
+        message?: string;
+        inserted?: number;
+        updated?: number;
+        skipped?: number;
+      };
+      if (!response.ok) {
+        setMedicationFeedback({
+          type: "error",
+          message: result.message ?? "Falha ao importar medicamentos em lote."
+        });
+        return;
+      }
+
+      setMedicationFeedback({
+        type: "success",
+        message: `Importação concluída: ${result.inserted ?? 0} inserido(s), ${result.updated ?? 0} atualizado(s), ${result.skipped ?? 0} ignorado(s).`
+      });
+      setMedicationBulkInput("");
+      router.refresh();
+    } catch {
+      setMedicationFeedback({
+        type: "error",
+        message: "Erro de conexão ao importar medicamentos em lote."
+      });
+    } finally {
+      setMedicationBulkLoading(false);
     }
   }
 
@@ -3413,10 +3748,10 @@ export default function DashboardConsole({
                                   />
                                 </div>
 
-                                {prescriptionAllergyConflictName ? (
+                                {prescriptionAllergyConflict ? (
                                   <p className="dashboard-feedback dashboard-feedback-error">
-                                    Flag de alergia: medicamento consta em alergias do paciente (
-                                    {prescriptionAllergyConflictName}).
+                                    Flag de alergia: {prescriptionAllergyConflict.allergyName} (
+                                    {buildAllergyConflictBadge(prescriptionAllergyConflict)}).
                                   </p>
                                 ) : null}
 
@@ -3604,9 +3939,9 @@ export default function DashboardConsole({
                                             <td>{draft.frequency || "-"}</td>
                                             <td>{draft.notes || "-"}</td>
                                             <td>
-                                              {draft.allergyConflictName ? (
+                                              {draft.allergyConflict ? (
                                                 <span className="dashboard-status-pill is-allergy">
-                                                  Alergia ({draft.allergyConflictName})
+                                                  {buildAllergyConflictBadge(draft.allergyConflict)}
                                                 </span>
                                               ) : (
                                                 "-"
@@ -3686,26 +4021,32 @@ export default function DashboardConsole({
                                             </tr>
                                           </thead>
                                           <tbody>
-                                            {group.prescriptions.map((prescription) => (
-                                              <tr key={prescription.id}>
-                                                <td>{prescription.medicationName}</td>
-                                                <td>{formatNumber(prescription.dose)}</td>
-                                                <td>{prescription.doseUnit}</td>
-                                                <td>{prescription.administrationRoute ?? "-"}</td>
-                                                <td>{prescription.frequency}</td>
-                                                <td>{prescription.notes ?? "-"}</td>
-                                                <td>
-                                                  {resolveAllergyConflictName(prescription.medicationName) ? (
-                                                    <span className="dashboard-status-pill is-allergy">
-                                                      Alergia
-                                                    </span>
-                                                  ) : (
-                                                    "-"
-                                                  )}
-                                                </td>
-                                                <td>{formatTimestamp(prescription.createdAt)}</td>
-                                              </tr>
-                                            ))}
+                                            {group.prescriptions.map((prescription) => {
+                                              const prescriptionConflict = resolveAllergyConflict(
+                                                prescription.medicationName
+                                              );
+
+                                              return (
+                                                <tr key={prescription.id}>
+                                                  <td>{prescription.medicationName}</td>
+                                                  <td>{formatNumber(prescription.dose)}</td>
+                                                  <td>{prescription.doseUnit}</td>
+                                                  <td>{prescription.administrationRoute ?? "-"}</td>
+                                                  <td>{prescription.frequency}</td>
+                                                  <td>{prescription.notes ?? "-"}</td>
+                                                  <td>
+                                                    {prescriptionConflict ? (
+                                                      <span className="dashboard-status-pill is-allergy">
+                                                        {buildAllergyConflictBadge(prescriptionConflict)}
+                                                      </span>
+                                                    ) : (
+                                                      "-"
+                                                    )}
+                                                  </td>
+                                                  <td>{formatTimestamp(prescription.createdAt)}</td>
+                                                </tr>
+                                              );
+                                            })}
                                           </tbody>
                                         </table>
                                       </div>
@@ -3731,23 +4072,63 @@ export default function DashboardConsole({
               {activeSection === "medication" ? (
                 <section className="dashboard-card">
                   <h2>Cadastro de Medicamentos</h2>
+                  <p className="dashboard-muted">
+                    Base estruturada para alergias e reconciliação: marca/medicamento, princípio ativo,
+                    classe terapêutica e sinônimos.
+                  </p>
                   <form className="dashboard-form" onSubmit={handleMedicationSubmit}>
                     <input
-                      placeholder="Nome do medicamento"
+                      placeholder="Medicamento ou marca"
                       value={medicationForm.name}
                       onChange={(event) =>
                         setMedicationForm((current) => ({ ...current, name: event.target.value }))
                       }
                       required
                     />
-                    <input
-                      placeholder="Unidade padrão (ex.: mg, mL, UI)"
-                      value={medicationForm.defaultUnit}
-                      onChange={(event) =>
-                        setMedicationForm((current) => ({ ...current, defaultUnit: event.target.value }))
-                      }
-                      required
-                    />
+
+                    <div className="dashboard-two-columns">
+                      <input
+                        placeholder="Princípio(s) ativo(s) (ex.: Dipirona + Cafeína)"
+                        value={medicationForm.activeIngredients}
+                        onChange={(event) =>
+                          setMedicationForm((current) => ({
+                            ...current,
+                            activeIngredients: event.target.value
+                          }))
+                        }
+                      />
+                      <input
+                        placeholder="Classe terapêutica"
+                        value={medicationForm.therapeuticClass}
+                        onChange={(event) =>
+                          setMedicationForm((current) => ({
+                            ...current,
+                            therapeuticClass: event.target.value
+                          }))
+                        }
+                      />
+                    </div>
+
+                    <div className="dashboard-two-columns">
+                      <input
+                        placeholder="Sinônimos/termos relacionados (opcional)"
+                        value={medicationForm.searchAliases}
+                        onChange={(event) =>
+                          setMedicationForm((current) => ({
+                            ...current,
+                            searchAliases: event.target.value
+                          }))
+                        }
+                      />
+                      <input
+                        placeholder="Unidade padrão (ex.: mg, mL, UI)"
+                        value={medicationForm.defaultUnit}
+                        onChange={(event) =>
+                          setMedicationForm((current) => ({ ...current, defaultUnit: event.target.value }))
+                        }
+                        required
+                      />
+                    </div>
 
                     {medicationFeedback ? (
                       <p className={`dashboard-feedback dashboard-feedback-${medicationFeedback.type}`}>
@@ -3759,6 +4140,36 @@ export default function DashboardConsole({
                       {medicationLoading ? "Salvando..." : "Salvar medicamento"}
                     </button>
                   </form>
+
+                  <div className="dashboard-subsection-block">
+                    <h3>Importação em lote (planilha)</h3>
+                    <p className="dashboard-muted">
+                      Cole colunas da planilha no formato:
+                      `Medicamento/Marca[TAB]Princípio ativo[TAB]Classe terapêutica`.
+                    </p>
+                    <div className="dashboard-form">
+                      <div className="dashboard-two-columns">
+                        <input
+                          placeholder="Unidade padrão para importação"
+                          value={medicationBulkDefaultUnit}
+                          onChange={(event) => setMedicationBulkDefaultUnit(event.target.value)}
+                        />
+                        <input
+                          value="Coluna opcional 4: sinônimos/aliases"
+                          disabled
+                          aria-label="Formato opcional de aliases"
+                        />
+                      </div>
+                      <textarea
+                        placeholder="Cole aqui as linhas da planilha"
+                        value={medicationBulkInput}
+                        onChange={(event) => setMedicationBulkInput(event.target.value)}
+                      />
+                      <button type="button" onClick={handleMedicationBulkImport} disabled={medicationBulkLoading}>
+                        {medicationBulkLoading ? "Importando..." : "Importar medicamentos em lote"}
+                      </button>
+                    </div>
+                  </div>
 
                   <div className="dashboard-list-box">
                     <button
@@ -3779,6 +4190,9 @@ export default function DashboardConsole({
                             <thead>
                               <tr>
                                 <th>Medicamento</th>
+                                <th>Princípio ativo</th>
+                                <th>Classe</th>
+                                <th>Sinônimos</th>
                                 <th>Unidade padrão</th>
                                 <th>Registro</th>
                               </tr>
@@ -3787,6 +4201,9 @@ export default function DashboardConsole({
                               {medications.map((medication) => (
                                 <tr key={medication.id}>
                                   <td>{medication.name}</td>
+                                  <td>{medication.activeIngredients ?? "-"}</td>
+                                  <td>{medication.therapeuticClass ?? "-"}</td>
+                                  <td>{medication.searchAliases ?? "-"}</td>
                                   <td>{medication.defaultUnit}</td>
                                   <td>{formatTimestamp(medication.createdAt)}</td>
                                 </tr>
