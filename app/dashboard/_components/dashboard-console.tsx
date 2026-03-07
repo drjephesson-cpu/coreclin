@@ -181,6 +181,14 @@ type AllergyConflictResult = {
   detail: string;
 };
 
+type AllergySuggestionItem = {
+  key: string;
+  label: string;
+  value: string;
+  source: "medication" | "active-ingredient" | "therapeutic-class";
+  normalizedSearch: string;
+};
+
 type RawPrescriptionDraft = {
   lineNumber: number;
   rawLine: string;
@@ -618,7 +626,8 @@ export default function DashboardConsole({
   const [prescriptionMode, setPrescriptionMode] = useState<PrescriptionMode>("view");
 
   const [allergyForm, setAllergyForm] = useState({
-    medicationId: medications[0] ? String(medications[0].id) : ""
+    query: "",
+    selectedValue: ""
   });
   const [allergyFeedback, setAllergyFeedback] = useState<FeedbackState>(null);
   const [allergyLoading, setAllergyLoading] = useState(false);
@@ -684,20 +693,6 @@ export default function DashboardConsole({
       setPatientInitialAllergyForm({ medicationId: String(medications[0].id) });
     }
   }, [medications, patientInitialAllergyForm.medicationId]);
-
-  useEffect(() => {
-    if (medications.length === 0) {
-      setAllergyForm({ medicationId: "" });
-      return;
-    }
-
-    const hasMedication = medications.some(
-      (medication) => String(medication.id) === allergyForm.medicationId
-    );
-    if (!hasMedication) {
-      setAllergyForm({ medicationId: String(medications[0].id) });
-    }
-  }, [medications, allergyForm.medicationId]);
 
   const agePreview = useMemo(() => calculateAge(patientForm.birthDate), [patientForm.birthDate]);
   const responsibleProfessionalName = currentProfessional?.fullName ?? currentLogin;
@@ -1042,6 +1037,71 @@ export default function DashboardConsole({
     [medications]
   );
 
+  const allergySuggestionItems = useMemo(() => {
+    const suggestionMap = new Map<string, AllergySuggestionItem>();
+
+    for (const descriptor of medicationDescriptors) {
+      const medicationValue = descriptor.medication.name.trim();
+      const medicationKey = `medication:${normalizeMedicationName(medicationValue)}`;
+      if (medicationValue && !suggestionMap.has(medicationKey)) {
+        suggestionMap.set(medicationKey, {
+          key: medicationKey,
+          label: `${medicationValue} (medicamento)`,
+          value: medicationValue,
+          source: "medication",
+          normalizedSearch: normalizeMedicationName(
+            `${medicationValue} ${descriptor.medication.activeIngredients ?? ""} ${
+              descriptor.medication.therapeuticClass ?? ""
+            } ${descriptor.medication.searchAliases ?? ""}`
+          )
+        });
+      }
+
+      for (const ingredientTerm of descriptor.activeIngredientTerms) {
+        const ingredientValue = ingredientTerm.raw.trim();
+        const ingredientKey = `ingredient:${ingredientTerm.normalized}`;
+        if (ingredientValue && !suggestionMap.has(ingredientKey)) {
+          suggestionMap.set(ingredientKey, {
+            key: ingredientKey,
+            label: `${ingredientValue} (princípio ativo)`,
+            value: ingredientValue,
+            source: "active-ingredient",
+            normalizedSearch: normalizeMedicationName(
+              `${ingredientValue} ${descriptor.medication.name} ${descriptor.medication.searchAliases ?? ""}`
+            )
+          });
+        }
+      }
+
+      const classValue = (descriptor.medication.therapeuticClass ?? "").trim();
+      const classKey = `class:${normalizeMedicationName(classValue)}`;
+      if (classValue && !suggestionMap.has(classKey)) {
+        suggestionMap.set(classKey, {
+          key: classKey,
+          label: `${classValue} (classe terapêutica)`,
+          value: classValue,
+          source: "therapeutic-class",
+          normalizedSearch: normalizeMedicationName(classValue)
+        });
+      }
+    }
+
+    return Array.from(suggestionMap.values()).sort((first, second) =>
+      first.value.localeCompare(second.value, "pt-BR")
+    );
+  }, [medicationDescriptors]);
+
+  const filteredAllergySuggestions = useMemo(() => {
+    const normalizedQuery = normalizeMedicationName(allergyForm.query);
+    if (!normalizedQuery) {
+      return allergySuggestionItems.slice(0, 30);
+    }
+
+    return allergySuggestionItems
+      .filter((item) => hasConceptTermMatch(item.normalizedSearch, normalizedQuery))
+      .slice(0, 30);
+  }, [allergySuggestionItems, allergyForm.query]);
+
   function findMedicationDescriptorsByText(searchText: string) {
     const normalizedSearchText = normalizeMedicationName(searchText);
     if (!normalizedSearchText) {
@@ -1218,14 +1278,6 @@ export default function DashboardConsole({
         (medication) => String(medication.id) === patientInitialAllergyForm.medicationId
       ) ?? null,
     [medications, patientInitialAllergyForm.medicationId]
-  );
-
-  const selectedAllergyMedication = useMemo(
-    () =>
-      medications.find(
-        (medication) => String(medication.id) === allergyForm.medicationId
-      ) ?? null,
-    [medications, allergyForm.medicationId]
   );
 
   function findCatalogMedicationMatchByName(medicationName: string) {
@@ -1957,12 +2009,12 @@ export default function DashboardConsole({
       return;
     }
 
-    const allergyName = selectedAllergyMedication?.name ?? "";
+    const allergyName = (allergyForm.selectedValue || allergyForm.query).trim();
 
     if (!allergyName) {
       setAllergyFeedback({
         type: "error",
-        message: "Selecione um medicamento cadastrado para registrar a alergia."
+        message: "Informe uma alergia para registrar (medicamento, princípio ativo ou classe)."
       });
       return;
     }
@@ -1982,7 +2034,7 @@ export default function DashboardConsole({
       }
 
       setAllergyFeedback({ type: "success", message: "Alergia cadastrada com sucesso." });
-      setAllergyForm({ medicationId: medications[0] ? String(medications[0].id) : "" });
+      setAllergyForm({ query: "", selectedValue: "" });
       router.refresh();
     } catch {
       setAllergyFeedback({ type: "error", message: "Erro de conexão ao cadastrar alergia." });
@@ -3289,20 +3341,46 @@ export default function DashboardConsole({
                           <div className="dashboard-subsection-block">
                             <h3>Alergias</h3>
                             <form className="dashboard-form" onSubmit={handleAllergySubmit}>
-                              <select
-                                value={allergyForm.medicationId}
-                                onChange={(event) => setAllergyForm({ medicationId: event.target.value })}
-                                disabled={medications.length === 0}
-                              >
-                                <option value="">Selecione medicamento cadastrado</option>
-                                {medications.map((medication) => (
-                                  <option key={medication.id} value={medication.id}>
-                                    {medication.name}
-                                  </option>
-                                ))}
-                              </select>
+                              <input
+                                placeholder="Buscar alergia por medicamento, princípio ativo ou classe"
+                                value={allergyForm.query}
+                                onChange={(event) =>
+                                  setAllergyForm({
+                                    query: event.target.value,
+                                    selectedValue: ""
+                                  })
+                                }
+                              />
+
+                              <div className="dashboard-allergy-suggestions">
+                                {filteredAllergySuggestions.length === 0 ? (
+                                  <p className="dashboard-muted">
+                                    Nenhuma sugestão encontrada para essa busca.
+                                  </p>
+                                ) : (
+                                  filteredAllergySuggestions.map((suggestion) => (
+                                    <button
+                                      key={suggestion.key}
+                                      type="button"
+                                      className={`dashboard-allergy-suggestion ${
+                                        allergyForm.selectedValue === suggestion.value ? "is-active" : ""
+                                      }`}
+                                      onClick={() =>
+                                        setAllergyForm({
+                                          query: suggestion.value,
+                                          selectedValue: suggestion.value
+                                        })
+                                      }
+                                    >
+                                      {suggestion.label}
+                                    </button>
+                                  ))
+                                )}
+                              </div>
+
                               <p className="dashboard-muted">
-                                Somente medicamentos cadastrados podem ser registrados como alergia.
+                                A busca atualiza em tempo real. Você pode registrar por medicamento ou por
+                                princípio ativo (ex.: Morfina).
                               </p>
 
                               {allergyFeedback ? (
@@ -3311,10 +3389,7 @@ export default function DashboardConsole({
                                 </p>
                               ) : null}
 
-                              <button
-                                type="submit"
-                                disabled={allergyLoading || !selectedAllergyMedication}
-                              >
+                              <button type="submit" disabled={allergyLoading || !allergyForm.query.trim()}>
                                 {allergyLoading ? "Salvando..." : "Salvar alergia"}
                               </button>
                             </form>

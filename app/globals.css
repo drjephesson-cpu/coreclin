@@ -462,6 +462,35 @@ body {
   gap: 8px;
 }
 
+.dashboard-allergy-suggestions {
+  border: 1px solid #d3e0f1;
+  border-radius: 12px;
+  background: #f8fbff;
+  max-height: 180px;
+  overflow: auto;
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.dashboard-allergy-suggestion {
+  border: 1px solid #c0d3ea;
+  border-radius: 9px;
+  min-height: 34px;
+  background: #ffffff;
+  color: #22456f;
+  text-align: left;
+  font-size: 0.84rem;
+  font-weight: 600;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.dashboard-allergy-suggestion.is-active {
+  border-color: var(--mint);
+  background: #e6efff;
+}
+
 .dashboard-mini-button {
   border: 1px solid #c0d3ea;
   border-radius: 10px;

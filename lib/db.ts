@@ -130,6 +130,59 @@ function normalizeMedicationCatalogName(name: string): string {
   return name.trim().replace(/\s+/g, " ");
 }
 
+function normalizeClinicalSearchValue(input: string): string {
+  return input
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLocaleLowerCase();
+}
+
+function splitClinicalTerms(input: string): Array<{ raw: string; normalized: string }> {
+  const cleaned = input.trim();
+  if (!cleaned) {
+    return [];
+  }
+
+  const fragments = cleaned
+    .replace(/\s+[eE]\s+/g, " + ")
+    .split(/[+;,|/]/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  const terms = new Map<string, string>();
+  for (const fragment of fragments) {
+    const normalized = normalizeClinicalSearchValue(fragment);
+    if (normalized && !terms.has(normalized)) {
+      terms.set(normalized, fragment);
+    }
+  }
+
+  return Array.from(terms.entries()).map(([normalized, raw]) => ({ normalized, raw }));
+}
+
+function hasClinicalTermMatch(source: string, target: string): boolean {
+  if (!source || !target) {
+    return false;
+  }
+
+  if (source === target) {
+    return true;
+  }
+
+  if (source.includes(` ${target} `) || source.startsWith(`${target} `) || source.endsWith(` ${target}`)) {
+    return true;
+  }
+
+  if (target.length >= 4 && (source.startsWith(target) || target.startsWith(source))) {
+    return true;
+  }
+
+  return target.length >= 5 && (source.includes(target) || target.includes(source));
+}
+
 function mapProfessional(row: DbRow): ProfessionalRecord {
   return {
     id: toNumber(row.id),
@@ -1001,21 +1054,87 @@ async function resolveMedicationNameFromCatalog(
     throw new Error("Selecione um medicamento para registrar alergia.");
   }
 
-  const result = await client.query(
+  const normalizedSearch = normalizeClinicalSearchValue(normalizedMedicationName);
+
+  const catalogRows = await client.query(
     `
-      SELECT name
+      SELECT
+        name,
+        active_ingredients,
+        therapeutic_class,
+        search_aliases
       FROM medication_catalog
-      WHERE LOWER(REGEXP_REPLACE(name, '[[:space:]]+', ' ', 'g')) = LOWER($1)
-      LIMIT 1
-    `,
-    [normalizedMedicationName]
+    `
   );
 
-  if (result.rows.length === 0) {
-    throw new Error("Alergia deve ser vinculada a um medicamento cadastrado.");
+  let medicationMatch: string | null = null;
+  let activeIngredientMatch: string | null = null;
+  let therapeuticClassMatch: string | null = null;
+  let aliasMatch: string | null = null;
+
+  for (const row of catalogRows.rows) {
+    const catalogRow = row as DbRow;
+    const catalogMedicationName = String(catalogRow.name ?? "").trim();
+    const activeIngredients = String(catalogRow.active_ingredients ?? "").trim();
+    const therapeuticClass = String(catalogRow.therapeutic_class ?? "").trim();
+    const aliases = String(catalogRow.search_aliases ?? "").trim();
+
+    const normalizedCatalogMedicationName = normalizeClinicalSearchValue(catalogMedicationName);
+    if (
+      normalizedCatalogMedicationName === normalizedSearch ||
+      hasClinicalTermMatch(normalizedCatalogMedicationName, normalizedSearch)
+    ) {
+      medicationMatch = catalogMedicationName;
+      break;
+    }
+
+    const activeTerms = splitClinicalTerms(activeIngredients);
+    for (const activeTerm of activeTerms) {
+      if (hasClinicalTermMatch(activeTerm.normalized, normalizedSearch)) {
+        activeIngredientMatch = activeTerm.raw;
+        break;
+      }
+    }
+    if (activeIngredientMatch) {
+      break;
+    }
+
+    const normalizedTherapeuticClass = normalizeClinicalSearchValue(therapeuticClass);
+    if (
+      normalizedTherapeuticClass &&
+      hasClinicalTermMatch(normalizedTherapeuticClass, normalizedSearch)
+    ) {
+      therapeuticClassMatch = therapeuticClass;
+    }
+
+    const aliasTerms = splitClinicalTerms(aliases);
+    for (const aliasTerm of aliasTerms) {
+      if (hasClinicalTermMatch(aliasTerm.normalized, normalizedSearch)) {
+        aliasMatch = catalogMedicationName;
+        break;
+      }
+    }
   }
 
-  return String((result.rows[0] as DbRow).name ?? "");
+  if (medicationMatch) {
+    return medicationMatch;
+  }
+
+  if (activeIngredientMatch) {
+    return activeIngredientMatch;
+  }
+
+  if (therapeuticClassMatch) {
+    return therapeuticClassMatch;
+  }
+
+  if (aliasMatch) {
+    return aliasMatch;
+  }
+
+  throw new Error(
+    "Alergia não encontrada no catálogo. Busque por medicamento, princípio ativo ou classe terapêutica."
+  );
 }
 
 async function findProfessionalIdByLogin(client: PoolClient, login: string): Promise<number> {
