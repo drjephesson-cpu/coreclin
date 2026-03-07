@@ -168,6 +168,14 @@ function normalizeMedicationName(input: string): string {
     .toLocaleLowerCase();
 }
 
+function normalizeSearchValue(input: string): string {
+  return input
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLocaleLowerCase();
+}
+
 function escapeRegExp(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -324,6 +332,7 @@ export default function DashboardConsole({
   const [selectedPatientId, setSelectedPatientId] = useState<string>(
     patients[0] ? String(patients[0].id) : ""
   );
+  const [inpatientSearch, setInpatientSearch] = useState("");
   const [patientDetailsOpen, setPatientDetailsOpen] = useState(false);
   const [patientView, setPatientView] = useState<PatientViewId>("allergies");
   const [prescriptionMode, setPrescriptionMode] = useState<PrescriptionMode>("view");
@@ -468,6 +477,21 @@ export default function DashboardConsole({
 
     return Array.from(uniquePatients.values());
   }, [recentAdmissions]);
+
+  const filteredInpatients = useMemo(() => {
+    const searchTerm = normalizeSearchValue(inpatientSearch);
+    if (!searchTerm) {
+      return inpatients;
+    }
+
+    return inpatients.filter((inpatient) =>
+      normalizeSearchValue(
+        `${inpatient.patientName} ${inpatient.chartNumber} ${inpatient.admissionDate} ${inpatient.bed} ${
+          inpatient.teamName ?? ""
+        }`
+      ).includes(searchTerm)
+    );
+  }, [inpatients, inpatientSearch]);
 
   useEffect(() => {
     if (inpatients.length === 0) {
@@ -1719,61 +1743,64 @@ export default function DashboardConsole({
                           inpatients.length === 0 ? (
                             <p className="dashboard-muted">Nenhum paciente internado no momento.</p>
                           ) : (
-                            <div className="dashboard-table-wrap">
-                              <table className="dashboard-table">
-                                <thead>
-                                  <tr>
-                                    <th>Paciente</th>
-                                    <th>Prontuário</th>
-                                    <th>Admissão</th>
-                                    <th>Leito</th>
-                                    <th>Equipe</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {inpatients.map((inpatient) => (
-                                    <tr key={inpatient.patientId}>
-                                      <td>
-                                        <button
-                                          type="button"
-                                          className="dashboard-link-button"
-                                          onClick={() =>
-                                            openPatientDetails(inpatient.patientId, "admission-info")
-                                          }
-                                        >
-                                          {inpatient.patientName}
-                                        </button>
-                                      </td>
-                                      <td>{inpatient.chartNumber}</td>
-                                      <td>{inpatient.admissionDate}</td>
-                                      <td>{inpatient.bed}</td>
-                                      <td>{inpatient.teamName ?? "-"}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
+                            <>
+                              <input
+                                placeholder="Buscar internado ativo por nome, prontuário, leito ou equipe"
+                                value={inpatientSearch}
+                                onChange={(event) => setInpatientSearch(event.target.value)}
+                              />
+                              {filteredInpatients.length === 0 ? (
+                                <p className="dashboard-muted">
+                                  Nenhum paciente internado encontrado para esta busca.
+                                </p>
+                              ) : (
+                                <div className="dashboard-table-wrap">
+                                  <table className="dashboard-table">
+                                    <thead>
+                                      <tr>
+                                        <th>Paciente</th>
+                                        <th>Prontuário</th>
+                                        <th>Admissão</th>
+                                        <th>Leito</th>
+                                        <th>Equipe</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {filteredInpatients.map((inpatient) => (
+                                        <tr key={inpatient.patientId}>
+                                          <td>
+                                            <button
+                                              type="button"
+                                              className="dashboard-link-button"
+                                              onClick={() =>
+                                                openPatientDetails(inpatient.patientId, "admission-info")
+                                              }
+                                            >
+                                              {inpatient.patientName}
+                                            </button>
+                                          </td>
+                                          <td>{inpatient.chartNumber}</td>
+                                          <td>{inpatient.admissionDate}</td>
+                                          <td>{inpatient.bed}</td>
+                                          <td>{inpatient.teamName ?? "-"}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </>
                           )
                         ) : null}
                       </div>
 
                       <section className="dashboard-subsection">
                         <h3>Detalhes do paciente internado</h3>
-                        <select
-                          value={selectedPatientId}
-                          onChange={(event) => {
-                            setSelectedPatientId(event.target.value);
-                            setPatientDetailsOpen(event.target.value.length > 0);
-                          }}
-                          disabled={inpatients.length === 0}
-                        >
-                          {inpatients.length === 0 ? <option value="">Nenhum paciente internado</option> : null}
-                          {inpatients.map((inpatient) => (
-                            <option key={inpatient.patientId} value={inpatient.patientId}>
-                              {inpatient.patientName} ({inpatient.chartNumber})
-                            </option>
-                          ))}
-                        </select>
+                        {selectedPatient && patientDetailsOpen ? (
+                          <p className="dashboard-muted">
+                            Paciente selecionado: {selectedPatient.fullName} ({selectedPatient.chartNumber})
+                          </p>
+                        ) : null}
 
                     {selectedPatient && patientDetailsOpen ? (
                       <>
