@@ -2358,6 +2358,11 @@ export default function DashboardConsole({
                                       ? "Reconciliado na última: Sim"
                                       : "Reconciliado na última: Não"
                                   }
+                                  className={
+                                    priorMedicationFormReconciliation?.latestReconciled
+                                      ? ""
+                                      : "dashboard-alert-missing"
+                                  }
                                   disabled
                                   aria-label="Reconciliado na última prescrição"
                                 />
@@ -2408,7 +2413,10 @@ export default function DashboardConsole({
                                     </tr>
                                   ) : (
                                     priorMedicationRows.map((row) => (
-                                      <tr key={row.priorMedication.id}>
+                                      <tr
+                                        key={row.priorMedication.id}
+                                        className={row.latestReconciled ? "" : "dashboard-row-missing"}
+                                      >
                                         <td>{row.priorMedication.medicationName}</td>
                                         <td>
                                           {formatNumber(row.priorMedication.dose)} {row.priorMedication.doseUnit}
@@ -2420,7 +2428,9 @@ export default function DashboardConsole({
                                             ? formatTimestamp(row.latestPrescriptionDate)
                                             : "-"}
                                         </td>
-                                        <td>{row.latestReconciled ? "Sim" : "Não"}</td>
+                                        <td className={row.latestReconciled ? "" : "dashboard-cell-alert"}>
+                                          {row.latestReconciled ? "Sim" : "Não"}
+                                        </td>
                                         <td>
                                           {row.reconciledInAllPrescriptions === null
                                             ? "Não"

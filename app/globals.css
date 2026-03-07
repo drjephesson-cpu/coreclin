@@ -336,6 +336,13 @@ body {
   color: #6f877f;
 }
 
+.dashboard-form input.dashboard-alert-missing:disabled {
+  background: #fdeeee;
+  border-color: #efbcbc;
+  color: #8a2f2f;
+  font-weight: 700;
+}
+
 .dashboard-form button {
   margin-top: 2px;
   border: 0;
@@ -599,6 +606,15 @@ body {
 
 .dashboard-table td {
   color: #355147;
+}
+
+.dashboard-table tr.dashboard-row-missing td {
+  background: #fff4f4;
+}
+
+.dashboard-table td.dashboard-cell-alert {
+  color: #8a2f2f;
+  font-weight: 700;
 }
 
 .logout-button {
