@@ -51,7 +51,6 @@ const DASHBOARD_NAV_ITEMS = [
   { id: "professional", label: "Cadastrar Profissional" },
   { id: "team", label: "Cadastrar Equipe" },
   { id: "patient", label: "Cadastrar Paciente" },
-  { id: "admission", label: "Internação" },
   { id: "inpatients", label: "Pacientes Internados" },
   { id: "medication", label: "Cadastro de Medicamentos" }
 ] as const;
@@ -135,22 +134,6 @@ function formatTimestamp(timestamp: string): string {
 
 function formatNumber(value: number): string {
   return value.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-function getBmiFormulaLabel(formulaId: BmiFormulaId | null): string {
-  if (!formulaId) {
-    return "-";
-  }
-  const found = BMI_FORMULA_OPTIONS.find((item) => item.id === formulaId);
-  return found?.label ?? formulaId;
-}
-
-function getBsaFormulaLabel(formulaId: BsaFormulaId | null): string {
-  if (!formulaId) {
-    return "-";
-  }
-  const found = BSA_FORMULA_OPTIONS.find((item) => item.id === formulaId);
-  return found?.label ?? formulaId;
 }
 
 function parseDosePart(input: string): { dose: number | null; doseUnit: string } {
@@ -284,7 +267,6 @@ export default function DashboardConsole({
     professional: false,
     team: false,
     patient: false,
-    admission: false,
     inpatients: false,
     medication: false
   });
@@ -320,7 +302,6 @@ export default function DashboardConsole({
   });
 
   const [admissionForm, setAdmissionForm] = useState({
-    patientId: patients[0] ? String(patients[0].id) : "",
     admissionDate: "",
     bed: "",
     admissionReason: "",
@@ -658,15 +639,6 @@ export default function DashboardConsole({
     }
   }, [rawPrescriptionAdmissionId, selectedPatientAdmissions]);
 
-  const selectedAdmissionPatientAllergies = useMemo(() => {
-    const patientId = Number(admissionForm.patientId);
-    if (!Number.isInteger(patientId) || patientId <= 0) {
-      return [];
-    }
-
-    return patientAllergies.filter((allergy) => allergy.patientId === patientId);
-  }, [patientAllergies, admissionForm.patientId]);
-
   const prescriptionSetStartAt = normalizeHospitalDateTime(prescriptionSetForm.startAt);
   const prescriptionSetEndAt = normalizeHospitalDateTime(prescriptionSetForm.endAt);
   const prescriptionSetStatus = prescriptionSetForm.status.trim() || "Validado";
@@ -961,6 +933,15 @@ export default function DashboardConsole({
   async function handleAdmissionSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setAdmissionFeedback(null);
+
+    if (!selectedPatient) {
+      setAdmissionFeedback({
+        type: "error",
+        message: "Selecione um paciente internado para cadastrar a internação."
+      });
+      return;
+    }
+
     setAdmissionLoading(true);
 
     try {
@@ -969,7 +950,7 @@ export default function DashboardConsole({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...admissionForm,
-          patientId: Number(admissionForm.patientId),
+          patientId: selectedPatient.id,
           teamId: Number(admissionForm.teamId),
           weightKg: Number(admissionForm.weightKg),
           heightCm: Number(admissionForm.heightCm)
@@ -987,7 +968,6 @@ export default function DashboardConsole({
 
       setAdmissionFeedback({ type: "success", message: "Internação cadastrada com sucesso." });
       setAdmissionForm({
-        patientId: patients[0] ? String(patients[0].id) : "",
         admissionDate: "",
         bed: "",
         admissionReason: "",
@@ -1884,6 +1864,169 @@ export default function DashboardConsole({
                         {patientView === "admission-info" ? (
                           <div className="dashboard-subsection-block">
                             <h3>Informações da internação</h3>
+
+                            <form className="dashboard-form" onSubmit={handleAdmissionSubmit}>
+                              <input
+                                value={`${selectedPatient.fullName} (${selectedPatient.chartNumber})`}
+                                disabled
+                                aria-label="Paciente selecionado"
+                              />
+
+                              <div className="dashboard-calculation-box">
+                                <h3>Alergias replicadas do cadastro do paciente</h3>
+                                {selectedPatientAllergies.length === 0 ? (
+                                  <p>Nenhuma alergia cadastrada para este paciente.</p>
+                                ) : (
+                                  <ul className="dashboard-chip-list">
+                                    {selectedPatientAllergies.map((allergy) => (
+                                      <li key={allergy.id}>{allergy.allergyName}</li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </div>
+
+                              <div className="dashboard-two-columns">
+                                <input
+                                  type="date"
+                                  value={admissionForm.admissionDate}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({
+                                      ...current,
+                                      admissionDate: event.target.value
+                                    }))
+                                  }
+                                  required
+                                />
+                                <input
+                                  placeholder="Leito"
+                                  value={admissionForm.bed}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({ ...current, bed: event.target.value }))
+                                  }
+                                  required
+                                />
+                              </div>
+
+                              <textarea
+                                placeholder="Motivo da internação"
+                                value={admissionForm.admissionReason}
+                                onChange={(event) =>
+                                  setAdmissionForm((current) => ({
+                                    ...current,
+                                    admissionReason: event.target.value
+                                  }))
+                                }
+                                required
+                              />
+
+                              <select
+                                value={admissionForm.teamId}
+                                onChange={(event) =>
+                                  setAdmissionForm((current) => ({ ...current, teamId: event.target.value }))
+                                }
+                                required
+                              >
+                                <option value="">Selecione a equipe</option>
+                                {teams.map((team) => (
+                                  <option key={team.id} value={team.id}>
+                                    {team.name}
+                                  </option>
+                                ))}
+                              </select>
+
+                              <div className="dashboard-two-columns">
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  placeholder="Peso (kg)"
+                                  value={admissionForm.weightKg}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({ ...current, weightKg: event.target.value }))
+                                  }
+                                  required
+                                />
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  placeholder="Altura (cm)"
+                                  value={admissionForm.heightCm}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({ ...current, heightCm: event.target.value }))
+                                  }
+                                  required
+                                />
+                              </div>
+
+                              <div className="dashboard-two-columns">
+                                <select
+                                  value={admissionForm.bmiFormula}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({
+                                      ...current,
+                                      bmiFormula: event.target.value as BmiFormulaId
+                                    }))
+                                  }
+                                >
+                                  {BMI_FORMULA_OPTIONS.map((formula) => (
+                                    <option key={formula.id} value={formula.id}>
+                                      IMC: {formula.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={admissionForm.bsaFormula}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({
+                                      ...current,
+                                      bsaFormula: event.target.value as BsaFormulaId
+                                    }))
+                                  }
+                                >
+                                  {BSA_FORMULA_OPTIONS.map((formula) => (
+                                    <option key={formula.id} value={formula.id}>
+                                      SC: {formula.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div className="dashboard-calculation-box">
+                                <h3>Cálculo automático</h3>
+                                <p>
+                                  {selectedBmiFormula?.label}: <span>{selectedBmiFormula?.equation ?? "-"}</span>
+                                </p>
+                                <p>
+                                  {selectedBsaFormula?.label}: <span>{selectedBsaFormula?.equation ?? "-"}</span>
+                                </p>
+                                <div className="dashboard-two-columns">
+                                  <input
+                                    value={admissionPreview ? formatNumber(admissionPreview.bmi) : "IMC calculado"}
+                                    disabled
+                                  />
+                                  <input
+                                    value={
+                                      admissionPreview
+                                        ? formatNumber(admissionPreview.bodySurfaceArea)
+                                        : "Superfície corporal calculada"
+                                    }
+                                    disabled
+                                  />
+                                </div>
+                              </div>
+
+                              {admissionFeedback ? (
+                                <p className={`dashboard-feedback dashboard-feedback-${admissionFeedback.type}`}>
+                                  {admissionFeedback.message}
+                                </p>
+                              ) : null}
+
+                              <button type="submit" disabled={admissionLoading}>
+                                {admissionLoading ? "Salvando..." : "Salvar internação"}
+                              </button>
+                            </form>
+
                             <div className="dashboard-table-wrap">
                               <table className="dashboard-table">
                                 <thead>
@@ -2488,246 +2631,6 @@ export default function DashboardConsole({
                   </section>
                     </>
                   ) : null}
-                </section>
-              ) : null}
-
-              {activeSection === "admission" ? (
-                <section className="dashboard-card">
-                  <h2>Internação</h2>
-                  <form className="dashboard-form" onSubmit={handleAdmissionSubmit}>
-                    <select
-                      value={admissionForm.patientId}
-                      onChange={(event) =>
-                        setAdmissionForm((current) => ({ ...current, patientId: event.target.value }))
-                      }
-                      required
-                    >
-                      <option value="">Selecione o paciente</option>
-                      {patients.map((patient) => (
-                        <option key={patient.id} value={patient.id}>
-                          {patient.fullName} ({patient.chartNumber})
-                        </option>
-                      ))}
-                    </select>
-
-                    <div className="dashboard-calculation-box">
-                      <h3>Alergias replicadas do cadastro do paciente</h3>
-                      {selectedAdmissionPatientAllergies.length === 0 ? (
-                        <p>Nenhuma alergia cadastrada para este paciente.</p>
-                      ) : (
-                        <ul className="dashboard-chip-list">
-                          {selectedAdmissionPatientAllergies.map((allergy) => (
-                            <li key={allergy.id}>{allergy.allergyName}</li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-
-                    <div className="dashboard-two-columns">
-                      <input
-                        type="date"
-                        value={admissionForm.admissionDate}
-                        onChange={(event) =>
-                          setAdmissionForm((current) => ({
-                            ...current,
-                            admissionDate: event.target.value
-                          }))
-                        }
-                        required
-                      />
-                      <input
-                        placeholder="Leito"
-                        value={admissionForm.bed}
-                        onChange={(event) =>
-                          setAdmissionForm((current) => ({ ...current, bed: event.target.value }))
-                        }
-                        required
-                      />
-                    </div>
-
-                    <textarea
-                      placeholder="Motivo da internação"
-                      value={admissionForm.admissionReason}
-                      onChange={(event) =>
-                        setAdmissionForm((current) => ({
-                          ...current,
-                          admissionReason: event.target.value
-                        }))
-                      }
-                      required
-                    />
-
-                    <select
-                      value={admissionForm.teamId}
-                      onChange={(event) =>
-                        setAdmissionForm((current) => ({ ...current, teamId: event.target.value }))
-                      }
-                      required
-                    >
-                      <option value="">Selecione a equipe</option>
-                      {teams.map((team) => (
-                        <option key={team.id} value={team.id}>
-                          {team.name}
-                        </option>
-                      ))}
-                    </select>
-
-                    <div className="dashboard-two-columns">
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        placeholder="Peso (kg)"
-                        value={admissionForm.weightKg}
-                        onChange={(event) =>
-                          setAdmissionForm((current) => ({ ...current, weightKg: event.target.value }))
-                        }
-                        required
-                      />
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        placeholder="Altura (cm)"
-                        value={admissionForm.heightCm}
-                        onChange={(event) =>
-                          setAdmissionForm((current) => ({ ...current, heightCm: event.target.value }))
-                        }
-                        required
-                      />
-                    </div>
-
-                    <div className="dashboard-two-columns">
-                      <select
-                        value={admissionForm.bmiFormula}
-                        onChange={(event) =>
-                          setAdmissionForm((current) => ({
-                            ...current,
-                            bmiFormula: event.target.value as BmiFormulaId
-                          }))
-                        }
-                      >
-                        {BMI_FORMULA_OPTIONS.map((formula) => (
-                          <option key={formula.id} value={formula.id}>
-                            IMC: {formula.label}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={admissionForm.bsaFormula}
-                        onChange={(event) =>
-                          setAdmissionForm((current) => ({
-                            ...current,
-                            bsaFormula: event.target.value as BsaFormulaId
-                          }))
-                        }
-                      >
-                        {BSA_FORMULA_OPTIONS.map((formula) => (
-                          <option key={formula.id} value={formula.id}>
-                            SC: {formula.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="dashboard-calculation-box">
-                      <h3>Cálculo automático</h3>
-                      <p>
-                        {selectedBmiFormula?.label}: <span>{selectedBmiFormula?.equation ?? "-"}</span>
-                      </p>
-                      <p>
-                        {selectedBsaFormula?.label}: <span>{selectedBsaFormula?.equation ?? "-"}</span>
-                      </p>
-                      <div className="dashboard-two-columns">
-                        <input
-                          value={admissionPreview ? formatNumber(admissionPreview.bmi) : "IMC calculado"}
-                          disabled
-                        />
-                        <input
-                          value={
-                            admissionPreview
-                              ? formatNumber(admissionPreview.bodySurfaceArea)
-                              : "Superfície corporal calculada"
-                          }
-                          disabled
-                        />
-                      </div>
-                    </div>
-
-                    {admissionFeedback ? (
-                      <p className={`dashboard-feedback dashboard-feedback-${admissionFeedback.type}`}>
-                        {admissionFeedback.message}
-                      </p>
-                    ) : null}
-
-                    <button type="submit" disabled={admissionLoading}>
-                      {admissionLoading ? "Salvando..." : "Salvar internação"}
-                    </button>
-                  </form>
-
-                  <div className="dashboard-list-box">
-                    <button
-                      type="button"
-                      className="dashboard-list-toggle"
-                      onClick={() => toggleList("admission")}
-                    >
-                      {listVisibility.admission ? "Ocultar pacientes internados" : "Ver pacientes internados"}
-                    </button>
-                    {listVisibility.admission ? (
-                      recentAdmissions.length === 0 ? (
-                        <p className="dashboard-muted">Nenhuma internação cadastrada.</p>
-                      ) : (
-                        <div className="dashboard-table-wrap">
-                          <table className="dashboard-table">
-                            <thead>
-                              <tr>
-                                <th>Paciente</th>
-                                <th>Admissão</th>
-                                <th>Leito</th>
-                                <th>Equipe</th>
-                                <th>Peso/Altura</th>
-                                <th>IMC</th>
-                                <th>Fórmula IMC</th>
-                                <th>SC</th>
-                                <th>Fórmula SC</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {recentAdmissions.map((admission) => (
-                                <tr key={admission.id}>
-                                  <td>
-                                    <button
-                                      type="button"
-                                      className="dashboard-link-button"
-                                      onClick={() => openPatientDetails(admission.patientId, "admission-info")}
-                                    >
-                                      {admission.patientName}
-                                    </button>
-                                  </td>
-                                  <td>{admission.admissionDate}</td>
-                                  <td>{admission.bed}</td>
-                                  <td>{admission.teamName ?? "-"}</td>
-                                  <td>
-                                    {admission.weightKg !== null && admission.heightCm !== null
-                                      ? `${formatNumber(admission.weightKg)} kg / ${formatNumber(admission.heightCm)} cm`
-                                      : "-"}
-                                  </td>
-                                  <td>{admission.bmi !== null ? formatNumber(admission.bmi) : "-"}</td>
-                                  <td>{getBmiFormulaLabel(admission.bmiFormula)}</td>
-                                  <td>
-                                    {admission.bodySurfaceArea !== null
-                                      ? formatNumber(admission.bodySurfaceArea)
-                                      : "-"}
-                                  </td>
-                                  <td>{getBsaFormulaLabel(admission.bsaFormula)}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      )
-                    ) : null}
-                  </div>
                 </section>
               ) : null}
 
