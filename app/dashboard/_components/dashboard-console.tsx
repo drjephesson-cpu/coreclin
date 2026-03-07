@@ -351,6 +351,51 @@ function extractConceptTokens(input: string): string[] {
   return Array.from(new Set(tokens));
 }
 
+function extractTherapeuticClassCodes(input: string): string[] {
+  const source = input.trim().toUpperCase();
+  if (!source) {
+    return [];
+  }
+
+  const firstChunk = source.split("-")[0] ?? source;
+  const rawCandidates = firstChunk
+    .split(/[;,|/ ]+/)
+    .map((part) => part.replace(/[^A-Z0-9]/g, "").trim())
+    .filter((part) => part.length >= 3)
+    .filter((part) => /^[A-Z]\d[A-Z0-9]+$/.test(part));
+
+  const collected = new Set<string>();
+  for (const candidate of rawCandidates) {
+    collected.add(candidate);
+    if (candidate.length > 3) {
+      collected.add(candidate.slice(0, 3));
+    }
+  }
+
+  return Array.from(collected);
+}
+
+function hasTherapeuticClassCodeMatch(firstCodes: string[], secondCodes: string[]): boolean {
+  if (firstCodes.length === 0 || secondCodes.length === 0) {
+    return false;
+  }
+
+  const secondCodeSet = new Set(secondCodes);
+  if (firstCodes.some((firstCode) => secondCodeSet.has(firstCode))) {
+    return true;
+  }
+
+  const firstFamilySet = new Set(firstCodes.map((code) => code.slice(0, 3)));
+  const secondFamilySet = new Set(secondCodes.map((code) => code.slice(0, 3)));
+  for (const familyCode of firstFamilySet) {
+    if (secondFamilySet.has(familyCode)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function hasConceptTermMatch(source: string, target: string): boolean {
   if (!source || !target) {
     return false;
@@ -988,6 +1033,7 @@ export default function DashboardConsole({
           medication,
           normalizedName: normalizeMedicationName(medication.name),
           normalizedClass,
+          classCodes: extractTherapeuticClassCodes(medication.therapeuticClass ?? ""),
           activeIngredientTerms,
           classTerms: splitCatalogTerms((medication.therapeuticClass ?? "").replace(/-/g, ";")),
           aliasTerms
@@ -1051,6 +1097,7 @@ export default function DashboardConsole({
       if (!normalizedAllergy) {
         continue;
       }
+      const allergyClassCodes = extractTherapeuticClassCodes(allergy.allergyName);
 
       if (isMedicationNameCompatible(medicationName, allergy.allergyName)) {
         return {
@@ -1076,7 +1123,33 @@ export default function DashboardConsole({
       const allergyDescriptors = findMedicationDescriptorsByText(allergy.allergyName);
 
       for (const prescribedDescriptor of prescribedDescriptors) {
+        if (
+          hasTherapeuticClassCodeMatch(allergyClassCodes, prescribedDescriptor.classCodes)
+        ) {
+          return {
+            allergyName: allergy.allergyName,
+            kind: "therapeutic-class",
+            detail: prescribedDescriptor.medication.therapeuticClass ?? allergy.allergyName
+          };
+        }
+
         for (const allergyDescriptor of allergyDescriptors) {
+          if (
+            hasTherapeuticClassCodeMatch(
+              allergyDescriptor.classCodes,
+              prescribedDescriptor.classCodes
+            )
+          ) {
+            return {
+              allergyName: allergy.allergyName,
+              kind: "therapeutic-class",
+              detail:
+                prescribedDescriptor.medication.therapeuticClass ??
+                allergyDescriptor.medication.therapeuticClass ??
+                allergy.allergyName
+            };
+          }
+
           for (const allergyIngredientTerm of allergyDescriptor.activeIngredientTerms) {
             const ingredientOverlap = prescribedDescriptor.activeIngredientTerms.find(
               (prescribedIngredientTerm) =>
