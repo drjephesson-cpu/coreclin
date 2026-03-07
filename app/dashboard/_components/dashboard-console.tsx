@@ -62,6 +62,20 @@ const PATIENT_VIEW_ITEMS = [
   { id: "prescriptions", label: "Prescrição médica" }
 ] as const;
 
+const PRIOR_MEDICATION_FREQUENCY_OPTIONS = [
+  "1x ao dia",
+  "2x ao dia",
+  "3x ao dia",
+  "4x ao dia",
+  "5x ao dia",
+  "6x ao dia",
+  "1 vez por semana",
+  "2 vezes por semana",
+  "3 vezes por semana",
+  "4 vezes por semana",
+  "5 vezes por semana"
+] as const;
+
 type DashboardSectionId = (typeof DASHBOARD_NAV_ITEMS)[number]["id"];
 type PatientViewId = (typeof PATIENT_VIEW_ITEMS)[number]["id"];
 type PrescriptionMode = "view" | "create" | "raw";
@@ -690,13 +704,70 @@ export default function DashboardConsole({
     return Array.from(groups.values()).sort((firstGroup, secondGroup) => {
       const firstTime = firstGroup.validationStartAt
         ? new Date(firstGroup.validationStartAt).getTime()
-        : 0;
+      : 0;
       const secondTime = secondGroup.validationStartAt
         ? new Date(secondGroup.validationStartAt).getTime()
-        : 0;
+      : 0;
       return secondTime - firstTime;
     });
   }, [selectedPatientPrescriptions]);
+
+  const priorMedicationFormReconciliation = useMemo(() => {
+    const medicationName = (
+      priorMedicationCatalogMatch?.name ?? priorMedicationForm.medicationName
+    ).trim();
+    if (!medicationName) {
+      return null;
+    }
+
+    const history = selectedPatientPrescriptionGroups.map((group) => {
+      const prescriptionDate =
+        group.validationStartAt ?? group.validationEndAt ?? group.prescriptions[0]?.createdAt ?? null;
+      const reconciled = group.prescriptions.some((prescription) =>
+        isMedicationNameCompatible(prescription.medicationName, medicationName)
+      );
+      return {
+        key: group.key,
+        prescriptionDate,
+        reconciled
+      };
+    });
+
+    const latest = history[0] ?? null;
+    return {
+      latestPrescriptionDate: latest?.prescriptionDate ?? null,
+      latestReconciled: latest?.reconciled ?? null,
+      reconciledInAllPrescriptions: history.length > 0 ? history.every((item) => item.reconciled) : null
+    };
+  }, [priorMedicationCatalogMatch, priorMedicationForm.medicationName, selectedPatientPrescriptionGroups]);
+
+  const priorMedicationRows = useMemo(
+    () =>
+      selectedPatientPriorMedications.map((priorMedication) => {
+        const history = selectedPatientPrescriptionGroups.map((group) => {
+          const prescriptionDate =
+            group.validationStartAt ?? group.validationEndAt ?? group.prescriptions[0]?.createdAt ?? null;
+          const reconciled = group.prescriptions.some((prescription) =>
+            isMedicationNameCompatible(prescription.medicationName, priorMedication.medicationName)
+          );
+          return {
+            key: group.key,
+            prescriptionDate,
+            reconciled
+          };
+        });
+
+        const latest = history[0] ?? null;
+        return {
+          priorMedication,
+          latestPrescriptionDate: latest?.prescriptionDate ?? null,
+          latestReconciled: latest?.reconciled ?? null,
+          reconciledInAllPrescriptions: history.length > 0 ? history.every((item) => item.reconciled) : null,
+          history
+        };
+      }),
+    [selectedPatientPriorMedications, selectedPatientPrescriptionGroups]
+  );
 
   useEffect(() => {
     if (!rawPrescriptionAdmissionId) {
@@ -2234,8 +2305,7 @@ export default function DashboardConsole({
                               </div>
 
                               <div className="dashboard-two-columns">
-                                <input
-                                  placeholder="Frequência"
+                                <select
                                   value={priorMedicationForm.frequency}
                                   onChange={(event) =>
                                     setPriorMedicationForm((current) => ({
@@ -2244,9 +2314,16 @@ export default function DashboardConsole({
                                     }))
                                   }
                                   required
-                                />
+                                >
+                                  <option value="">Selecione a frequência</option>
+                                  {PRIOR_MEDICATION_FREQUENCY_OPTIONS.map((frequencyOption) => (
+                                    <option key={frequencyOption} value={frequencyOption}>
+                                      {frequencyOption}
+                                    </option>
+                                  ))}
+                                </select>
                                 <input
-                                  placeholder="Turnos de uso"
+                                  placeholder="Quantidade por horário (ex.: 1-1-1)"
                                   value={priorMedicationForm.shifts}
                                   onChange={(event) =>
                                     setPriorMedicationForm((current) => ({
@@ -2257,6 +2334,44 @@ export default function DashboardConsole({
                                   required
                                 />
                               </div>
+
+                              <p className="dashboard-muted">
+                                Para esquema semanal (ex.: 3 vezes por semana), selecione a frequência e informe a
+                                quantidade por horário no padrão da tomada (ex.: 1-1-1).
+                              </p>
+
+                              <div className="dashboard-two-columns">
+                                <input
+                                  value={
+                                    priorMedicationFormReconciliation?.latestPrescriptionDate
+                                      ? `Última prescrição: ${formatTimestamp(
+                                          priorMedicationFormReconciliation.latestPrescriptionDate
+                                        )}`
+                                      : "Última prescrição: não encontrada"
+                                  }
+                                  disabled
+                                  aria-label="Data da última prescrição"
+                                />
+                                <input
+                                  value={
+                                    priorMedicationFormReconciliation?.latestReconciled
+                                      ? "Reconciliado na última: Sim"
+                                      : "Reconciliado na última: Não"
+                                  }
+                                  disabled
+                                  aria-label="Reconciliado na última prescrição"
+                                />
+                              </div>
+
+                              <input
+                                value={
+                                  priorMedicationFormReconciliation?.reconciledInAllPrescriptions
+                                    ? "Reconciliado em todas as prescrições: Sim"
+                                    : "Reconciliado em todas as prescrições: Não"
+                                }
+                                disabled
+                                aria-label="Reconciliado em todas as prescrições"
+                              />
 
                               {priorMedicationFeedback ? (
                                 <p
@@ -2278,25 +2393,60 @@ export default function DashboardConsole({
                                     <th>Medicamento</th>
                                     <th>Dose</th>
                                     <th>Frequência</th>
-                                    <th>Turnos</th>
+                                    <th>Qtd. por horário</th>
+                                    <th>Data da prescrição</th>
+                                    <th>Reconciliado</th>
+                                    <th>Reconciliado em todas</th>
+                                    <th>Histórico</th>
                                     <th>Registro</th>
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {selectedPatientPriorMedications.length === 0 ? (
+                                  {priorMedicationRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={5}>Nenhum medicamento prévio cadastrado.</td>
+                                      <td colSpan={9}>Nenhum medicamento prévio cadastrado.</td>
                                     </tr>
                                   ) : (
-                                    selectedPatientPriorMedications.map((medication) => (
-                                      <tr key={medication.id}>
-                                        <td>{medication.medicationName}</td>
+                                    priorMedicationRows.map((row) => (
+                                      <tr key={row.priorMedication.id}>
+                                        <td>{row.priorMedication.medicationName}</td>
                                         <td>
-                                          {formatNumber(medication.dose)} {medication.doseUnit}
+                                          {formatNumber(row.priorMedication.dose)} {row.priorMedication.doseUnit}
                                         </td>
-                                        <td>{medication.frequency}</td>
-                                        <td>{medication.shifts}</td>
-                                        <td>{formatTimestamp(medication.createdAt)}</td>
+                                        <td>{row.priorMedication.frequency}</td>
+                                        <td>{row.priorMedication.shifts}</td>
+                                        <td>
+                                          {row.latestPrescriptionDate
+                                            ? formatTimestamp(row.latestPrescriptionDate)
+                                            : "-"}
+                                        </td>
+                                        <td>{row.latestReconciled ? "Sim" : "Não"}</td>
+                                        <td>
+                                          {row.reconciledInAllPrescriptions === null
+                                            ? "Não"
+                                            : row.reconciledInAllPrescriptions
+                                              ? "Sim"
+                                              : "Não"}
+                                        </td>
+                                        <td>
+                                          {row.history.length === 0 ? (
+                                            "-"
+                                          ) : (
+                                            <details>
+                                              <summary>Ver histórico</summary>
+                                              {row.history.map((historyItem) => (
+                                                <p key={`${row.priorMedication.id}-${historyItem.key}`}>
+                                                  {historyItem.prescriptionDate
+                                                    ? formatTimestamp(historyItem.prescriptionDate)
+                                                    : "Sem data"}
+                                                  {" "}
+                                                  | Reconciliado: {historyItem.reconciled ? "Sim" : "Não"}
+                                                </p>
+                                              ))}
+                                            </details>
+                                          )}
+                                        </td>
+                                        <td>{formatTimestamp(row.priorMedication.createdAt)}</td>
                                       </tr>
                                     ))
                                   )}
