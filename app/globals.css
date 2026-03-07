@@ -230,6 +230,26 @@ body {
   gap: 8px;
 }
 
+.dashboard-sidebar-group {
+  display: grid;
+  gap: 6px;
+}
+
+.dashboard-sidebar-group-title {
+  margin: 0;
+  font-size: 0.76rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #56756b;
+  font-weight: 700;
+}
+
+.dashboard-sidebar-separator {
+  height: 1px;
+  background: #d8e6e0;
+  margin: 4px 0 2px;
+}
+
 .dashboard-sidebar-link {
   border: 1px solid #c5dbd2;
   border-radius: 12px;
@@ -606,6 +626,23 @@ body {
 
 .dashboard-table td {
   color: #355147;
+}
+
+.dashboard-table-select {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid #b5cfc5;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #18372e;
+  font-size: 0.86rem;
+  padding: 0 8px;
+}
+
+.dashboard-table-select:focus {
+  outline: none;
+  border-color: var(--mint);
+  box-shadow: 0 0 0 3px rgba(28, 143, 107, 0.14);
 }
 
 .dashboard-table tr.dashboard-row-missing td {

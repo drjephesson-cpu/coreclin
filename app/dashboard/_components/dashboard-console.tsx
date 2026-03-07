@@ -48,11 +48,22 @@ const UF_OPTIONS = [
 ] as const;
 
 const DASHBOARD_NAV_ITEMS = [
-  { id: "professional", label: "Cadastrar Profissional" },
-  { id: "team", label: "Cadastrar Equipe" },
-  { id: "patient", label: "Cadastrar Paciente" },
-  { id: "inpatients", label: "Pacientes Internados" },
-  { id: "medication", label: "Cadastro de Medicamentos" }
+  { id: "professional", label: "Cadastrar profissional" },
+  { id: "team", label: "Cadastrar equipe" },
+  { id: "patient", label: "Cadastrar pacientes" },
+  { id: "medication", label: "Cadastrar medicamentos" },
+  { id: "inpatients", label: "Pacientes internados" }
+] as const;
+
+const DASHBOARD_NAV_GROUPS = [
+  { label: "Profissionais", items: [{ id: "professional", label: "Cadastrar profissional" }] },
+  { label: "Equipe", items: [{ id: "team", label: "Cadastrar equipe" }] },
+  { label: "Paciente", items: [{ id: "patient", label: "Cadastrar pacientes" }] },
+  { label: "Medicamentos", items: [{ id: "medication", label: "Cadastrar medicamentos" }] }
+] as const;
+
+const DASHBOARD_NAV_STANDALONE_ITEMS = [
+  { id: "inpatients", label: "Pacientes internados" }
 ] as const;
 
 const PATIENT_VIEW_ITEMS = [
@@ -76,10 +87,48 @@ const PRIOR_MEDICATION_FREQUENCY_OPTIONS = [
   "5 vezes por semana"
 ] as const;
 
+const INPATIENT_STATUS_OPTIONS = ["Pendente", "Concluído", "Alta"] as const;
+const INPATIENT_OVERVIEW_ITEMS = [
+  { id: "team", label: "Por equipe" },
+  { id: "mandatory", label: "Atendimentos obrigatórios" },
+  { id: "discharged", label: "Pacientes de alta" }
+] as const;
+const INPATIENT_WORKFLOW_STORAGE_KEY = "coreclin.inpatient-workflow.v1";
+
 type DashboardSectionId = (typeof DASHBOARD_NAV_ITEMS)[number]["id"];
 type PatientViewId = (typeof PATIENT_VIEW_ITEMS)[number]["id"];
 type PrescriptionMode = "view" | "create" | "raw";
+type InpatientOverviewMode = "team" | "mandatory" | "discharged";
+type InpatientWorkflowStatus = (typeof INPATIENT_STATUS_OPTIONS)[number];
 type FeedbackType = "success" | "error";
+
+type InpatientWorkflowState = {
+  status: InpatientWorkflowStatus;
+  assignedTeamId: number | null;
+  mandatory: boolean;
+  updatedAt: string;
+};
+
+type InpatientEntrySource = "active" | "manual";
+
+type InpatientEntry = {
+  key: string;
+  patientId: number | null;
+  patientName: string;
+  chartNumber: string;
+  admissionDate: string;
+  bed: string;
+  teamName: string | null;
+  teamId: number | null;
+  source: InpatientEntrySource;
+  createdAt: string;
+};
+
+type InpatientWorkflowStoragePayload = {
+  workflowByKey: Record<string, InpatientWorkflowState>;
+  trackedEntries: InpatientEntry[];
+  priorityTeamIds: number[];
+};
 
 type FeedbackState = {
   type: FeedbackType;
@@ -267,6 +316,20 @@ function isWithinPrescriptionValidity(startAt: string | null, endAt: string | nu
   return now >= start && now <= end;
 }
 
+function areInpatientEntriesEquivalent(first: InpatientEntry, second: InpatientEntry): boolean {
+  return (
+    first.key === second.key &&
+    first.patientId === second.patientId &&
+    first.patientName === second.patientName &&
+    first.chartNumber === second.chartNumber &&
+    first.admissionDate === second.admissionDate &&
+    first.bed === second.bed &&
+    first.teamName === second.teamName &&
+    first.teamId === second.teamId &&
+    first.source === second.source
+  );
+}
+
 export default function DashboardConsole({
   currentLogin,
   data,
@@ -289,7 +352,7 @@ export default function DashboardConsole({
     professional: false,
     team: false,
     patient: false,
-    inpatients: false,
+    inpatients: true,
     medication: false
   });
 
@@ -347,6 +410,15 @@ export default function DashboardConsole({
     patients[0] ? String(patients[0].id) : ""
   );
   const [inpatientSearch, setInpatientSearch] = useState("");
+  const [inpatientOverviewMode, setInpatientOverviewMode] = useState<InpatientOverviewMode>("team");
+  const [inpatientTeamFilter, setInpatientTeamFilter] = useState("all");
+  const [mandatoryRawInput, setMandatoryRawInput] = useState("");
+  const [mandatoryFeedback, setMandatoryFeedback] = useState<FeedbackState>(null);
+  const [workflowByInpatientKey, setWorkflowByInpatientKey] = useState<
+    Record<string, InpatientWorkflowState>
+  >({});
+  const [trackedInpatientEntries, setTrackedInpatientEntries] = useState<InpatientEntry[]>([]);
+  const [priorityTeamIds, setPriorityTeamIds] = useState<number[]>([]);
   const [patientDetailsOpen, setPatientDetailsOpen] = useState(false);
   const [patientView, setPatientView] = useState<PatientViewId>("allergies");
   const [prescriptionMode, setPrescriptionMode] = useState<PrescriptionMode>("view");
@@ -464,28 +536,22 @@ export default function DashboardConsole({
       ? patients.find((patient) => patient.id === selectedPatientNumericId) ?? null
       : null;
 
-  const inpatients = useMemo(() => {
-    const uniquePatients = new Map<
-      number,
-      {
-        patientId: number;
-        patientName: string;
-        chartNumber: string;
-        admissionDate: string;
-        bed: string;
-        teamName: string | null;
-      }
-    >();
+  const inpatients = useMemo<InpatientEntry[]>(() => {
+    const uniquePatients = new Map<number, InpatientEntry>();
 
     for (const admission of recentAdmissions) {
       if (!uniquePatients.has(admission.patientId)) {
         uniquePatients.set(admission.patientId, {
+          key: `patient-${admission.patientId}`,
           patientId: admission.patientId,
           patientName: admission.patientName,
           chartNumber: admission.chartNumber,
           admissionDate: admission.admissionDate,
           bed: admission.bed,
-          teamName: admission.teamName
+          teamName: admission.teamName,
+          teamId: admission.teamId,
+          source: "active",
+          createdAt: admission.createdAt
         });
       }
     }
@@ -509,6 +575,127 @@ export default function DashboardConsole({
   }, [inpatients, inpatientSearch]);
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      const rawPayload = window.localStorage.getItem(INPATIENT_WORKFLOW_STORAGE_KEY);
+      if (!rawPayload) {
+        return;
+      }
+
+      const parsedPayload = JSON.parse(rawPayload) as Partial<InpatientWorkflowStoragePayload>;
+
+      if (parsedPayload.workflowByKey && typeof parsedPayload.workflowByKey === "object") {
+        setWorkflowByInpatientKey(parsedPayload.workflowByKey as Record<string, InpatientWorkflowState>);
+      }
+
+      if (Array.isArray(parsedPayload.trackedEntries)) {
+        const validEntries = parsedPayload.trackedEntries
+          .filter((entry): entry is InpatientEntry => {
+            if (!entry || typeof entry !== "object") {
+              return false;
+            }
+            return (
+              typeof entry.key === "string" &&
+              typeof entry.patientName === "string" &&
+              typeof entry.chartNumber === "string" &&
+              typeof entry.admissionDate === "string" &&
+              typeof entry.bed === "string" &&
+              (entry.patientId === null || typeof entry.patientId === "number") &&
+              (entry.teamId === null || typeof entry.teamId === "number") &&
+              (entry.teamName === null || typeof entry.teamName === "string") &&
+              (entry.source === "active" || entry.source === "manual")
+            );
+          })
+          .map((entry) => ({
+            ...entry,
+            createdAt: typeof entry.createdAt === "string" ? entry.createdAt : new Date().toISOString()
+          }));
+
+        setTrackedInpatientEntries(validEntries);
+      }
+
+      if (Array.isArray(parsedPayload.priorityTeamIds)) {
+        setPriorityTeamIds(
+          parsedPayload.priorityTeamIds.filter((teamId): teamId is number => typeof teamId === "number")
+        );
+      }
+    } catch {
+      // ignore persisted workflow errors and keep default behavior
+    }
+  }, []);
+
+  useEffect(() => {
+    if (inpatients.length === 0) {
+      return;
+    }
+
+    setTrackedInpatientEntries((current) => {
+      const nextByKey = new Map(current.map((entry) => [entry.key, entry]));
+      let hasChanges = false;
+
+      for (const inpatient of inpatients) {
+        const currentEntry = nextByKey.get(inpatient.key);
+        if (!currentEntry || !areInpatientEntriesEquivalent(currentEntry, inpatient)) {
+          nextByKey.set(inpatient.key, inpatient);
+          hasChanges = true;
+        }
+      }
+
+      return hasChanges ? Array.from(nextByKey.values()) : current;
+    });
+
+    setWorkflowByInpatientKey((current) => {
+      const next = { ...current };
+      let hasChanges = false;
+
+      for (const inpatient of inpatients) {
+        const existingWorkflow = next[inpatient.key];
+        if (!existingWorkflow) {
+          next[inpatient.key] = {
+            status: "Pendente",
+            assignedTeamId: inpatient.teamId ?? null,
+            mandatory: true,
+            updatedAt: new Date().toISOString()
+          };
+          hasChanges = true;
+          continue;
+        }
+
+        if (existingWorkflow.assignedTeamId === null && inpatient.teamId !== null) {
+          next[inpatient.key] = {
+            ...existingWorkflow,
+            assignedTeamId: inpatient.teamId,
+            updatedAt: existingWorkflow.updatedAt || new Date().toISOString()
+          };
+          hasChanges = true;
+        }
+      }
+
+      return hasChanges ? next : current;
+    });
+  }, [inpatients]);
+
+  useEffect(() => {
+    setPriorityTeamIds((current) => current.filter((teamId) => teams.some((team) => team.id === teamId)));
+  }, [teams]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const payload: InpatientWorkflowStoragePayload = {
+      workflowByKey: workflowByInpatientKey,
+      trackedEntries: trackedInpatientEntries,
+      priorityTeamIds
+    };
+    window.localStorage.setItem(INPATIENT_WORKFLOW_STORAGE_KEY, JSON.stringify(payload));
+  }, [workflowByInpatientKey, trackedInpatientEntries, priorityTeamIds]);
+
+  useEffect(() => {
     if (inpatients.length === 0) {
       return;
     }
@@ -517,10 +704,113 @@ export default function DashboardConsole({
       (inpatient) => String(inpatient.patientId) === selectedPatientId
     );
     if (!hasSelectedInpatient) {
-      setSelectedPatientId(String(inpatients[0].patientId));
+      setSelectedPatientId(String(inpatients[0].patientId ?? ""));
       setPatientDetailsOpen(false);
     }
   }, [inpatients, selectedPatientId]);
+
+  const teamNameById = useMemo(() => {
+    const lookup = new Map<number, string>();
+    for (const team of teams) {
+      lookup.set(team.id, team.name);
+    }
+    return lookup;
+  }, [teams]);
+
+  function resolveInpatientWorkflow(entry: InpatientEntry): InpatientWorkflowState {
+    return (
+      workflowByInpatientKey[entry.key] ?? {
+        status: "Pendente",
+        assignedTeamId: entry.teamId ?? null,
+        mandatory: true,
+        updatedAt: entry.createdAt
+      }
+    );
+  }
+
+  const inpatientEntries = useMemo(() => {
+    const entriesByKey = new Map<string, InpatientEntry>();
+    for (const entry of trackedInpatientEntries) {
+      entriesByKey.set(entry.key, entry);
+    }
+    for (const entry of inpatients) {
+      entriesByKey.set(entry.key, entry);
+    }
+    return Array.from(entriesByKey.values());
+  }, [trackedInpatientEntries, inpatients]);
+
+  const inpatientEntriesWithWorkflow = useMemo(
+    () =>
+      inpatientEntries.map((entry) => {
+        const workflow = resolveInpatientWorkflow(entry);
+        const assignedTeamName =
+          workflow.assignedTeamId !== null ? teamNameById.get(workflow.assignedTeamId) ?? null : null;
+        const isPriorityTeam =
+          workflow.assignedTeamId !== null && priorityTeamIds.includes(workflow.assignedTeamId);
+        return {
+          entry,
+          workflow,
+          assignedTeamName,
+          isPriorityTeam
+        };
+      }),
+    [inpatientEntries, workflowByInpatientKey, teamNameById, priorityTeamIds]
+  );
+
+  const teamOverviewRows = useMemo(() => {
+    const filtered = inpatientEntriesWithWorkflow
+      .filter(({ workflow }) => workflow.status !== "Alta")
+      .filter(({ workflow }) => {
+        if (inpatientTeamFilter === "all") {
+          return true;
+        }
+        if (inpatientTeamFilter === "without-team") {
+          return workflow.assignedTeamId === null;
+        }
+        const teamId = Number(inpatientTeamFilter);
+        if (!Number.isInteger(teamId)) {
+          return true;
+        }
+        return workflow.assignedTeamId === teamId;
+      });
+
+    return filtered.sort((first, second) => {
+      const firstPriority = first.isPriorityTeam ? 0 : 1;
+      const secondPriority = second.isPriorityTeam ? 0 : 1;
+      if (firstPriority !== secondPriority) {
+        return firstPriority - secondPriority;
+      }
+
+      const firstTeam = first.assignedTeamName ?? "Sem equipe";
+      const secondTeam = second.assignedTeamName ?? "Sem equipe";
+      const teamComparison = firstTeam.localeCompare(secondTeam, "pt-BR");
+      if (teamComparison !== 0) {
+        return teamComparison;
+      }
+
+      return first.entry.patientName.localeCompare(second.entry.patientName, "pt-BR");
+    });
+  }, [inpatientEntriesWithWorkflow, inpatientTeamFilter]);
+
+  const mandatoryOverviewRows = useMemo(
+    () =>
+      inpatientEntriesWithWorkflow
+        .filter(({ workflow }) => workflow.mandatory && workflow.status === "Pendente")
+        .sort((first, second) => first.entry.patientName.localeCompare(second.entry.patientName, "pt-BR")),
+    [inpatientEntriesWithWorkflow]
+  );
+
+  const dischargedOverviewRows = useMemo(
+    () =>
+      inpatientEntriesWithWorkflow
+        .filter(({ workflow }) => workflow.status === "Alta" || workflow.status === "Concluído")
+        .sort((first, second) => {
+          const firstUpdated = new Date(first.workflow.updatedAt).getTime();
+          const secondUpdated = new Date(second.workflow.updatedAt).getTime();
+          return secondUpdated - firstUpdated;
+        }),
+    [inpatientEntriesWithWorkflow]
+  );
 
   const selectedPatientAdmissions = useMemo(
     () =>
@@ -1473,6 +1763,234 @@ export default function DashboardConsole({
     }));
   }
 
+  function handleInpatientStatusChange(
+    inpatientKey: string,
+    nextStatus: InpatientWorkflowStatus
+  ): void {
+    setWorkflowByInpatientKey((current) => {
+      const fallbackWorkflow: InpatientWorkflowState = {
+        status: "Pendente",
+        assignedTeamId: null,
+        mandatory: true,
+        updatedAt: new Date().toISOString()
+      };
+      const currentWorkflow = current[inpatientKey] ?? fallbackWorkflow;
+      const nextWorkflow: InpatientWorkflowState = {
+        ...currentWorkflow,
+        status: nextStatus,
+        mandatory: nextStatus === "Pendente",
+        updatedAt: new Date().toISOString()
+      };
+
+      if (
+        currentWorkflow.status === nextWorkflow.status &&
+        currentWorkflow.mandatory === nextWorkflow.mandatory &&
+        currentWorkflow.assignedTeamId === nextWorkflow.assignedTeamId
+      ) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [inpatientKey]: nextWorkflow
+      };
+    });
+  }
+
+  function handleInpatientTeamChange(inpatientKey: string, nextTeamValue: string): void {
+    const parsedTeamId = Number(nextTeamValue);
+    const nextTeamId = Number.isInteger(parsedTeamId) && parsedTeamId > 0 ? parsedTeamId : null;
+
+    setWorkflowByInpatientKey((current) => {
+      const fallbackWorkflow: InpatientWorkflowState = {
+        status: "Pendente",
+        assignedTeamId: null,
+        mandatory: true,
+        updatedAt: new Date().toISOString()
+      };
+      const currentWorkflow = current[inpatientKey] ?? fallbackWorkflow;
+      if (currentWorkflow.assignedTeamId === nextTeamId) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [inpatientKey]: {
+          ...currentWorkflow,
+          assignedTeamId: nextTeamId,
+          updatedAt: new Date().toISOString()
+        }
+      };
+    });
+  }
+
+  function togglePriorityTeam(teamId: number): void {
+    setPriorityTeamIds((current) =>
+      current.includes(teamId) ? current.filter((existingId) => existingId !== teamId) : [...current, teamId]
+    );
+  }
+
+  function handleMandatoryRawImport(): void {
+    setMandatoryFeedback(null);
+
+    const rawLines = mandatoryRawInput
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    if (rawLines.length === 0) {
+      setMandatoryFeedback({
+        type: "error",
+        message: "Cole ao menos uma linha para tratar os atendimentos obrigatórios."
+      });
+      return;
+    }
+
+    const currentEntries = new Map(inpatientEntries.map((entry) => [entry.key, entry]));
+    const entriesByChart = new Map<string, InpatientEntry>();
+    const entriesByName = new Map<string, InpatientEntry>();
+    for (const entry of inpatientEntries) {
+      const normalizedChart = normalizeSearchValue(entry.chartNumber);
+      const normalizedName = normalizeSearchValue(entry.patientName);
+      if (normalizedChart && !entriesByChart.has(normalizedChart)) {
+        entriesByChart.set(normalizedChart, entry);
+      }
+      if (normalizedName && !entriesByName.has(normalizedName)) {
+        entriesByName.set(normalizedName, entry);
+      }
+    }
+
+    const nextManualEntries: InpatientEntry[] = [];
+    const entriesToPending = new Map<string, number | null>();
+    let linkedCount = 0;
+    let createdCount = 0;
+    let skippedCount = 0;
+
+    for (const [index, rawLine] of rawLines.entries()) {
+      const parts = rawLine
+        .split(/\t|;|\|/)
+        .map((part) => part.trim())
+        .filter((part) => part.length > 0);
+      const patientName = parts[0] ?? "";
+      const chartNumber = parts[1] ?? "";
+      const bed = parts[2] ?? "";
+      const teamNameRaw = parts[3] ?? "";
+
+      if (!patientName) {
+        skippedCount += 1;
+        continue;
+      }
+
+      const normalizedChart = normalizeSearchValue(chartNumber);
+      const normalizedName = normalizeSearchValue(patientName);
+
+      const existingEntry =
+        (normalizedChart ? entriesByChart.get(normalizedChart) : null) ??
+        (normalizedName ? entriesByName.get(normalizedName) : null) ??
+        null;
+
+      const matchedTeam = teams.find((team) => {
+        const normalizedTeamName = normalizeSearchValue(team.name);
+        const normalizedRawTeamName = normalizeSearchValue(teamNameRaw);
+        return (
+          normalizedRawTeamName.length > 0 &&
+          (normalizedTeamName === normalizedRawTeamName ||
+            normalizedTeamName.includes(normalizedRawTeamName) ||
+            normalizedRawTeamName.includes(normalizedTeamName))
+        );
+      });
+      const parsedTeamId = matchedTeam?.id ?? null;
+
+      if (existingEntry) {
+        entriesToPending.set(
+          existingEntry.key,
+          parsedTeamId ?? resolveInpatientWorkflow(existingEntry).assignedTeamId
+        );
+        linkedCount += 1;
+        continue;
+      }
+
+      const keyBase = normalizeMedicationName(`${patientName} ${chartNumber || index + 1}`) || `item-${index + 1}`;
+      let nextKey = `manual-${keyBase}`;
+      let iteration = 1;
+      while (currentEntries.has(nextKey) || nextManualEntries.some((entry) => entry.key === nextKey)) {
+        iteration += 1;
+        nextKey = `manual-${keyBase}-${iteration}`;
+      }
+
+      nextManualEntries.push({
+        key: nextKey,
+        patientId: null,
+        patientName,
+        chartNumber,
+        admissionDate: new Date().toISOString().slice(0, 10),
+        bed,
+        teamName: matchedTeam?.name ?? (teamNameRaw || null),
+        teamId: parsedTeamId,
+        source: "manual",
+        createdAt: new Date().toISOString()
+      });
+      entriesToPending.set(nextKey, parsedTeamId);
+      createdCount += 1;
+    }
+
+    if (createdCount === 0 && linkedCount === 0) {
+      setMandatoryFeedback({
+        type: "error",
+        message: "Nenhuma linha válida encontrada. Use: Nome;Prontuário;Leito;Equipe."
+      });
+      return;
+    }
+
+    if (nextManualEntries.length > 0) {
+      setTrackedInpatientEntries((current) => {
+        const nextByKey = new Map(current.map((entry) => [entry.key, entry]));
+        for (const manualEntry of nextManualEntries) {
+          nextByKey.set(manualEntry.key, manualEntry);
+        }
+        return Array.from(nextByKey.values());
+      });
+    }
+
+    setWorkflowByInpatientKey((current) => {
+      const next = { ...current };
+      let hasChanges = false;
+      for (const [entryKey, assignedTeamId] of entriesToPending.entries()) {
+        const currentWorkflow = next[entryKey];
+        const fallbackWorkflow: InpatientWorkflowState = {
+          status: "Pendente",
+          assignedTeamId: null,
+          mandatory: true,
+          updatedAt: new Date().toISOString()
+        };
+        const baseWorkflow = currentWorkflow ?? fallbackWorkflow;
+        const updatedWorkflow: InpatientWorkflowState = {
+          ...baseWorkflow,
+          status: "Pendente",
+          mandatory: true,
+          assignedTeamId: assignedTeamId ?? baseWorkflow.assignedTeamId,
+          updatedAt: new Date().toISOString()
+        };
+        if (
+          !currentWorkflow ||
+          currentWorkflow.status !== updatedWorkflow.status ||
+          currentWorkflow.mandatory !== updatedWorkflow.mandatory ||
+          currentWorkflow.assignedTeamId !== updatedWorkflow.assignedTeamId
+        ) {
+          next[entryKey] = updatedWorkflow;
+          hasChanges = true;
+        }
+      }
+      return hasChanges ? next : current;
+    });
+
+    setMandatoryRawInput("");
+    setMandatoryFeedback({
+      type: "success",
+      message: `${createdCount} paciente(s) novo(s) adicionado(s), ${linkedCount} já existente(s) mantido(s) como obrigatório(s).${skippedCount > 0 ? ` ${skippedCount} linha(s) ignorada(s).` : ""}`
+    });
+  }
+
   return (
     <section className="dashboard-panel">
       <header className="dashboard-header">
@@ -1508,7 +2026,25 @@ export default function DashboardConsole({
             <aside className="dashboard-sidebar">
               <h2>Menu</h2>
               <nav>
-                {DASHBOARD_NAV_ITEMS.map((item) => (
+                {DASHBOARD_NAV_GROUPS.map((group) => (
+                  <section key={group.label} className="dashboard-sidebar-group">
+                    <p className="dashboard-sidebar-group-title">{group.label}</p>
+                    {group.items.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={`dashboard-sidebar-link ${activeSection === item.id ? "is-active" : ""}`}
+                        onClick={() => setActiveSection(item.id)}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </section>
+                ))}
+
+                <div className="dashboard-sidebar-separator" />
+
+                {DASHBOARD_NAV_STANDALONE_ITEMS.map((item) => (
                   <button
                     key={item.id}
                     type="button"
@@ -1914,14 +2450,16 @@ export default function DashboardConsole({
                                     </thead>
                                     <tbody>
                                       {filteredInpatients.map((inpatient) => (
-                                        <tr key={inpatient.patientId}>
+                                        <tr key={inpatient.key}>
                                           <td>
                                             <button
                                               type="button"
                                               className="dashboard-link-button"
-                                              onClick={() =>
-                                                openPatientDetails(inpatient.patientId, "admission-info")
-                                              }
+                                              onClick={() => {
+                                                if (inpatient.patientId !== null) {
+                                                  openPatientDetails(inpatient.patientId, "admission-info");
+                                                }
+                                              }}
                                             >
                                               {inpatient.patientName}
                                             </button>
@@ -1940,6 +2478,297 @@ export default function DashboardConsole({
                           )
                         ) : null}
                       </div>
+
+                      <section className="dashboard-subsection">
+                        <h3>Gestão de internados</h3>
+                        <div className="dashboard-inline-actions">
+                          {INPATIENT_OVERVIEW_ITEMS.map((item) => (
+                            <button
+                              key={item.id}
+                              type="button"
+                              className={`dashboard-mini-button ${
+                                inpatientOverviewMode === item.id ? "is-active" : ""
+                              }`}
+                              onClick={() => setInpatientOverviewMode(item.id)}
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        {inpatientOverviewMode === "team" ? (
+                          <div className="dashboard-subsection-block">
+                            <h3>Pacientes por equipe</h3>
+                            <p className="dashboard-muted">
+                              Defina equipe, status e equipes prioritárias. O paciente permanece em equipe até
+                              status Alta.
+                            </p>
+
+                            <div className="dashboard-two-columns">
+                              <select
+                                value={inpatientTeamFilter}
+                                onChange={(event) => setInpatientTeamFilter(event.target.value)}
+                              >
+                                <option value="all">Todas as equipes</option>
+                                <option value="without-team">Sem equipe</option>
+                                {teams.map((team) => (
+                                  <option key={team.id} value={team.id}>
+                                    {team.name}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                value={`Equipes prioritárias: ${priorityTeamIds.length}`}
+                                disabled
+                                aria-label="Quantidade de equipes prioritárias"
+                              />
+                            </div>
+
+                            <div className="dashboard-inline-actions">
+                              {teams.length === 0 ? (
+                                <p className="dashboard-muted">Cadastre equipes para definir prioridades.</p>
+                              ) : (
+                                teams.map((team) => (
+                                  <button
+                                    key={team.id}
+                                    type="button"
+                                    className={`dashboard-mini-button ${
+                                      priorityTeamIds.includes(team.id) ? "is-active" : ""
+                                    }`}
+                                    onClick={() => togglePriorityTeam(team.id)}
+                                  >
+                                    {priorityTeamIds.includes(team.id) ? "Prioritária: " : ""}
+                                    {team.name}
+                                  </button>
+                                ))
+                              )}
+                            </div>
+
+                            <div className="dashboard-table-wrap">
+                              <table className="dashboard-table">
+                                <thead>
+                                  <tr>
+                                    <th>Paciente</th>
+                                    <th>Prontuário</th>
+                                    <th>Leito</th>
+                                    <th>Equipe</th>
+                                    <th>Status</th>
+                                    <th>Detalhes</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {teamOverviewRows.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={6}>Nenhum paciente encontrado para este filtro.</td>
+                                    </tr>
+                                  ) : (
+                                    teamOverviewRows.map(({ entry, workflow, isPriorityTeam }) => (
+                                      <tr key={entry.key}>
+                                        <td>{entry.patientName}</td>
+                                        <td>{entry.chartNumber || "-"}</td>
+                                        <td>{entry.bed || "-"}</td>
+                                        <td>
+                                          <select
+                                            className="dashboard-table-select"
+                                            value={workflow.assignedTeamId ?? ""}
+                                            onChange={(event) =>
+                                              handleInpatientTeamChange(entry.key, event.target.value)
+                                            }
+                                          >
+                                            <option value="">Sem equipe</option>
+                                            {teams.map((team) => (
+                                              <option key={team.id} value={team.id}>
+                                                {team.name}
+                                              </option>
+                                            ))}
+                                          </select>
+                                          {isPriorityTeam ? (
+                                            <span className="dashboard-status-pill is-valid">Prioritária</span>
+                                          ) : null}
+                                        </td>
+                                        <td>
+                                          <select
+                                            className="dashboard-table-select"
+                                            value={workflow.status}
+                                            onChange={(event) =>
+                                              handleInpatientStatusChange(
+                                                entry.key,
+                                                event.target.value as InpatientWorkflowStatus
+                                              )
+                                            }
+                                          >
+                                            {INPATIENT_STATUS_OPTIONS.map((statusOption) => (
+                                              <option key={statusOption} value={statusOption}>
+                                                {statusOption}
+                                              </option>
+                                            ))}
+                                          </select>
+                                        </td>
+                                        <td>
+                                          {entry.patientId ? (
+                                            <button
+                                              type="button"
+                                              className="dashboard-link-button"
+                                              onClick={() => openPatientDetails(entry.patientId!)}
+                                            >
+                                              Abrir
+                                            </button>
+                                          ) : (
+                                            "-"
+                                          )}
+                                        </td>
+                                      </tr>
+                                    ))
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {inpatientOverviewMode === "mandatory" ? (
+                          <div className="dashboard-subsection-block">
+                            <h3>Atendimentos obrigatórios</h3>
+                            <p className="dashboard-muted">
+                              Somente sai desta lista quando o status for Concluído ou Alta.
+                            </p>
+
+                            <div className="dashboard-form">
+                              <textarea
+                                placeholder="Cole várias linhas (Nome;Prontuário;Leito;Equipe)"
+                                value={mandatoryRawInput}
+                                onChange={(event) => setMandatoryRawInput(event.target.value)}
+                              />
+                              <button type="button" onClick={handleMandatoryRawImport}>
+                                Tratar dados brutos e adicionar
+                              </button>
+                            </div>
+
+                            {mandatoryFeedback ? (
+                              <p className={`dashboard-feedback dashboard-feedback-${mandatoryFeedback.type}`}>
+                                {mandatoryFeedback.message}
+                              </p>
+                            ) : null}
+
+                            <div className="dashboard-table-wrap">
+                              <table className="dashboard-table">
+                                <thead>
+                                  <tr>
+                                    <th>Paciente</th>
+                                    <th>Prontuário</th>
+                                    <th>Leito</th>
+                                    <th>Equipe</th>
+                                    <th>Status</th>
+                                    <th>Origem</th>
+                                    <th>Detalhes</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {mandatoryOverviewRows.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={7}>Nenhum atendimento obrigatório pendente.</td>
+                                    </tr>
+                                  ) : (
+                                    mandatoryOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
+                                      <tr key={entry.key}>
+                                        <td>{entry.patientName}</td>
+                                        <td>{entry.chartNumber || "-"}</td>
+                                        <td>{entry.bed || "-"}</td>
+                                        <td>{assignedTeamName ?? entry.teamName ?? "-"}</td>
+                                        <td>
+                                          <select
+                                            className="dashboard-table-select"
+                                            value={workflow.status}
+                                            onChange={(event) =>
+                                              handleInpatientStatusChange(
+                                                entry.key,
+                                                event.target.value as InpatientWorkflowStatus
+                                              )
+                                            }
+                                          >
+                                            {INPATIENT_STATUS_OPTIONS.map((statusOption) => (
+                                              <option key={statusOption} value={statusOption}>
+                                                {statusOption}
+                                              </option>
+                                            ))}
+                                          </select>
+                                        </td>
+                                        <td>{entry.source === "active" ? "Internado ativo" : "Dados brutos"}</td>
+                                        <td>
+                                          {entry.patientId ? (
+                                            <button
+                                              type="button"
+                                              className="dashboard-link-button"
+                                              onClick={() => openPatientDetails(entry.patientId!)}
+                                            >
+                                              Abrir
+                                            </button>
+                                          ) : (
+                                            "-"
+                                          )}
+                                        </td>
+                                      </tr>
+                                    ))
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {inpatientOverviewMode === "discharged" ? (
+                          <div className="dashboard-subsection-block">
+                            <h3>Pacientes de alta</h3>
+                            <p className="dashboard-muted">
+                              Histórico de pacientes com status Alta ou Concluído.
+                            </p>
+                            <div className="dashboard-table-wrap">
+                              <table className="dashboard-table">
+                                <thead>
+                                  <tr>
+                                    <th>Paciente</th>
+                                    <th>Prontuário</th>
+                                    <th>Equipe</th>
+                                    <th>Status</th>
+                                    <th>Atualização</th>
+                                    <th>Detalhes</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {dischargedOverviewRows.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={6}>Nenhum paciente de alta ou concluído.</td>
+                                    </tr>
+                                  ) : (
+                                    dischargedOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
+                                      <tr key={entry.key}>
+                                        <td>{entry.patientName}</td>
+                                        <td>{entry.chartNumber || "-"}</td>
+                                        <td>{assignedTeamName ?? entry.teamName ?? "-"}</td>
+                                        <td>{workflow.status}</td>
+                                        <td>{formatTimestamp(workflow.updatedAt)}</td>
+                                        <td>
+                                          {entry.patientId ? (
+                                            <button
+                                              type="button"
+                                              className="dashboard-link-button"
+                                              onClick={() => openPatientDetails(entry.patientId!)}
+                                            >
+                                              Abrir
+                                            </button>
+                                          ) : (
+                                            "-"
+                                          )}
+                                        </td>
+                                      </tr>
+                                    ))
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        ) : null}
+                      </section>
 
                       <section className="dashboard-subsection">
                         <h3>Detalhes do paciente internado</h3>
