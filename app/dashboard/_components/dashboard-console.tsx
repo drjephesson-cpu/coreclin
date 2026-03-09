@@ -2020,7 +2020,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       return;
     }
 
-    setAdmissionFeedback(null);
+    const targetLabel = target === "muc" ? "MUC" : "alergias";
     setAdmissionForm((current) => ({
       ...current,
       admissionImportMucExcerpt:
@@ -2028,6 +2028,10 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       admissionImportAllergyExcerpt:
         target === "allergies" ? selectedText : current.admissionImportAllergyExcerpt
     }));
+    setAdmissionFeedback({
+      type: "success",
+      message: `Trecho salvo para ${targetLabel}. Agora clique em Atualizar internação para importar automaticamente.`
+    });
   }
 
   function syncAdmissionSummarySelection(): void {
@@ -4938,7 +4942,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                       onClick={() => applySelectedAdmissionSummaryText("muc")}
                                       disabled={!admissionSummarySelection.trim()}
                                     >
-                                      Marcar selecao como MUC
+                                      Salvar selecao como MUC
                                     </button>
                                     <button
                                       type="button"
@@ -4946,11 +4950,12 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                       onClick={() => applySelectedAdmissionSummaryText("allergies")}
                                       disabled={!admissionSummarySelection.trim()}
                                     >
-                                      Marcar selecao como alergias
+                                      Salvar selecao como alergias
                                     </button>
                                   </div>
                                   <p className="dashboard-muted">
-                                    Selecione um trecho no texto acima e clique no botao correspondente.
+                                    Selecione um trecho no resumo, clique no botao correspondente e depois em
+                                    Atualizar internação.
                                   </p>
                                 </>
                               ) : null}
@@ -4964,10 +4969,10 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
                               {admissionForm.admissionSummary.trim() ? (
                                 <div className="dashboard-calculation-box">
-                                  <h3>Trechos marcados para importação</h3>
+                                  <h3>Importação automática</h3>
                                   {admissionSummarySelection.trim() ? (
                                     <p className="dashboard-muted">
-                                      Seleção atual: {admissionSummarySelection}
+                                      Selecao atual pronta para salvar: {admissionSummarySelection}
                                     </p>
                                   ) : (
                                     <p className="dashboard-muted">
@@ -4979,7 +4984,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                       className="dashboard-status-pill"
                                       style={{ background: "#d7ecff", color: "#163c68" }}
                                     >
-                                      MUC {admissionForm.admissionImportMucExcerpt.trim() ? "marcado" : "não marcado"}
+                                      MUC {admissionForm.admissionImportMucExcerpt.trim() ? "salvo" : "não salvo"}
                                     </span>
                                     {admissionForm.admissionImportMucExcerpt.trim() ? (
                                       <button
@@ -5009,7 +5014,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                       className="dashboard-status-pill"
                                       style={{ background: "#ffe0d6", color: "#7b2f19" }}
                                     >
-                                      Alergias {admissionForm.admissionImportAllergyExcerpt.trim() ? "marcado" : "não marcado"}
+                                      Alergias {admissionForm.admissionImportAllergyExcerpt.trim() ? "salvo" : "não salvo"}
                                     </span>
                                     {admissionForm.admissionImportAllergyExcerpt.trim() ? (
                                       <button
