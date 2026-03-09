@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import LogoutButton from "@/app/_components/logout-button";
@@ -349,6 +349,13 @@ function extractShiftsFromText(input: string): string {
   ].filter((value) => value.length > 0);
 
   return shifts.length > 0 ? shifts.join(", ") : "-";
+}
+
+function escapeHtml(input: string): string {
+  return input
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 function normalizeMedicationName(input: string): string {
@@ -809,6 +816,8 @@ export default function DashboardConsole({
     bed: "",
     admissionReason: "",
     admissionSummary: "",
+    admissionImportMucExcerpt: "",
+    admissionImportAllergyExcerpt: "",
     teamId: "",
     weightKg: "",
     heightCm: "",
@@ -909,6 +918,7 @@ export default function DashboardConsole({
   const [rawPrescriptionDrafts, setRawPrescriptionDrafts] = useState<RawPrescriptionDraft[]>([]);
   const [rawPrescriptionFeedback, setRawPrescriptionFeedback] = useState<FeedbackState>(null);
   const [rawPrescriptionLoading, setRawPrescriptionLoading] = useState(false);
+  const admissionSummaryTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     if (patients.length === 0) {
@@ -1487,6 +1497,8 @@ export default function DashboardConsole({
           ? latestAdmission.admissionReason
           : "",
       admissionSummary: latestAdmission?.admissionSummary ?? "",
+      admissionImportMucExcerpt: "",
+      admissionImportAllergyExcerpt: "",
       teamId:
         latestAdmission?.teamId !== null && latestAdmission?.teamId !== undefined
           ? String(latestAdmission.teamId)
@@ -1942,10 +1954,12 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
   async function autoPopulateFromAdmissionSummary(
     patientId: number,
-    summaryText: string
+    mucExcerpt: string,
+    allergyExcerpt: string
   ): Promise<{ addedPriorMedications: number; addedAllergies: number }> {
-    const trimmedSummary = summaryText.trim();
-    if (!trimmedSummary) {
+    const trimmedMucExcerpt = mucExcerpt.trim();
+    const trimmedAllergyExcerpt = allergyExcerpt.trim();
+    if (!trimmedMucExcerpt && !trimmedAllergyExcerpt) {
       return { addedPriorMedications: 0, addedAllergies: 0 };
     }
 
@@ -1959,7 +1973,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     let addedPriorMedications = 0;
     let addedAllergies = 0;
 
-    for (const candidate of extractSummaryMedicationCandidates(trimmedSummary)) {
+    for (const candidate of extractSummaryMedicationCandidates(trimmedMucExcerpt)) {
       const normalizedName = normalizeMedicationName(candidate.medicationName);
       if (existingPriorMedicationNames.has(normalizedName)) {
         continue;
@@ -1977,7 +1991,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       }
     }
 
-    for (const allergyName of extractSummaryAllergyCandidates(trimmedSummary)) {
+    for (const allergyName of extractSummaryAllergyCandidates(trimmedAllergyExcerpt)) {
       const normalizedName = normalizeMedicationName(allergyName);
       if (existingAllergyNames.has(normalizedName)) {
         continue;
@@ -1997,6 +2011,70 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
     return { addedPriorMedications, addedAllergies };
   }
+
+  function applySelectedAdmissionSummaryText(
+    target: "muc" | "allergies"
+  ): void {
+    const textarea = admissionSummaryTextareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    const selectionStart = textarea.selectionStart ?? 0;
+    const selectionEnd = textarea.selectionEnd ?? 0;
+    const selectedText = admissionForm.admissionSummary.slice(selectionStart, selectionEnd).trim();
+    if (!selectedText) {
+      setAdmissionFeedback({
+        type: "error",
+        message: "Selecione um trecho do resumo antes de marcar MUC ou alergias."
+      });
+      return;
+    }
+
+    setAdmissionFeedback(null);
+    setAdmissionForm((current) => ({
+      ...current,
+      admissionImportMucExcerpt:
+        target === "muc" ? selectedText : current.admissionImportMucExcerpt,
+      admissionImportAllergyExcerpt:
+        target === "allergies" ? selectedText : current.admissionImportAllergyExcerpt
+    }));
+  }
+
+  const admissionSummarySelectionPreview = useMemo(() => {
+    const summary = admissionForm.admissionSummary;
+    if (!summary.trim()) {
+      return "";
+    }
+
+    let highlighted = escapeHtml(summary);
+    const highlightEntries = [
+      {
+        excerpt: admissionForm.admissionImportMucExcerpt.trim(),
+        color: "#d7ecff",
+        label: "MUC"
+      },
+      {
+        excerpt: admissionForm.admissionImportAllergyExcerpt.trim(),
+        color: "#ffe0d6",
+        label: "Alergias"
+      }
+    ].filter((entry) => entry.excerpt.length > 0);
+
+    for (const entry of highlightEntries) {
+      const escapedExcerpt = escapeHtml(entry.excerpt);
+      highlighted = highlighted.replace(
+        escapedExcerpt,
+        `<mark style="background:${entry.color};padding:0 2px;border-radius:4px;">${escapedExcerpt}<strong style="margin-left:6px;font-size:0.8em;">[${entry.label}]</strong></mark>`
+      );
+    }
+
+    return highlighted.replace(/\n/g, "<br />");
+  }, [
+    admissionForm.admissionImportAllergyExcerpt,
+    admissionForm.admissionImportMucExcerpt,
+    admissionForm.admissionSummary
+  ]);
 
   const selectedPatientPriorMedications = useMemo(
     () =>
@@ -2796,7 +2874,8 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
       const summaryAutofill = await autoPopulateFromAdmissionSummary(
         selectedPatient.id,
-        admissionForm.admissionSummary
+        admissionForm.admissionImportMucExcerpt,
+        admissionForm.admissionImportAllergyExcerpt
       );
       const autofillDetails = [
         summaryAutofill.addedPriorMedications > 0
@@ -2813,7 +2892,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
         type: "success",
         message: `${
           shouldUpdateAdmission ? "Internação atualizada com sucesso." : "Internação cadastrada com sucesso."
-        }${autofillDetails ? ` Resumo analisado: ${autofillDetails}.` : ""}`
+        }${autofillDetails ? ` Trecho de importação analisado: ${autofillDetails}.` : ""}`
       });
       setAdmissionForm({
         admissionId: "",
@@ -2821,6 +2900,8 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
         bed: "",
         admissionReason: "",
         admissionSummary: "",
+        admissionImportMucExcerpt: "",
+        admissionImportAllergyExcerpt: "",
         teamId: "",
         weightKg: "",
         heightCm: "",
@@ -4868,23 +4949,68 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                               </div>
 
                               {showAdmissionSummaryComposer ? (
-                                <textarea
-                                  placeholder="Resumo da internação"
-                                  value={admissionForm.admissionSummary}
-                                  onChange={(event) =>
-                                    setAdmissionForm((current) => ({
-                                      ...current,
-                                      admissionSummary: event.target.value
-                                    }))
-                                  }
-                                  rows={8}
-                                />
+                                <>
+                                  <textarea
+                                    ref={admissionSummaryTextareaRef}
+                                    placeholder="Resumo da internação"
+                                    value={admissionForm.admissionSummary}
+                                    onChange={(event) =>
+                                      setAdmissionForm((current) => ({
+                                        ...current,
+                                        admissionSummary: event.target.value
+                                      }))
+                                    }
+                                    rows={8}
+                                  />
+                                  <div className="dashboard-inline-actions">
+                                    <button
+                                      type="button"
+                                      className="dashboard-mini-button"
+                                      onClick={() => applySelectedAdmissionSummaryText("muc")}
+                                    >
+                                      Selecionar como MUC
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="dashboard-mini-button"
+                                      onClick={() => applySelectedAdmissionSummaryText("allergies")}
+                                    >
+                                      Selecionar como alergias
+                                    </button>
+                                  </div>
+                                  <p className="dashboard-muted">
+                                    Selecione um trecho dentro do resumo e use os botões para marcar o bloco de
+                                    MUC e o bloco de alergias.
+                                  </p>
+                                </>
                               ) : null}
 
                               {showAdmissionSummaryPreview && admissionForm.admissionSummary.trim() ? (
                                 <div className="dashboard-calculation-box">
                                   <h3>Resumo da internação</h3>
                                   <p style={{ whiteSpace: "pre-wrap" }}>{admissionForm.admissionSummary}</p>
+                                </div>
+                              ) : null}
+
+                              {admissionForm.admissionSummary.trim() ? (
+                                <div className="dashboard-calculation-box">
+                                  <h3>Trechos marcados para importação</h3>
+                                  <p className="dashboard-muted">
+                                    A automação usa apenas os trechos marcados abaixo.
+                                  </p>
+                                  <div className="dashboard-inline-actions">
+                                    <span className="dashboard-status-pill" style={{ background: "#d7ecff", color: "#163c68" }}>
+                                      MUC {admissionForm.admissionImportMucExcerpt.trim() ? "selecionado" : "não selecionado"}
+                                    </span>
+                                    <span className="dashboard-status-pill" style={{ background: "#ffe0d6", color: "#7b2f19" }}>
+                                      Alergias {admissionForm.admissionImportAllergyExcerpt.trim() ? "selecionado" : "não selecionado"}
+                                    </span>
+                                  </div>
+                                  <div
+                                    className="dashboard-muted"
+                                    style={{ whiteSpace: "pre-wrap" }}
+                                    dangerouslySetInnerHTML={{ __html: admissionSummarySelectionPreview }}
+                                  />
                                 </div>
                               ) : null}
 
@@ -4913,7 +5039,6 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                   onChange={(event) =>
                                     setAdmissionForm((current) => ({ ...current, weightKg: event.target.value }))
                                   }
-                                  required
                                 />
                                 <input
                                   type="number"
@@ -4924,7 +5049,6 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                   onChange={(event) =>
                                     setAdmissionForm((current) => ({ ...current, heightCm: event.target.value }))
                                   }
-                                  required
                                 />
                               </div>
 
