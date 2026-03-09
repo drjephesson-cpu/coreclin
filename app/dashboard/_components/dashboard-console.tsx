@@ -3082,11 +3082,16 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
           .filter((part) => part.length > 0);
 
         const isBedFirstLayout = /^L:/i.test(parts[0] ?? "");
+        const hasDateAtFourthColumn = /^\d{2}\/\d{2}\/\d{2,4}/.test(parts[3] ?? "");
         const patientName = isBedFirstLayout ? parts[1] ?? "" : parts[0] ?? "";
-        const chartNumber = isBedFirstLayout ? parts[3] ?? "" : parts[1] ?? "";
         const bed = isBedFirstLayout ? normalizeMandatoryBedLabel(parts[0] ?? "") : parts[2] ?? "";
+        const chartNumber = isBedFirstLayout
+          ? hasDateAtFourthColumn
+            ? parts[2] ?? ""
+            : parts[3] ?? ""
+          : parts[1] ?? "";
         const admissionDate = isBedFirstLayout
-          ? parseMandatoryAdmissionDate(parts[4] ?? "")
+          ? parseMandatoryAdmissionDate(hasDateAtFourthColumn ? parts[3] ?? "" : parts[4] ?? "")
           : new Date().toISOString().slice(0, 10);
 
         if (!patientName || !chartNumber || !bed) {
@@ -3181,7 +3186,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
           bed,
           teamName: null,
           teamId: null,
-          source: "manual",
+          source: "active",
           createdAt: new Date().toISOString()
         });
         entriesToPending.set(entryKey, null);
@@ -3899,8 +3904,8 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                           <div className="dashboard-subsection-block">
                             <h3>Atendimentos obrigatórios</h3>
                             <p className="dashboard-muted">
-                              Cole a lista do sistema no formato `Leito | Nome | Idade | Prontuário | Admissão`.
-                              A idade pode vir na linha, mas não é usada no cadastro inicial.
+                              Cole a lista do sistema no formato `Leito | Nome | Prontuário | Admissão` ou
+                              `Leito | Nome | Idade | Prontuário | Admissão`.
                             </p>
                             <p className="dashboard-muted">
                               O paciente entra como novo cadastro e nova internação básica. `Concluído` marca
@@ -3938,6 +3943,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                     <th>Status</th>
                                     <th>1ª visita</th>
                                     <th>Evolução</th>
+                                    <th>Origem</th>
                                     <th>Detalhes</th>
                                     <th>Ações</th>
                                   </tr>
@@ -3945,7 +3951,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 <tbody>
                                   {mandatoryOverviewRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={10}>Nenhum atendimento obrigatório pendente.</td>
+                                      <td colSpan={11}>Nenhum atendimento obrigatório pendente.</td>
                                     </tr>
                                   ) : (
                                     mandatoryOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
@@ -3992,6 +3998,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                             </button>
                                           )}
                                         </td>
+                                        <td>{entry.source === "active" ? "Internado ativo" : "Dados brutos"}</td>
                                         <td>
                                           {entry.patientId ? (
                                             <button
