@@ -134,6 +134,15 @@ export type AddMedicalPrescriptionInput = {
   validationStatus?: string;
 };
 
+export type UpdateMedicalPrescriptionValidationInput = {
+  patientId: number;
+  prescriptionId: number;
+  quantityTablets?: number | null;
+  lotNumber?: string | null;
+  expirationDate?: string | null;
+  manufacturer?: string | null;
+};
+
 type GlobalDbState = typeof globalThis & {
   coreclinPool?: Pool;
   coreclinSetupPromise?: Promise<void>;
@@ -350,6 +359,10 @@ function mapMedicalPrescription(row: DbRow): MedicalPrescriptionRecord {
       row.validation_start_at === null ? null : toIso(row.validation_start_at),
     validationEndAt: row.validation_end_at === null ? null : toIso(row.validation_end_at),
     validationStatus: row.validation_status === null ? null : String(row.validation_status),
+    quantityTablets: row.quantity_tablets === null ? null : toNumber(row.quantity_tablets),
+    lotNumber: row.lot_number === null ? null : String(row.lot_number ?? ""),
+    expirationDate: row.expiration_date === null ? null : String(row.expiration_date),
+    manufacturer: row.manufacturer === null ? null : String(row.manufacturer ?? ""),
     createdAt: toIso(row.created_at)
   };
 }
@@ -630,6 +643,10 @@ async function setupDatabase(): Promise<void> {
       validation_start_at TIMESTAMPTZ,
       validation_end_at TIMESTAMPTZ,
       validation_status TEXT,
+      quantity_tablets INTEGER,
+      lot_number TEXT,
+      expiration_date DATE,
+      manufacturer TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -674,6 +691,20 @@ async function setupDatabase(): Promise<void> {
     ADD COLUMN IF NOT EXISTS expiration_date DATE;
 
     ALTER TABLE patient_prior_medications
+    ADD COLUMN IF NOT EXISTS manufacturer TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS quantity_tablets INTEGER;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS lot_number TEXT;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS expiration_date DATE;
+
+    ALTER TABLE medical_prescriptions
     ADD COLUMN IF NOT EXISTS manufacturer TEXT;
   `);
 
@@ -1814,9 +1845,13 @@ export async function addMedicalPrescription(
           notes,
           validation_start_at,
           validation_end_at,
-          validation_status
+          validation_status,
+          quantity_tablets,
+          lot_number,
+          expiration_date,
+          manufacturer
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULL, NULL, NULL, NULL)
         RETURNING id
       `,
       [
@@ -1857,6 +1892,10 @@ export async function addMedicalPrescription(
           mp.validation_start_at,
           mp.validation_end_at,
           mp.validation_status,
+          mp.quantity_tablets,
+          mp.lot_number,
+          mp.expiration_date::text AS expiration_date,
+          mp.manufacturer,
           mp.created_at
         FROM medical_prescriptions mp
         INNER JOIN patients p ON p.id = mp.patient_id
@@ -1875,6 +1914,86 @@ export async function addMedicalPrescription(
     if (postgresError.code === "23503") {
       throw new Error("Paciente, internação ou medicamento inválido.");
     }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function updateMedicalPrescriptionValidation(
+  input: UpdateMedicalPrescriptionValidationInput
+): Promise<MedicalPrescriptionRecord> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await ensurePatientExists(client, input.patientId);
+
+    const updated = await client.query(
+      `
+        UPDATE medical_prescriptions
+        SET
+          quantity_tablets = $1,
+          lot_number = $2,
+          expiration_date = $3,
+          manufacturer = $4
+        WHERE id = $5 AND patient_id = $6
+        RETURNING id
+      `,
+      [
+        input.quantityTablets ?? null,
+        input.lotNumber?.trim() ? input.lotNumber.trim() : null,
+        input.expirationDate?.trim() ? input.expirationDate.trim() : null,
+        input.manufacturer?.trim() ? input.manufacturer.trim() : null,
+        input.prescriptionId,
+        input.patientId
+      ]
+    );
+
+    if (updated.rowCount === 0) {
+      throw new Error("Prescrição não encontrada para este paciente.");
+    }
+
+    const result = await client.query(
+      `
+        SELECT
+          mp.id,
+          mp.patient_id,
+          p.full_name AS patient_name,
+          mp.admission_id,
+          a.admission_date::text AS admission_date,
+          a.bed,
+          mp.medication_id,
+          mp.medication_name,
+          mp.dose::float8 AS dose,
+          mp.dose_unit,
+          mp.administration_route,
+          mp.frequency,
+          mp.shifts,
+          mp.notes,
+          mp.validation_start_at,
+          mp.validation_end_at,
+          mp.validation_status,
+          mp.quantity_tablets,
+          mp.lot_number,
+          mp.expiration_date::text AS expiration_date,
+          mp.manufacturer,
+          mp.created_at
+        FROM medical_prescriptions mp
+        INNER JOIN patients p ON p.id = mp.patient_id
+        LEFT JOIN admissions a ON a.id = mp.admission_id
+        WHERE mp.id = $1
+        LIMIT 1
+      `,
+      [input.prescriptionId]
+    );
+
+    await client.query("COMMIT");
+    return mapMedicalPrescription(result.rows[0] as DbRow);
+  } catch (error) {
+    await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();
@@ -2222,6 +2341,10 @@ export async function listMedicalPrescriptions(): Promise<MedicalPrescriptionRec
       mp.validation_start_at,
       mp.validation_end_at,
       mp.validation_status,
+      mp.quantity_tablets,
+      mp.lot_number,
+      mp.expiration_date::text AS expiration_date,
+      mp.manufacturer,
       mp.created_at
     FROM medical_prescriptions mp
     INNER JOIN patients p ON p.id = mp.patient_id

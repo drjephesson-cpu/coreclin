@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
-import { addMedicalPrescription } from "@/lib/db";
+import { addMedicalPrescription, updateMedicalPrescriptionValidation } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -150,6 +150,70 @@ export async function POST(
     return NextResponse.json({ ok: true, prescription });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao cadastrar prescrição.";
+    return NextResponse.json({ message }, { status: 400 });
+  }
+}
+
+export async function PUT(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+): Promise<NextResponse> {
+  const session = await getCurrentSession();
+  if (!session) {
+    return NextResponse.json({ message: "Sessão inválida." }, { status: 401 });
+  }
+
+  const routeParams = await params;
+  const patientId = Number(routeParams.id);
+  if (!Number.isInteger(patientId) || patientId <= 0) {
+    return NextResponse.json({ message: "Paciente inválido." }, { status: 400 });
+  }
+
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return NextResponse.json({ message: "Corpo inválido." }, { status: 400 });
+  }
+
+  const body = payload as Record<string, unknown>;
+  const prescriptionId = Number(body.prescriptionId);
+  const quantityRaw = body.quantityTablets;
+  const quantityTablets =
+    quantityRaw === undefined || quantityRaw === null || quantityRaw === ""
+      ? null
+      : Number(quantityRaw);
+  const lotNumber = typeof body.lotNumber === "string" ? body.lotNumber.trim() : "";
+  const expirationDate =
+    typeof body.expirationDate === "string" ? body.expirationDate.trim() : "";
+  const manufacturer = typeof body.manufacturer === "string" ? body.manufacturer.trim() : "";
+
+  if (!Number.isInteger(prescriptionId) || prescriptionId <= 0) {
+    return NextResponse.json({ message: "Prescrição inválida." }, { status: 400 });
+  }
+
+  if (quantityTablets !== null && (!Number.isInteger(quantityTablets) || quantityTablets < 0)) {
+    return NextResponse.json({ message: "Quantidade inválida." }, { status: 400 });
+  }
+
+  if (expirationDate && Number.isNaN(new Date(expirationDate).getTime())) {
+    return NextResponse.json({ message: "Validade inválida." }, { status: 400 });
+  }
+
+  try {
+    const prescription = await updateMedicalPrescriptionValidation({
+      patientId,
+      prescriptionId,
+      quantityTablets,
+      lotNumber,
+      expirationDate,
+      manufacturer
+    });
+
+    return NextResponse.json({ ok: true, prescription });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Falha ao atualizar validação do medicamento.";
     return NextResponse.json({ message }, { status: 400 });
   }
 }

@@ -79,6 +79,7 @@ const PATIENT_VIEW_ITEMS = [
   { id: "allergies", label: "Alergias" },
   { id: "admission-info", label: "Informações da internação" },
   { id: "prior-use", label: "Medicamentos de uso prévio" },
+  { id: "medication-validation", label: "Validação de medicamentos" },
   { id: "prescriptions", label: "Prescrição médica" }
 ] as const;
 
@@ -983,6 +984,18 @@ export default function DashboardConsole({
   const [priorMedicationRemovingId, setPriorMedicationRemovingId] = useState<number | null>(null);
   const [priorMedicationUpdatingId, setPriorMedicationUpdatingId] = useState<number | null>(null);
   const [priorMedicationValidationForm, setPriorMedicationValidationForm] = useState<
+    Record<
+      number,
+      {
+        quantityTablets: string;
+        lotNumber: string;
+        expirationDate: string;
+        manufacturer: string;
+      }
+    >
+  >({});
+  const [medicationValidationUpdatingId, setMedicationValidationUpdatingId] = useState<number | null>(null);
+  const [medicationValidationForm, setMedicationValidationForm] = useState<
     Record<
       number,
       {
@@ -2223,6 +2236,44 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     [prescriptions, selectedPatient]
   );
 
+  const selectedPatientMedicationValidationRows = useMemo(
+    () =>
+      selectedPatientPrescriptions
+        .filter((prescription) => prescription.medicationId === null)
+        .map((prescription) => {
+          const dailyTabletUse = calculateDailyTabletUse({
+            dose: prescription.dose,
+            doseUnit: prescription.doseUnit,
+            frequency: prescription.frequency,
+            shifts: prescription.shifts
+          });
+
+          return {
+            prescription,
+            dailyTabletUse,
+            durationDays: calculateDurationDays(prescription.quantityTablets, dailyTabletUse)
+          };
+        }),
+    [selectedPatientPrescriptions]
+  );
+
+  useEffect(() => {
+    setMedicationValidationForm(
+      Object.fromEntries(
+        selectedPatientMedicationValidationRows.map((row) => [
+          row.prescription.id,
+          {
+            quantityTablets:
+              row.prescription.quantityTablets === null ? "" : String(row.prescription.quantityTablets),
+            lotNumber: row.prescription.lotNumber ?? "",
+            expirationDate: row.prescription.expirationDate ?? "",
+            manufacturer: row.prescription.manufacturer ?? ""
+          }
+        ])
+      )
+    );
+  }, [selectedPatientMedicationValidationRows]);
+
   const prescriptionMedicationNameForAlert = useMemo(() => {
     if (prescriptionForm.medicationId) {
       const selectedMedication = medications.find(
@@ -3406,6 +3457,60 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     }
   }
 
+  async function handleUpdateMedicationValidation(prescriptionId: number): Promise<void> {
+    if (!selectedPatient) {
+      setPrescriptionFeedback({
+        type: "error",
+        message: "Selecione um paciente para atualizar a validação do medicamento."
+      });
+      return;
+    }
+
+    const formState = medicationValidationForm[prescriptionId];
+    if (!formState) {
+      return;
+    }
+
+    setPrescriptionFeedback(null);
+    setMedicationValidationUpdatingId(prescriptionId);
+
+    try {
+      const response = await fetch(`/api/patients/${selectedPatient.id}/prescriptions`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prescriptionId,
+          quantityTablets: formState.quantityTablets,
+          lotNumber: formState.lotNumber,
+          expirationDate: formState.expirationDate,
+          manufacturer: formState.manufacturer
+        })
+      });
+
+      const result = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        setPrescriptionFeedback({
+          type: "error",
+          message: result.message ?? "Falha ao atualizar validação do medicamento."
+        });
+        return;
+      }
+
+      setPrescriptionFeedback({
+        type: "success",
+        message: "Validação do medicamento atualizada."
+      });
+      router.refresh();
+    } catch {
+      setPrescriptionFeedback({
+        type: "error",
+        message: "Erro de conexão ao atualizar validação do medicamento."
+      });
+    } finally {
+      setMedicationValidationUpdatingId(null);
+    }
+  }
+
   async function handleRemovePriorMedication(
     priorMedicationId: number,
     medicationName: string
@@ -3551,10 +3656,6 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     setRawPrescriptionLoading(true);
     try {
       const failedLines: number[] = [];
-      const existingPriorMedicationNames = new Set(
-        selectedPatientPriorMedications.map((item) => normalizeMedicationName(item.medicationName))
-      );
-      let addedPriorMedicationValidations = 0;
       for (const draft of validDrafts) {
         const response = await fetch(`/api/patients/${selectedPatient.id}/prescriptions`, {
           method: "POST",
@@ -3577,29 +3678,6 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
         if (!response.ok) {
           failedLines.push(draft.lineNumber);
-          continue;
-        }
-
-        if (
-          draft.shouldAddToPriorMedicationValidation &&
-          !existingPriorMedicationNames.has(normalizeMedicationName(draft.medicationName))
-        ) {
-          const priorMedicationResponse = await fetch(`/api/patients/${selectedPatient.id}/prior-medications`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              medicationName: draft.medicationName,
-              dose: draft.dose,
-              doseUnit: draft.doseUnit,
-              frequency: draft.frequency,
-              shifts: draft.shifts
-            })
-          });
-
-          if (priorMedicationResponse.ok) {
-            existingPriorMedicationNames.add(normalizeMedicationName(draft.medicationName));
-            addedPriorMedicationValidations += 1;
-          }
         }
       }
 
@@ -3611,11 +3689,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       } else {
         setRawPrescriptionFeedback({
           type: "success",
-          message: `${validDrafts.length} linha(s) importada(s) com sucesso.${
-            addedPriorMedicationValidations > 0
-              ? ` ${addedPriorMedicationValidations} medicamento(s) não cadastrado(s) enviado(s) para uso prévio.`
-              : ""
-          }`
+          message: `${validDrafts.length} linha(s) importada(s) com sucesso.`
         });
         setRawPrescriptionInput("");
         setRawPrescriptionDrafts([]);
@@ -5478,54 +5552,6 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 />
                               </div>
 
-                              <div className="dashboard-two-columns">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  placeholder="Quantidade de comprimidos"
-                                  value={priorMedicationForm.quantityTablets}
-                                  onChange={(event) =>
-                                    setPriorMedicationForm((current) => ({
-                                      ...current,
-                                      quantityTablets: event.target.value
-                                    }))
-                                  }
-                                />
-                                <input
-                                  placeholder="Lote"
-                                  value={priorMedicationForm.lotNumber}
-                                  onChange={(event) =>
-                                    setPriorMedicationForm((current) => ({
-                                      ...current,
-                                      lotNumber: event.target.value
-                                    }))
-                                  }
-                                />
-                              </div>
-
-                              <div className="dashboard-two-columns">
-                                <input
-                                  type="date"
-                                  value={priorMedicationForm.expirationDate}
-                                  onChange={(event) =>
-                                    setPriorMedicationForm((current) => ({
-                                      ...current,
-                                      expirationDate: event.target.value
-                                    }))
-                                  }
-                                />
-                                <input
-                                  placeholder="Laboratório/Marca"
-                                  value={priorMedicationForm.manufacturer}
-                                  onChange={(event) =>
-                                    setPriorMedicationForm((current) => ({
-                                      ...current,
-                                      manufacturer: event.target.value
-                                    }))
-                                  }
-                                />
-                              </div>
-
                               <p className="dashboard-muted">
                                 Para esquema semanal (ex.: 3 vezes por semana), selecione a frequência e informe a
                                 quantidade por horário no padrão da tomada (ex.: 1-1-1).
@@ -5590,12 +5616,6 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                     <th>Dose</th>
                                     <th>Frequência</th>
                                     <th>Qtd. por horário</th>
-                                    <th>Qtd. comp.</th>
-                                    <th>Lote</th>
-                                    <th>Validade</th>
-                                    <th>Laboratório/Marca</th>
-                                    <th>Consumo/dia</th>
-                                    <th>Duração</th>
                                     <th>Data da prescrição</th>
                                     <th>Reconciliado</th>
                                     <th>Reconciliado em todas</th>
@@ -5607,7 +5627,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 <tbody>
                                   {priorMedicationRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={16}>Nenhum medicamento prévio cadastrado.</td>
+                                      <td colSpan={10}>Nenhum medicamento prévio cadastrado.</td>
                                     </tr>
                                   ) : (
                                     priorMedicationRows.map((row) => (
@@ -5621,102 +5641,6 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                         </td>
                                         <td>{row.priorMedication.frequency}</td>
                                         <td>{row.priorMedication.shifts}</td>
-                                        <td>
-                                          <input
-                                            type="number"
-                                            min="0"
-                                            value={
-                                              priorMedicationValidationForm[row.priorMedication.id]
-                                                ?.quantityTablets ?? ""
-                                            }
-                                            onChange={(event) =>
-                                              setPriorMedicationValidationForm((current) => ({
-                                                ...current,
-                                                [row.priorMedication.id]: {
-                                                  ...(current[row.priorMedication.id] ?? {
-                                                    quantityTablets: "",
-                                                    lotNumber: "",
-                                                    expirationDate: "",
-                                                    manufacturer: ""
-                                                  }),
-                                                  quantityTablets: event.target.value
-                                                }
-                                              }))
-                                            }
-                                          />
-                                        </td>
-                                        <td>
-                                          <input
-                                            value={
-                                              priorMedicationValidationForm[row.priorMedication.id]?.lotNumber ?? ""
-                                            }
-                                            onChange={(event) =>
-                                              setPriorMedicationValidationForm((current) => ({
-                                                ...current,
-                                                [row.priorMedication.id]: {
-                                                  ...(current[row.priorMedication.id] ?? {
-                                                    quantityTablets: "",
-                                                    lotNumber: "",
-                                                    expirationDate: "",
-                                                    manufacturer: ""
-                                                  }),
-                                                  lotNumber: event.target.value
-                                                }
-                                              }))
-                                            }
-                                          />
-                                        </td>
-                                        <td>
-                                          <input
-                                            type="date"
-                                            value={
-                                              priorMedicationValidationForm[row.priorMedication.id]
-                                                ?.expirationDate ?? ""
-                                            }
-                                            onChange={(event) =>
-                                              setPriorMedicationValidationForm((current) => ({
-                                                ...current,
-                                                [row.priorMedication.id]: {
-                                                  ...(current[row.priorMedication.id] ?? {
-                                                    quantityTablets: "",
-                                                    lotNumber: "",
-                                                    expirationDate: "",
-                                                    manufacturer: ""
-                                                  }),
-                                                  expirationDate: event.target.value
-                                                }
-                                              }))
-                                            }
-                                          />
-                                        </td>
-                                        <td>
-                                          <input
-                                            value={
-                                              priorMedicationValidationForm[row.priorMedication.id]
-                                                ?.manufacturer ?? ""
-                                            }
-                                            onChange={(event) =>
-                                              setPriorMedicationValidationForm((current) => ({
-                                                ...current,
-                                                [row.priorMedication.id]: {
-                                                  ...(current[row.priorMedication.id] ?? {
-                                                    quantityTablets: "",
-                                                    lotNumber: "",
-                                                    expirationDate: "",
-                                                    manufacturer: ""
-                                                  }),
-                                                  manufacturer: event.target.value
-                                                }
-                                              }))
-                                            }
-                                          />
-                                        </td>
-                                        <td>
-                                          {row.dailyTabletUse !== null
-                                            ? `${formatNumber(row.dailyTabletUse)} comp/dia`
-                                            : "-"}
-                                        </td>
-                                        <td>{formatDurationDays(row.durationDays)}</td>
                                         <td>
                                           {row.latestPrescriptionDate
                                             ? formatTimestamp(row.latestPrescriptionDate)
@@ -5754,17 +5678,6 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                         <td>
                                           <button
                                             type="button"
-                                            onClick={() =>
-                                              handleUpdatePriorMedicationValidation(row.priorMedication.id)
-                                            }
-                                            disabled={priorMedicationUpdatingId === row.priorMedication.id}
-                                          >
-                                            {priorMedicationUpdatingId === row.priorMedication.id
-                                              ? "Salvando..."
-                                              : "Salvar"}
-                                          </button>
-                                          <button
-                                            type="button"
                                             className="dashboard-chip-remove"
                                             onClick={() =>
                                               handleRemovePriorMedication(
@@ -5777,6 +5690,172 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                             {priorMedicationRemovingId === row.priorMedication.id
                                               ? "Removendo..."
                                               : "Remover"}
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    ))
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {patientView === "medication-validation" ? (
+                          <div className="dashboard-subsection-block">
+                            <h3>Validação de medicamentos</h3>
+                            <p className="dashboard-muted">
+                              Lista automática dos medicamentos prescritos com `MEDICAMENTO NAO CADASTRADO`,
+                              para validar estoque externo e calcular duração.
+                            </p>
+
+                            {prescriptionFeedback ? (
+                              <p className={`dashboard-feedback dashboard-feedback-${prescriptionFeedback.type}`}>
+                                {prescriptionFeedback.message}
+                              </p>
+                            ) : null}
+
+                            <div className="dashboard-table-wrap">
+                              <table className="dashboard-table">
+                                <thead>
+                                  <tr>
+                                    <th>Medicamento</th>
+                                    <th>Dose</th>
+                                    <th>Frequência</th>
+                                    <th>Qtd. por horário</th>
+                                    <th>Qtd. comp.</th>
+                                    <th>Lote</th>
+                                    <th>Validade</th>
+                                    <th>Laboratório/Marca</th>
+                                    <th>Consumo/dia</th>
+                                    <th>Duração</th>
+                                    <th>Prescrição</th>
+                                    <th>Ações</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {selectedPatientMedicationValidationRows.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={12}>
+                                        Nenhum medicamento não cadastrado encontrado na prescrição.
+                                      </td>
+                                    </tr>
+                                  ) : (
+                                    selectedPatientMedicationValidationRows.map((row) => (
+                                      <tr key={row.prescription.id}>
+                                        <td>{row.prescription.medicationName}</td>
+                                        <td>
+                                          {formatNumber(row.prescription.dose)} {row.prescription.doseUnit}
+                                        </td>
+                                        <td>{row.prescription.frequency}</td>
+                                        <td>{row.prescription.shifts}</td>
+                                        <td>
+                                          <input
+                                            type="number"
+                                            min="0"
+                                            value={
+                                              medicationValidationForm[row.prescription.id]?.quantityTablets ?? ""
+                                            }
+                                            onChange={(event) =>
+                                              setMedicationValidationForm((current) => ({
+                                                ...current,
+                                                [row.prescription.id]: {
+                                                  ...(current[row.prescription.id] ?? {
+                                                    quantityTablets: "",
+                                                    lotNumber: "",
+                                                    expirationDate: "",
+                                                    manufacturer: ""
+                                                  }),
+                                                  quantityTablets: event.target.value
+                                                }
+                                              }))
+                                            }
+                                          />
+                                        </td>
+                                        <td>
+                                          <input
+                                            value={medicationValidationForm[row.prescription.id]?.lotNumber ?? ""}
+                                            onChange={(event) =>
+                                              setMedicationValidationForm((current) => ({
+                                                ...current,
+                                                [row.prescription.id]: {
+                                                  ...(current[row.prescription.id] ?? {
+                                                    quantityTablets: "",
+                                                    lotNumber: "",
+                                                    expirationDate: "",
+                                                    manufacturer: ""
+                                                  }),
+                                                  lotNumber: event.target.value
+                                                }
+                                              }))
+                                            }
+                                          />
+                                        </td>
+                                        <td>
+                                          <input
+                                            type="date"
+                                            value={
+                                              medicationValidationForm[row.prescription.id]?.expirationDate ?? ""
+                                            }
+                                            onChange={(event) =>
+                                              setMedicationValidationForm((current) => ({
+                                                ...current,
+                                                [row.prescription.id]: {
+                                                  ...(current[row.prescription.id] ?? {
+                                                    quantityTablets: "",
+                                                    lotNumber: "",
+                                                    expirationDate: "",
+                                                    manufacturer: ""
+                                                  }),
+                                                  expirationDate: event.target.value
+                                                }
+                                              }))
+                                            }
+                                          />
+                                        </td>
+                                        <td>
+                                          <input
+                                            value={
+                                              medicationValidationForm[row.prescription.id]?.manufacturer ?? ""
+                                            }
+                                            onChange={(event) =>
+                                              setMedicationValidationForm((current) => ({
+                                                ...current,
+                                                [row.prescription.id]: {
+                                                  ...(current[row.prescription.id] ?? {
+                                                    quantityTablets: "",
+                                                    lotNumber: "",
+                                                    expirationDate: "",
+                                                    manufacturer: ""
+                                                  }),
+                                                  manufacturer: event.target.value
+                                                }
+                                              }))
+                                            }
+                                          />
+                                        </td>
+                                        <td>
+                                          {row.dailyTabletUse !== null
+                                            ? `${formatNumber(row.dailyTabletUse)} comp/dia`
+                                            : "-"}
+                                        </td>
+                                        <td>{formatDurationDays(row.durationDays)}</td>
+                                        <td>
+                                          {row.prescription.validationStartAt
+                                            ? formatTimestamp(row.prescription.validationStartAt)
+                                            : formatTimestamp(row.prescription.createdAt)}
+                                        </td>
+                                        <td>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleUpdateMedicationValidation(row.prescription.id)
+                                            }
+                                            disabled={medicationValidationUpdatingId === row.prescription.id}
+                                          >
+                                            {medicationValidationUpdatingId === row.prescription.id
+                                              ? "Salvando..."
+                                              : "Salvar"}
                                           </button>
                                         </td>
                                       </tr>
