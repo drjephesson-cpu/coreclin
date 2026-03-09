@@ -68,6 +68,16 @@ export type AddPatientAllergyInput = {
   allergyName: string;
 };
 
+export type RemovePatientAllergyInput = {
+  patientId: number;
+  allergyId: number;
+};
+
+export type RemovePriorMedicationInput = {
+  patientId: number;
+  priorMedicationId: number;
+};
+
 export type AddPriorMedicationInput = {
   patientId: number;
   medicationId?: number;
@@ -1357,6 +1367,37 @@ export async function addPatientAllergy(input: AddPatientAllergyInput): Promise<
   }
 }
 
+export async function removePatientAllergy(input: RemovePatientAllergyInput): Promise<void> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await ensurePatientExists(client, input.patientId);
+
+    const deleted = await client.query(
+      `
+        DELETE FROM patient_allergies
+        WHERE id = $1 AND patient_id = $2
+        RETURNING id
+      `,
+      [input.allergyId, input.patientId]
+    );
+
+    if (deleted.rowCount === 0) {
+      throw new Error("Alergia não encontrada para este paciente.");
+    }
+
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function addPriorMedication(
   input: AddPriorMedicationInput
 ): Promise<PriorMedicationRecord> {
@@ -1424,6 +1465,37 @@ export async function addPriorMedication(
     if (postgresError.code === "23503") {
       throw new Error("Paciente ou medicamento inválido.");
     }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function removePriorMedication(input: RemovePriorMedicationInput): Promise<void> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await ensurePatientExists(client, input.patientId);
+
+    const deleted = await client.query(
+      `
+        DELETE FROM patient_prior_medications
+        WHERE id = $1 AND patient_id = $2
+        RETURNING id
+      `,
+      [input.priorMedicationId, input.patientId]
+    );
+
+    if (deleted.rowCount === 0) {
+      throw new Error("Medicamento prévio não encontrado para este paciente.");
+    }
+
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();

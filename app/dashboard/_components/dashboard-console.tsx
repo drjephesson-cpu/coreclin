@@ -629,6 +629,7 @@ export default function DashboardConsole({
   });
   const [allergyFeedback, setAllergyFeedback] = useState<FeedbackState>(null);
   const [allergyLoading, setAllergyLoading] = useState(false);
+  const [allergyRemovingId, setAllergyRemovingId] = useState<number | null>(null);
 
   const [priorMedicationForm, setPriorMedicationForm] = useState({
     medicationId: "",
@@ -641,6 +642,7 @@ export default function DashboardConsole({
   const [manualPriorMedicationOptions, setManualPriorMedicationOptions] = useState<string[]>([]);
   const [priorMedicationFeedback, setPriorMedicationFeedback] = useState<FeedbackState>(null);
   const [priorMedicationLoading, setPriorMedicationLoading] = useState(false);
+  const [priorMedicationRemovingId, setPriorMedicationRemovingId] = useState<number | null>(null);
 
   const [prescriptionForm, setPrescriptionForm] = useState({
     admissionId: "",
@@ -2052,6 +2054,42 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     }
   }
 
+  async function handleRemoveAllergy(allergyId: number, allergyName: string): Promise<void> {
+    if (!selectedPatient) {
+      setAllergyFeedback({ type: "error", message: "Selecione um paciente para remover a alergia." });
+      return;
+    }
+
+    const confirmed = window.confirm(`Remover a alergia "${allergyName}" deste paciente?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setAllergyFeedback(null);
+    setAllergyRemovingId(allergyId);
+
+    try {
+      const response = await fetch(`/api/patients/${selectedPatient.id}/allergies`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allergyId })
+      });
+
+      const result = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        setAllergyFeedback({ type: "error", message: result.message ?? "Falha ao remover alergia." });
+        return;
+      }
+
+      setAllergyFeedback({ type: "success", message: "Alergia removida com sucesso." });
+      router.refresh();
+    } catch {
+      setAllergyFeedback({ type: "error", message: "Erro de conexão ao remover alergia." });
+    } finally {
+      setAllergyRemovingId(null);
+    }
+  }
+
   async function handlePriorMedicationSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setPriorMedicationFeedback(null);
@@ -2137,6 +2175,59 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       });
     } finally {
       setPriorMedicationLoading(false);
+    }
+  }
+
+  async function handleRemovePriorMedication(
+    priorMedicationId: number,
+    medicationName: string
+  ): Promise<void> {
+    if (!selectedPatient) {
+      setPriorMedicationFeedback({
+        type: "error",
+        message: "Selecione um paciente para remover o medicamento prévio."
+      });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Remover o medicamento prévio "${medicationName}" deste paciente?`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setPriorMedicationFeedback(null);
+    setPriorMedicationRemovingId(priorMedicationId);
+
+    try {
+      const response = await fetch(`/api/patients/${selectedPatient.id}/prior-medications`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ priorMedicationId })
+      });
+
+      const result = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        setPriorMedicationFeedback({
+          type: "error",
+          message: result.message ?? "Falha ao remover medicamento prévio."
+        });
+        return;
+      }
+
+      setPriorMedicationFeedback({
+        type: "success",
+        message: "Medicamento prévio removido com sucesso."
+      });
+      router.refresh();
+    } catch {
+      setPriorMedicationFeedback({
+        type: "error",
+        message: "Erro de conexão ao remover medicamento prévio."
+      });
+    } finally {
+      setPriorMedicationRemovingId(null);
     }
   }
 
@@ -3392,18 +3483,31 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                     <tr>
                                       <th>Alergia</th>
                                       <th>Registro</th>
+                                      <th>Ações</th>
                                     </tr>
                                   </thead>
                                   <tbody>
                                     {selectedPatientAllergies.length === 0 ? (
                                       <tr>
-                                        <td colSpan={2}>Nenhuma alergia cadastrada.</td>
+                                        <td colSpan={3}>Nenhuma alergia cadastrada.</td>
                                       </tr>
                                     ) : (
                                       selectedPatientAllergies.map((allergy) => (
                                         <tr key={allergy.id}>
                                           <td>{allergy.allergyName}</td>
                                           <td>{formatTimestamp(allergy.createdAt)}</td>
+                                          <td>
+                                            <button
+                                              type="button"
+                                              className="dashboard-chip-remove"
+                                              onClick={() =>
+                                                handleRemoveAllergy(allergy.id, allergy.allergyName)
+                                              }
+                                              disabled={allergyRemovingId === allergy.id}
+                                            >
+                                              {allergyRemovingId === allergy.id ? "Removendo..." : "Remover"}
+                                            </button>
+                                          </td>
                                         </tr>
                                       ))
                                     )}
@@ -3782,12 +3886,13 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                     <th>Reconciliado em todas</th>
                                     <th>Histórico</th>
                                     <th>Registro</th>
+                                    <th>Ações</th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {priorMedicationRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={9}>Nenhum medicamento prévio cadastrado.</td>
+                                      <td colSpan={10}>Nenhum medicamento prévio cadastrado.</td>
                                     </tr>
                                   ) : (
                                     priorMedicationRows.map((row) => (
@@ -3835,6 +3940,23 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                           )}
                                         </td>
                                         <td>{formatTimestamp(row.priorMedication.createdAt)}</td>
+                                        <td>
+                                          <button
+                                            type="button"
+                                            className="dashboard-chip-remove"
+                                            onClick={() =>
+                                              handleRemovePriorMedication(
+                                                row.priorMedication.id,
+                                                row.priorMedication.medicationName
+                                              )
+                                            }
+                                            disabled={priorMedicationRemovingId === row.priorMedication.id}
+                                          >
+                                            {priorMedicationRemovingId === row.priorMedication.id
+                                              ? "Removendo..."
+                                              : "Remover"}
+                                          </button>
+                                        </td>
                                       </tr>
                                     ))
                                   )}

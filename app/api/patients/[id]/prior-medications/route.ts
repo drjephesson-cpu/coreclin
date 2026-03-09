@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
-import { addPriorMedication } from "@/lib/db";
+import { addPriorMedication, removePriorMedication } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -72,6 +72,44 @@ export async function POST(
     return NextResponse.json({ ok: true, priorMedication });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao cadastrar medicamento prévio.";
+    return NextResponse.json({ message }, { status: 400 });
+  }
+}
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+): Promise<NextResponse> {
+  const session = await getCurrentSession();
+  if (!session) {
+    return NextResponse.json({ message: "Sessão inválida." }, { status: 401 });
+  }
+
+  const routeParams = await params;
+  const patientId = Number(routeParams.id);
+  if (!Number.isInteger(patientId) || patientId <= 0) {
+    return NextResponse.json({ message: "Paciente inválido." }, { status: 400 });
+  }
+
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return NextResponse.json({ message: "Corpo inválido." }, { status: 400 });
+  }
+
+  const body = payload as Record<string, unknown>;
+  const priorMedicationId = Number(body.priorMedicationId);
+
+  if (!Number.isInteger(priorMedicationId) || priorMedicationId <= 0) {
+    return NextResponse.json({ message: "Medicamento prévio inválido." }, { status: 400 });
+  }
+
+  try {
+    await removePriorMedication({ patientId, priorMedicationId });
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Falha ao remover medicamento prévio.";
     return NextResponse.json({ message }, { status: 400 });
   }
 }
