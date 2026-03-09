@@ -351,13 +351,6 @@ function extractShiftsFromText(input: string): string {
   return shifts.length > 0 ? shifts.join(", ") : "-";
 }
 
-function escapeHtml(input: string): string {
-  return input
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
 function normalizeMedicationName(input: string): string {
   return input
     .normalize("NFD")
@@ -919,6 +912,7 @@ export default function DashboardConsole({
   const [rawPrescriptionFeedback, setRawPrescriptionFeedback] = useState<FeedbackState>(null);
   const [rawPrescriptionLoading, setRawPrescriptionLoading] = useState(false);
   const admissionSummaryTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [admissionSummarySelection, setAdmissionSummarySelection] = useState("");
 
   useEffect(() => {
     if (patients.length === 0) {
@@ -1474,6 +1468,7 @@ export default function DashboardConsole({
     setShowAllergyComposer(false);
     setShowAdmissionSummaryComposer(false);
     setShowAdmissionSummaryPreview(false);
+    setAdmissionSummarySelection("");
     setAllergyForm({ query: "", selectedValue: "" });
     setAllergyFeedback(null);
   }, [selectedPatient?.birthDate, selectedPatient?.id]);
@@ -1518,6 +1513,7 @@ export default function DashboardConsole({
     });
     setShowAdmissionSummaryComposer(false);
     setShowAdmissionSummaryPreview(Boolean(latestAdmission?.admissionSummary?.trim()));
+    setAdmissionSummarySelection("");
   }, [selectedInpatientEntry, selectedPatient, selectedPatientAdmissions]);
 
   const medicationDescriptors = useMemo(
@@ -2015,14 +2011,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
   function applySelectedAdmissionSummaryText(
     target: "muc" | "allergies"
   ): void {
-    const textarea = admissionSummaryTextareaRef.current;
-    if (!textarea) {
-      return;
-    }
-
-    const selectionStart = textarea.selectionStart ?? 0;
-    const selectionEnd = textarea.selectionEnd ?? 0;
-    const selectedText = admissionForm.admissionSummary.slice(selectionStart, selectionEnd).trim();
+    const selectedText = admissionSummarySelection.trim();
     if (!selectedText) {
       setAdmissionFeedback({
         type: "error",
@@ -2041,40 +2030,17 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     }));
   }
 
-  const admissionSummarySelectionPreview = useMemo(() => {
-    const summary = admissionForm.admissionSummary;
-    if (!summary.trim()) {
-      return "";
+  function syncAdmissionSummarySelection(): void {
+    const textarea = admissionSummaryTextareaRef.current;
+    if (!textarea) {
+      return;
     }
 
-    let highlighted = escapeHtml(summary);
-    const highlightEntries = [
-      {
-        excerpt: admissionForm.admissionImportMucExcerpt.trim(),
-        color: "#d7ecff",
-        label: "MUC"
-      },
-      {
-        excerpt: admissionForm.admissionImportAllergyExcerpt.trim(),
-        color: "#ffe0d6",
-        label: "Alergias"
-      }
-    ].filter((entry) => entry.excerpt.length > 0);
-
-    for (const entry of highlightEntries) {
-      const escapedExcerpt = escapeHtml(entry.excerpt);
-      highlighted = highlighted.replace(
-        escapedExcerpt,
-        `<mark style="background:${entry.color};padding:0 2px;border-radius:4px;">${escapedExcerpt}<strong style="margin-left:6px;font-size:0.8em;">[${entry.label}]</strong></mark>`
-      );
-    }
-
-    return highlighted.replace(/\n/g, "<br />");
-  }, [
-    admissionForm.admissionImportAllergyExcerpt,
-    admissionForm.admissionImportMucExcerpt,
-    admissionForm.admissionSummary
-  ]);
+    const selectionStart = textarea.selectionStart ?? 0;
+    const selectionEnd = textarea.selectionEnd ?? 0;
+    const selectedText = admissionForm.admissionSummary.slice(selectionStart, selectionEnd).trim();
+    setAdmissionSummarySelection(selectedText);
+  }
 
   const selectedPatientPriorMedications = useMemo(
     () =>
@@ -4960,6 +4926,9 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                         admissionSummary: event.target.value
                                       }))
                                     }
+                                    onSelect={syncAdmissionSummarySelection}
+                                    onKeyUp={syncAdmissionSummarySelection}
+                                    onMouseUp={syncAdmissionSummarySelection}
                                     rows={8}
                                   />
                                   <div className="dashboard-inline-actions">
@@ -4967,20 +4936,21 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                       type="button"
                                       className="dashboard-mini-button"
                                       onClick={() => applySelectedAdmissionSummaryText("muc")}
+                                      disabled={!admissionSummarySelection.trim()}
                                     >
-                                      Selecionar como MUC
+                                      Marcar selecao como MUC
                                     </button>
                                     <button
                                       type="button"
                                       className="dashboard-mini-button"
                                       onClick={() => applySelectedAdmissionSummaryText("allergies")}
+                                      disabled={!admissionSummarySelection.trim()}
                                     >
-                                      Selecionar como alergias
+                                      Marcar selecao como alergias
                                     </button>
                                   </div>
                                   <p className="dashboard-muted">
-                                    Selecione um trecho dentro do resumo e use os botões para marcar o bloco de
-                                    MUC e o bloco de alergias.
+                                    Selecione um trecho no texto acima e clique no botao correspondente.
                                   </p>
                                 </>
                               ) : null}
@@ -4995,22 +4965,75 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                               {admissionForm.admissionSummary.trim() ? (
                                 <div className="dashboard-calculation-box">
                                   <h3>Trechos marcados para importação</h3>
-                                  <p className="dashboard-muted">
-                                    A automação usa apenas os trechos marcados abaixo.
-                                  </p>
+                                  {admissionSummarySelection.trim() ? (
+                                    <p className="dashboard-muted">
+                                      Seleção atual: {admissionSummarySelection}
+                                    </p>
+                                  ) : (
+                                    <p className="dashboard-muted">
+                                      Nenhum trecho selecionado no momento.
+                                    </p>
+                                  )}
                                   <div className="dashboard-inline-actions">
-                                    <span className="dashboard-status-pill" style={{ background: "#d7ecff", color: "#163c68" }}>
-                                      MUC {admissionForm.admissionImportMucExcerpt.trim() ? "selecionado" : "não selecionado"}
+                                    <span
+                                      className="dashboard-status-pill"
+                                      style={{ background: "#d7ecff", color: "#163c68" }}
+                                    >
+                                      MUC {admissionForm.admissionImportMucExcerpt.trim() ? "marcado" : "não marcado"}
                                     </span>
-                                    <span className="dashboard-status-pill" style={{ background: "#ffe0d6", color: "#7b2f19" }}>
-                                      Alergias {admissionForm.admissionImportAllergyExcerpt.trim() ? "selecionado" : "não selecionado"}
-                                    </span>
+                                    {admissionForm.admissionImportMucExcerpt.trim() ? (
+                                      <button
+                                        type="button"
+                                        className="dashboard-mini-button"
+                                        onClick={() =>
+                                          setAdmissionForm((current) => ({
+                                            ...current,
+                                            admissionImportMucExcerpt: ""
+                                          }))
+                                        }
+                                      >
+                                        Limpar MUC
+                                      </button>
+                                    ) : null}
                                   </div>
-                                  <div
-                                    className="dashboard-muted"
-                                    style={{ whiteSpace: "pre-wrap" }}
-                                    dangerouslySetInnerHTML={{ __html: admissionSummarySelectionPreview }}
-                                  />
+                                  {admissionForm.admissionImportMucExcerpt.trim() ? (
+                                    <p
+                                      className="dashboard-muted"
+                                      style={{ whiteSpace: "pre-wrap", background: "#d7ecff", padding: "0.75rem", borderRadius: "12px" }}
+                                    >
+                                      {admissionForm.admissionImportMucExcerpt}
+                                    </p>
+                                  ) : null}
+                                  <div className="dashboard-inline-actions">
+                                    <span
+                                      className="dashboard-status-pill"
+                                      style={{ background: "#ffe0d6", color: "#7b2f19" }}
+                                    >
+                                      Alergias {admissionForm.admissionImportAllergyExcerpt.trim() ? "marcado" : "não marcado"}
+                                    </span>
+                                    {admissionForm.admissionImportAllergyExcerpt.trim() ? (
+                                      <button
+                                        type="button"
+                                        className="dashboard-mini-button"
+                                        onClick={() =>
+                                          setAdmissionForm((current) => ({
+                                            ...current,
+                                            admissionImportAllergyExcerpt: ""
+                                          }))
+                                        }
+                                      >
+                                        Limpar alergias
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                  {admissionForm.admissionImportAllergyExcerpt.trim() ? (
+                                    <p
+                                      className="dashboard-muted"
+                                      style={{ whiteSpace: "pre-wrap", background: "#ffe0d6", padding: "0.75rem", borderRadius: "12px" }}
+                                    >
+                                      {admissionForm.admissionImportAllergyExcerpt}
+                                    </p>
+                                  ) : null}
                                 </div>
                               ) : null}
 
