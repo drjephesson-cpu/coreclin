@@ -221,6 +221,15 @@ type RawPrescriptionDraft = {
   validationMessage: string;
 };
 
+type SummaryMedicationCandidate = {
+  medicationId: number;
+  medicationName: string;
+  dose: number;
+  doseUnit: string;
+  frequency: string;
+  shifts: string;
+};
+
 type DashboardConsoleProps = {
   currentLogin: string;
   data: DashboardData | null;
@@ -290,6 +299,56 @@ function parseDosePart(input: string): { dose: number | null; doseUnit: string }
     dose,
     doseUnit: match[2]?.trim() ?? ""
   };
+}
+
+function extractDoseFromText(input: string): { dose: number | null; doseUnit: string } {
+  const compactInput = input.replace(/(\d),(?=\d)/g, "$1.");
+  const match = compactInput.match(
+    /(\d+(?:\.\d+)?)\s*(mg|mcg|g|kg|mL|ml|UI|ui|U|cp|cps|cmp|comprimidos?|caps?|cápsulas?|gotas?)/i
+  );
+  if (!match) {
+    return { dose: null, doseUnit: "" };
+  }
+
+  return parseDosePart(`${match[1]} ${match[2]}`);
+}
+
+function extractFrequencyFromText(input: string): string {
+  const normalizedInput = input.trim();
+  if (!normalizedInput) {
+    return "Conforme resumo";
+  }
+
+  const patterns = [
+    /(\d+\s*\/\s*\d+\s*horas?)/i,
+    /(\d+\s*x\s*\/\s*dia)/i,
+    /(\d+\s*vez(?:es)?\s+ao\s+dia)/i,
+    /(1x\s*\/\s*m[eê]s)/i,
+    /(antes\s+das?\s+refei[cç][oõ]es)/i,
+    /(se\s+necess[aá]rio)/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalizedInput.match(pattern);
+    if (match) {
+      return match[1].replace(/\s+/g, " ").trim();
+    }
+  }
+
+  return "Conforme resumo";
+}
+
+function extractShiftsFromText(input: string): string {
+  const normalizedInput = normalizeMedicationName(input);
+  const shifts = [
+    normalizedInput.includes("manha") ? "Manhã" : "",
+    normalizedInput.includes("tarde") ? "Tarde" : "",
+    normalizedInput.includes("noite") ? "Noite" : "",
+    normalizedInput.includes("almoco") ? "Almoço" : "",
+    normalizedInput.includes("jantar") ? "Jantar" : ""
+  ].filter((value) => value.length > 0);
+
+  return shifts.length > 0 ? shifts.join(", ") : "-";
 }
 
 function normalizeMedicationName(input: string): string {
@@ -749,6 +808,7 @@ export default function DashboardConsole({
     admissionDate: "",
     bed: "",
     admissionReason: "",
+    admissionSummary: "",
     teamId: "",
     weightKg: "",
     heightCm: "",
@@ -796,6 +856,8 @@ export default function DashboardConsole({
     birthDate: ""
   });
   const [showAllergyComposer, setShowAllergyComposer] = useState(false);
+  const [showAdmissionSummaryComposer, setShowAdmissionSummaryComposer] = useState(false);
+  const [showAdmissionSummaryPreview, setShowAdmissionSummaryPreview] = useState(false);
   const [prescriptionMode, setPrescriptionMode] = useState<PrescriptionMode>("view");
   const [selectedPrescriptionGroupKey, setSelectedPrescriptionGroupKey] = useState("");
   const [selectedPrescriptionMedicationHistory, setSelectedPrescriptionMedicationHistory] = useState<{
@@ -1400,6 +1462,8 @@ export default function DashboardConsole({
       birthDate: formatAdmissionDateValue(selectedPatient?.birthDate ?? "")
     });
     setShowAllergyComposer(false);
+    setShowAdmissionSummaryComposer(false);
+    setShowAdmissionSummaryPreview(false);
     setAllergyForm({ query: "", selectedValue: "" });
     setAllergyFeedback(null);
   }, [selectedPatient?.birthDate, selectedPatient?.id]);
@@ -1422,6 +1486,7 @@ export default function DashboardConsole({
         latestAdmission?.admissionReason && latestAdmission.admissionReason !== "Pendente de preenchimento"
           ? latestAdmission.admissionReason
           : "",
+      admissionSummary: latestAdmission?.admissionSummary ?? "",
       teamId:
         latestAdmission?.teamId !== null && latestAdmission?.teamId !== undefined
           ? String(latestAdmission.teamId)
@@ -1439,6 +1504,8 @@ export default function DashboardConsole({
       bmiFormula: latestMeasurement?.bmiFormula ?? "quetelet",
       bsaFormula: latestMeasurement?.bsaFormula ?? "mosteller"
     });
+    setShowAdmissionSummaryComposer(false);
+    setShowAdmissionSummaryPreview(Boolean(latestAdmission?.admissionSummary?.trim()));
   }, [selectedInpatientEntry, selectedPatient, selectedPatientAdmissions]);
 
   const medicationDescriptors = useMemo(
@@ -1758,6 +1825,177 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     }
 
     return null;
+  }
+
+  function findCatalogMedicationsMentionedInText(searchText: string) {
+    const normalizedSearchText = normalizeMedicationName(searchText);
+    if (!normalizedSearchText) {
+      return [];
+    }
+
+    const matches = medicationDescriptors.filter((descriptor) => {
+      if (hasConceptTermMatch(normalizedSearchText, descriptor.normalizedName)) {
+        return true;
+      }
+
+      if (
+        descriptor.aliasTerms.some((aliasTerm) =>
+          hasConceptTermMatch(normalizedSearchText, aliasTerm.normalized)
+        )
+      ) {
+        return true;
+      }
+
+      return descriptor.activeIngredientTerms.some(
+        (ingredientTerm) =>
+          ingredientTerm.normalized.length >= 4 &&
+          hasConceptTermMatch(normalizedSearchText, ingredientTerm.normalized)
+      );
+    });
+
+    return Array.from(
+      new Map(matches.map((descriptor) => [descriptor.medication.id, descriptor.medication])).values()
+    );
+  }
+
+  function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicationCandidate[] {
+    const candidates = new Map<number, SummaryMedicationCandidate>();
+    const lines = summaryText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    const medicationChunks: string[] = [];
+    for (const line of lines) {
+      const mucMatch = line.match(/(?:^|\b)(?:muc|prescrevo muc)\s*:\s*(.+)$/i);
+      if (!mucMatch) {
+        continue;
+      }
+
+      const chunks = mucMatch[1]
+        .split(";")
+        .map((chunk) => chunk.trim())
+        .filter((chunk) => chunk.length > 0);
+      medicationChunks.push(...chunks);
+    }
+
+    for (const chunk of medicationChunks) {
+      const mentionedMedications = findCatalogMedicationsMentionedInText(chunk);
+      for (const medication of mentionedMedications) {
+        if (candidates.has(medication.id)) {
+          continue;
+        }
+
+        const parsedDose = extractDoseFromText(chunk);
+        const dose = parsedDose.dose;
+        const doseUnit = parsedDose.doseUnit || medication.defaultUnit;
+        if (!dose || !doseUnit) {
+          continue;
+        }
+
+        candidates.set(medication.id, {
+          medicationId: medication.id,
+          medicationName: medication.name,
+          dose,
+          doseUnit,
+          frequency: extractFrequencyFromText(chunk),
+          shifts: extractShiftsFromText(chunk)
+        });
+      }
+    }
+
+    return Array.from(candidates.values());
+  }
+
+  function extractSummaryAllergyCandidates(summaryText: string): string[] {
+    const allergyNames = new Map<string, string>();
+    const lines = summaryText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    for (const line of lines) {
+      const normalizedLine = normalizeMedicationName(line);
+      if (!normalizedLine.includes("alerg")) {
+        continue;
+      }
+
+      if (
+        normalizedLine.includes("sem alerg") ||
+        normalizedLine.includes("nega alerg") ||
+        normalizedLine.includes("sem historia de alerg")
+      ) {
+        continue;
+      }
+
+      const mentionedMedications = findCatalogMedicationsMentionedInText(line);
+      for (const medication of mentionedMedications) {
+        const normalizedMedicationName = normalizeMedicationName(medication.name);
+        if (!allergyNames.has(normalizedMedicationName)) {
+          allergyNames.set(normalizedMedicationName, medication.name);
+        }
+      }
+    }
+
+    return Array.from(allergyNames.values());
+  }
+
+  async function autoPopulateFromAdmissionSummary(
+    patientId: number,
+    summaryText: string
+  ): Promise<{ addedPriorMedications: number; addedAllergies: number }> {
+    const trimmedSummary = summaryText.trim();
+    if (!trimmedSummary) {
+      return { addedPriorMedications: 0, addedAllergies: 0 };
+    }
+
+    const existingPriorMedicationNames = new Set(
+      selectedPatientPriorMedications.map((item) => normalizeMedicationName(item.medicationName))
+    );
+    const existingAllergyNames = new Set(
+      selectedPatientAllergies.map((item) => normalizeMedicationName(item.allergyName))
+    );
+
+    let addedPriorMedications = 0;
+    let addedAllergies = 0;
+
+    for (const candidate of extractSummaryMedicationCandidates(trimmedSummary)) {
+      const normalizedName = normalizeMedicationName(candidate.medicationName);
+      if (existingPriorMedicationNames.has(normalizedName)) {
+        continue;
+      }
+
+      const response = await fetch(`/api/patients/${patientId}/prior-medications`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(candidate)
+      });
+
+      if (response.ok) {
+        existingPriorMedicationNames.add(normalizedName);
+        addedPriorMedications += 1;
+      }
+    }
+
+    for (const allergyName of extractSummaryAllergyCandidates(trimmedSummary)) {
+      const normalizedName = normalizeMedicationName(allergyName);
+      if (existingAllergyNames.has(normalizedName)) {
+        continue;
+      }
+
+      const response = await fetch(`/api/patients/${patientId}/allergies`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allergyName })
+      });
+
+      if (response.ok) {
+        existingAllergyNames.add(normalizedName);
+        addedAllergies += 1;
+      }
+    }
+
+    return { addedPriorMedications, addedAllergies };
   }
 
   const selectedPatientPriorMedications = useMemo(
@@ -2556,17 +2794,33 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
         return;
       }
 
+      const summaryAutofill = await autoPopulateFromAdmissionSummary(
+        selectedPatient.id,
+        admissionForm.admissionSummary
+      );
+      const autofillDetails = [
+        summaryAutofill.addedPriorMedications > 0
+          ? `${summaryAutofill.addedPriorMedications} medicamento(s) prévio(s) identificado(s)`
+          : "",
+        summaryAutofill.addedAllergies > 0
+          ? `${summaryAutofill.addedAllergies} alergia(s) identificada(s)`
+          : ""
+      ]
+        .filter((item) => item.length > 0)
+        .join(" e ");
+
       setAdmissionFeedback({
         type: "success",
-        message: shouldUpdateAdmission
-          ? "Internação atualizada com sucesso."
-          : "Internação cadastrada com sucesso."
+        message: `${
+          shouldUpdateAdmission ? "Internação atualizada com sucesso." : "Internação cadastrada com sucesso."
+        }${autofillDetails ? ` Resumo analisado: ${autofillDetails}.` : ""}`
       });
       setAdmissionForm({
         admissionId: "",
         admissionDate: "",
         bed: "",
         admissionReason: "",
+        admissionSummary: "",
         teamId: "",
         weightKg: "",
         heightCm: "",
@@ -4578,7 +4832,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 />
                               </div>
 
-                              <textarea
+                              <input
                                 placeholder="Motivo da internação"
                                 value={admissionForm.admissionReason}
                                 onChange={(event) =>
@@ -4589,6 +4843,50 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 }
                                 required
                               />
+
+                              <div className="dashboard-inline-actions">
+                                <button
+                                  type="button"
+                                  className="dashboard-mini-button"
+                                  onClick={() => setShowAdmissionSummaryComposer((current) => !current)}
+                                >
+                                  {showAdmissionSummaryComposer
+                                    ? "Cancelar resumo"
+                                    : admissionForm.admissionSummary.trim()
+                                      ? "Editar resumo da internação"
+                                      : "Adicionar resumo da internação"}
+                                </button>
+                                {admissionForm.admissionSummary.trim() ? (
+                                  <button
+                                    type="button"
+                                    className="dashboard-mini-button"
+                                    onClick={() => setShowAdmissionSummaryPreview((current) => !current)}
+                                  >
+                                    {showAdmissionSummaryPreview ? "Ocultar resumo" : "Ver resumo"}
+                                  </button>
+                                ) : null}
+                              </div>
+
+                              {showAdmissionSummaryComposer ? (
+                                <textarea
+                                  placeholder="Resumo da internação"
+                                  value={admissionForm.admissionSummary}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({
+                                      ...current,
+                                      admissionSummary: event.target.value
+                                    }))
+                                  }
+                                  rows={8}
+                                />
+                              ) : null}
+
+                              {showAdmissionSummaryPreview && admissionForm.admissionSummary.trim() ? (
+                                <div className="dashboard-calculation-box">
+                                  <h3>Resumo da internação</h3>
+                                  <p style={{ whiteSpace: "pre-wrap" }}>{admissionForm.admissionSummary}</p>
+                                </div>
+                              ) : null}
 
                               <select
                                 value={admissionForm.teamId}
@@ -4710,6 +5008,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                     <th>Leito</th>
                                     <th>Equipe</th>
                                     <th>Motivo</th>
+                                    <th>Resumo</th>
                                     <th>Peso/Altura</th>
                                     <th>IMC</th>
                                     <th>SC</th>
@@ -4718,7 +5017,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 <tbody>
                                   {selectedPatientAdmissions.length === 0 ? (
                                     <tr>
-                                      <td colSpan={7}>Sem internações cadastradas para este paciente.</td>
+                                      <td colSpan={8}>Sem internações cadastradas para este paciente.</td>
                                     </tr>
                                   ) : (
                                     selectedPatientAdmissions.map((admission) => (
@@ -4727,6 +5026,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                         <td>{admission.bed}</td>
                                         <td>{admission.teamName ?? "-"}</td>
                                         <td>{admission.admissionReason}</td>
+                                        <td>{admission.admissionSummary?.trim() ? "Disponível" : "-"}</td>
                                         <td>
                                           {admission.weightKg !== null && admission.heightCm !== null
                                             ? `${formatNumber(admission.weightKg)} kg / ${formatNumber(admission.heightCm)} cm`

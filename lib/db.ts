@@ -47,6 +47,7 @@ export type CreateAdmissionInput = {
   admissionDate: string;
   bed: string;
   admissionReason?: string | null;
+  admissionSummary?: string | null;
   teamId?: number | null;
   weightKg?: number | null;
   heightCm?: number | null;
@@ -60,6 +61,7 @@ export type UpdateAdmissionInput = {
   admissionDate: string;
   bed: string;
   admissionReason?: string | null;
+  admissionSummary?: string | null;
   teamId?: number | null;
   weightKg?: number | null;
   heightCm?: number | null;
@@ -237,6 +239,7 @@ function mapAdmission(row: DbRow): AdmissionRecord {
     admissionDate: String(row.admission_date ?? ""),
     bed: String(row.bed ?? ""),
     admissionReason: String(row.admission_reason ?? ""),
+    admissionSummary: row.admission_summary === null ? null : String(row.admission_summary ?? ""),
     teamId: row.team_id === null ? null : toNumber(row.team_id),
     teamName: row.team_name === null ? null : String(row.team_name),
     responsibleProfessionalId: toNumber(row.responsible_professional_id),
@@ -352,6 +355,8 @@ function mapPatient(row: DbRow): PatientRecord {
           admissionDate: String(row.latest_admission_date ?? ""),
           bed: String(row.latest_admission_bed ?? ""),
           admissionReason: String(row.latest_admission_reason ?? ""),
+          admissionSummary:
+            row.latest_admission_summary === null ? null : String(row.latest_admission_summary ?? ""),
           teamId: row.latest_admission_team_id === null ? null : toNumber(row.latest_admission_team_id),
           teamName: row.latest_admission_team_name === null ? null : String(row.latest_admission_team_name),
           responsibleProfessionalId: toNumber(row.latest_admission_responsible_professional_id),
@@ -531,6 +536,7 @@ async function setupDatabase(): Promise<void> {
       admission_date DATE NOT NULL,
       bed TEXT NOT NULL,
       admission_reason TEXT NOT NULL,
+      admission_summary TEXT,
       team_id INTEGER REFERENCES teams(id),
       responsible_professional_id INTEGER NOT NULL REFERENCES professionals(id),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -619,6 +625,9 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE patient_measurements
     ADD COLUMN IF NOT EXISTS bsa_formula TEXT NOT NULL DEFAULT 'mosteller';
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS admission_summary TEXT;
   `);
 
   await pool.query(`
@@ -1279,10 +1288,11 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
           admission_date,
           bed,
           admission_reason,
+          admission_summary,
           team_id,
           responsible_professional_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id
       `,
       [
@@ -1290,6 +1300,7 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
         input.admissionDate,
         input.bed.trim(),
         input.admissionReason?.trim() || "Pendente de preenchimento",
+        input.admissionSummary?.trim() || null,
         input.teamId ?? null,
         responsibleProfessionalId
       ]
@@ -1360,7 +1371,8 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
           admission_date = $2,
           bed = $3,
           admission_reason = $4,
-          team_id = $5
+          admission_summary = $5,
+          team_id = $6
         WHERE id = $1
         RETURNING id, patient_id
       `,
@@ -1369,6 +1381,7 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
         input.admissionDate,
         input.bed.trim(),
         input.admissionReason?.trim() || "Pendente de preenchimento",
+        input.admissionSummary?.trim() || null,
         input.teamId ?? null
       ]
     );
@@ -1816,6 +1829,7 @@ export async function listPatients(): Promise<PatientRecord[]> {
       la.admission_date::text AS latest_admission_date,
       la.bed AS latest_admission_bed,
       la.admission_reason AS latest_admission_reason,
+      la.admission_summary AS latest_admission_summary,
       la.team_id AS latest_admission_team_id,
       t.name AS latest_admission_team_name,
       la.responsible_professional_id AS latest_admission_responsible_professional_id,
@@ -1836,6 +1850,7 @@ export async function listPatients(): Promise<PatientRecord[]> {
         a.admission_date,
         a.bed,
         a.admission_reason,
+        a.admission_summary,
         a.team_id,
         a.responsible_professional_id,
         a.created_at
@@ -1881,6 +1896,7 @@ export async function listRecentAdmissions(limit = 40): Promise<AdmissionRecord[
         a.admission_date::text AS admission_date,
         a.bed,
         a.admission_reason,
+        a.admission_summary,
         a.team_id,
         t.name AS team_name,
         a.responsible_professional_id,

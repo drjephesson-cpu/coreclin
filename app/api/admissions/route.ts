@@ -97,6 +97,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const admissionDate = normalizeAdmissionDate(typeof body.admissionDate === "string" ? body.admissionDate : "");
   const bed = typeof body.bed === "string" ? body.bed.trim() : "";
   const admissionReason = typeof body.admissionReason === "string" ? body.admissionReason.trim() : "";
+  const admissionSummary = typeof body.admissionSummary === "string" ? body.admissionSummary.trim() : "";
   const teamIdRaw = body.teamId;
   const weightKgRaw = body.weightKg;
   const heightCmRaw = body.heightCm;
@@ -144,6 +145,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       admissionDate,
       bed,
       admissionReason,
+      admissionSummary,
       teamId,
       weightKg,
       heightCm,
@@ -170,6 +172,7 @@ export async function PUT(request: Request): Promise<NextResponse> {
   const admissionDate = normalizeAdmissionDate(typeof body.admissionDate === "string" ? body.admissionDate : "");
   const bed = typeof body.bed === "string" ? body.bed.trim() : "";
   const admissionReason = typeof body.admissionReason === "string" ? body.admissionReason.trim() : "";
+  const admissionSummary = typeof body.admissionSummary === "string" ? body.admissionSummary.trim() : "";
   const teamId = parseOptionalPositiveNumber(body.teamId);
   const weightKg = parseOptionalPositiveNumber(body.weightKg);
   const heightCm = parseOptionalPositiveNumber(body.heightCm);
@@ -213,6 +216,7 @@ export async function PUT(request: Request): Promise<NextResponse> {
       admissionDate,
       bed,
       admissionReason,
+      admissionSummary,
       teamId,
       weightKg,
       heightCm,

@@ -93,6 +93,7 @@ export type AdmissionRecord = {
   admissionDate: string;
   bed: string;
   admissionReason: string;
+  admissionSummary: string | null;
   teamId: number | null;
   teamName: string | null;
   responsibleProfessionalId: number;
