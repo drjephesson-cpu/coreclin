@@ -7,7 +7,7 @@ import {
   type BmiFormulaId,
   type BsaFormulaId
 } from "@/lib/coreclin-types";
-import { createAdmission } from "@/lib/db";
+import { createAdmission, updateAdmission } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -19,20 +19,43 @@ function isBsaFormulaId(value: string): value is BsaFormulaId {
   return BSA_FORMULA_OPTIONS.some((formula) => formula.id === value);
 }
 
-export async function POST(request: Request): Promise<NextResponse> {
+async function parseAdmissionRequest(request: Request): Promise<
+  | { error: NextResponse }
+  | {
+      body: Record<string, unknown>;
+      sessionUsername: string;
+    }
+> {
   const session = await getCurrentSession();
   if (!session) {
-    return NextResponse.json({ message: "Sessão inválida." }, { status: 401 });
+    return { error: NextResponse.json({ message: "Sessão inválida." }, { status: 401 }) };
   }
 
   let payload: unknown;
   try {
     payload = await request.json();
   } catch {
-    return NextResponse.json({ message: "Corpo inválido." }, { status: 400 });
+    return { error: NextResponse.json({ message: "Corpo inválido." }, { status: 400 }) };
   }
 
-  const body = payload as Record<string, unknown>;
+  return {
+    body: payload as Record<string, unknown>,
+    sessionUsername: session.username
+  };
+}
+
+function parseOptionalPositiveNumber(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+export async function POST(request: Request): Promise<NextResponse> {
+  const parsedRequest = await parseAdmissionRequest(request);
+  if ("error" in parsedRequest) {
+    return parsedRequest.error;
+  }
+
+  const { body, sessionUsername } = parsedRequest;
   const patientIdRaw = body.patientId;
   const admissionDate = typeof body.admissionDate === "string" ? body.admissionDate : "";
   const bed = typeof body.bed === "string" ? body.bed.trim() : "";
@@ -44,33 +67,36 @@ export async function POST(request: Request): Promise<NextResponse> {
   const bsaFormulaRaw = typeof body.bsaFormula === "string" ? body.bsaFormula : "";
 
   const patientId = typeof patientIdRaw === "number" ? patientIdRaw : Number(patientIdRaw);
-  const teamId = typeof teamIdRaw === "number" ? teamIdRaw : Number(teamIdRaw);
-  const weightKg = typeof weightKgRaw === "number" ? weightKgRaw : Number(weightKgRaw);
-  const heightCm = typeof heightCmRaw === "number" ? heightCmRaw : Number(heightCmRaw);
+  const teamId = parseOptionalPositiveNumber(teamIdRaw);
+  const weightKg = parseOptionalPositiveNumber(weightKgRaw);
+  const heightCm = parseOptionalPositiveNumber(heightCmRaw);
+  const hasMeasurements = weightKg !== null && heightCm !== null;
 
   if (!Number.isInteger(patientId) || patientId <= 0) {
     return NextResponse.json({ message: "Paciente inválido." }, { status: 400 });
   }
 
-  if (!admissionDate || !bed || !admissionReason) {
-    return NextResponse.json({ message: "Preencha os campos obrigatórios da internação." }, { status: 400 });
+  if (!admissionDate || !bed) {
+    return NextResponse.json({ message: "Preencha data e leito da internação." }, { status: 400 });
   }
 
-  if (!Number.isInteger(teamId) || teamId <= 0) {
-    return NextResponse.json({ message: "Equipe inválida." }, { status: 400 });
+  if ((weightKg === null) !== (heightCm === null)) {
+    return NextResponse.json(
+      { message: "Informe peso e altura juntos ou deixe ambos em branco." },
+      { status: 400 }
+    );
   }
 
-  if (!Number.isFinite(weightKg) || weightKg <= 0 || !Number.isFinite(heightCm) || heightCm <= 0) {
-    return NextResponse.json({ message: "Peso e altura devem ser positivos." }, { status: 400 });
-  }
-
-  if (!isBmiFormulaId(bmiFormulaRaw)) {
+  if (hasMeasurements && !isBmiFormulaId(bmiFormulaRaw)) {
     return NextResponse.json({ message: "Calculadora de IMC inválida." }, { status: 400 });
   }
 
-  if (!isBsaFormulaId(bsaFormulaRaw)) {
+  if (hasMeasurements && !isBsaFormulaId(bsaFormulaRaw)) {
     return NextResponse.json({ message: "Calculadora de superfície corporal inválida." }, { status: 400 });
   }
+
+  const bmiFormula = hasMeasurements ? (bmiFormulaRaw as BmiFormulaId) : undefined;
+  const bsaFormula = hasMeasurements ? (bsaFormulaRaw as BsaFormulaId) : undefined;
 
   try {
     const admission = await createAdmission({
@@ -81,14 +107,80 @@ export async function POST(request: Request): Promise<NextResponse> {
       teamId,
       weightKg,
       heightCm,
-      bmiFormula: bmiFormulaRaw,
-      bsaFormula: bsaFormulaRaw,
-      responsibleLogin: session.username
+      bmiFormula,
+      bsaFormula,
+      responsibleLogin: sessionUsername
     });
 
     return NextResponse.json({ ok: true, admission });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao cadastrar internação.";
+    return NextResponse.json({ message }, { status: 400 });
+  }
+}
+
+export async function PUT(request: Request): Promise<NextResponse> {
+  const parsedRequest = await parseAdmissionRequest(request);
+  if ("error" in parsedRequest) {
+    return parsedRequest.error;
+  }
+
+  const { body, sessionUsername } = parsedRequest;
+  const admissionIdRaw = body.admissionId;
+  const admissionDate = typeof body.admissionDate === "string" ? body.admissionDate : "";
+  const bed = typeof body.bed === "string" ? body.bed.trim() : "";
+  const admissionReason = typeof body.admissionReason === "string" ? body.admissionReason.trim() : "";
+  const teamId = parseOptionalPositiveNumber(body.teamId);
+  const weightKg = parseOptionalPositiveNumber(body.weightKg);
+  const heightCm = parseOptionalPositiveNumber(body.heightCm);
+  const bmiFormulaRaw = typeof body.bmiFormula === "string" ? body.bmiFormula : "";
+  const bsaFormulaRaw = typeof body.bsaFormula === "string" ? body.bsaFormula : "";
+  const admissionId = typeof admissionIdRaw === "number" ? admissionIdRaw : Number(admissionIdRaw);
+  const hasMeasurements = weightKg !== null && heightCm !== null;
+
+  if (!Number.isInteger(admissionId) || admissionId <= 0) {
+    return NextResponse.json({ message: "Internação inválida." }, { status: 400 });
+  }
+
+  if (!admissionDate || !bed) {
+    return NextResponse.json({ message: "Preencha data e leito da internação." }, { status: 400 });
+  }
+
+  if ((weightKg === null) !== (heightCm === null)) {
+    return NextResponse.json(
+      { message: "Informe peso e altura juntos ou deixe ambos em branco." },
+      { status: 400 }
+    );
+  }
+
+  if (hasMeasurements && !isBmiFormulaId(bmiFormulaRaw)) {
+    return NextResponse.json({ message: "Calculadora de IMC inválida." }, { status: 400 });
+  }
+
+  if (hasMeasurements && !isBsaFormulaId(bsaFormulaRaw)) {
+    return NextResponse.json({ message: "Calculadora de superfície corporal inválida." }, { status: 400 });
+  }
+
+  const bmiFormula = hasMeasurements ? (bmiFormulaRaw as BmiFormulaId) : undefined;
+  const bsaFormula = hasMeasurements ? (bsaFormulaRaw as BsaFormulaId) : undefined;
+
+  try {
+    const admission = await updateAdmission({
+      admissionId,
+      admissionDate,
+      bed,
+      admissionReason,
+      teamId,
+      weightKg,
+      heightCm,
+      bmiFormula,
+      bsaFormula,
+      responsibleLogin: sessionUsername
+    });
+
+    return NextResponse.json({ ok: true, admission });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Falha ao atualizar internação.";
     return NextResponse.json({ message }, { status: 400 });
   }
 }

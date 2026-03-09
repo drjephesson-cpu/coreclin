@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import LogoutButton from "@/app/_components/logout-button";
 import { calculateClinicalIndexes } from "@/lib/clinical";
 import {
+  type AdmissionRecord,
   BSA_FORMULA_OPTIONS,
   BMI_FORMULA_OPTIONS,
   COUNCIL_OPTIONS,
@@ -14,6 +15,7 @@ import {
   type BsaFormulaId,
   type CouncilOption,
   type DashboardData,
+  type PatientRecord,
   type ProfessionOption
 } from "@/lib/coreclin-types";
 import {
@@ -146,6 +148,8 @@ type InpatientWorkflowState = {
   status: InpatientWorkflowStatus;
   assignedTeamId: number | null;
   mandatory: boolean;
+  firstVisitCompletedAt: string | null;
+  evolutionGeneratedAt: string | null;
   updatedAt: string;
 };
 
@@ -156,6 +160,7 @@ type InpatientEntry = {
   patientId: number | null;
   patientName: string;
   chartNumber: string;
+  reportedAgeYears: number | null;
   admissionDate: string;
   bed: string;
   teamName: string | null;
@@ -299,6 +304,49 @@ function normalizeSearchValue(input: string): string {
     .replace(/[\u0300-\u036f]/g, "")
     .trim()
     .toLocaleLowerCase();
+}
+
+function normalizeMandatoryBedLabel(input: string): string {
+  const sanitized = input.trim().toUpperCase().replace(/^L:/, "");
+  if (!sanitized) {
+    return "";
+  }
+
+  const parts = sanitized
+    .split("-")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  if (parts.length >= 2) {
+    const bedNumber = parts[parts.length - 2].replace(/^0+/, "") || "0";
+    const bedSuffix = parts[parts.length - 1];
+    return `${bedNumber}-${bedSuffix}`;
+  }
+
+  return sanitized.replace(/^0+/, "") || sanitized;
+}
+
+function parseMandatoryAdmissionDate(input: string): string {
+  const trimmed = input.trim();
+  const match = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{2,4})/);
+  if (!match) {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  const [, day, month, rawYear] = match;
+  const year = rawYear.length === 2 ? `20${rawYear}` : rawYear;
+  return `${year}-${month}-${day}`;
+}
+
+function shouldRemainMandatory(
+  status: InpatientWorkflowStatus,
+  evolutionGeneratedAt: string | null
+): boolean {
+  if (status === "Alta") {
+    return false;
+  }
+
+  return !(status === "Concluído" && evolutionGeneratedAt);
 }
 
 function escapeRegExp(input: string): string {
@@ -558,6 +606,7 @@ function areInpatientEntriesEquivalent(first: InpatientEntry, second: InpatientE
     first.patientId === second.patientId &&
     first.patientName === second.patientName &&
     first.chartNumber === second.chartNumber &&
+    first.reportedAgeYears === second.reportedAgeYears &&
     first.admissionDate === second.admissionDate &&
     first.bed === second.bed &&
     first.teamName === second.teamName &&
@@ -623,10 +672,11 @@ export default function DashboardConsole({
   });
 
   const [admissionForm, setAdmissionForm] = useState({
+    admissionId: "",
     admissionDate: "",
     bed: "",
     admissionReason: "",
-    teamId: teams[0] ? String(teams[0].id) : "",
+    teamId: "",
     weightKg: "",
     heightCm: "",
     bmiFormula: "quetelet" as BmiFormulaId,
@@ -656,6 +706,7 @@ export default function DashboardConsole({
   const [inpatientTeamFilter, setInpatientTeamFilter] = useState("all");
   const [mandatoryRawInput, setMandatoryRawInput] = useState("");
   const [mandatoryFeedback, setMandatoryFeedback] = useState<FeedbackState>(null);
+  const [mandatoryLoading, setMandatoryLoading] = useState(false);
   const [workflowByInpatientKey, setWorkflowByInpatientKey] = useState<
     Record<string, InpatientWorkflowState>
   >({});
@@ -782,6 +833,7 @@ export default function DashboardConsole({
           patientId: admission.patientId,
           patientName: admission.patientName,
           chartNumber: admission.chartNumber,
+          reportedAgeYears: patients.find((patient) => patient.id === admission.patientId)?.ageYears ?? null,
           admissionDate: admission.admissionDate,
           bed: admission.bed,
           teamName: admission.teamName,
@@ -793,7 +845,7 @@ export default function DashboardConsole({
     }
 
     return Array.from(uniquePatients.values());
-  }, [recentAdmissions]);
+  }, [patients, recentAdmissions]);
 
   const filteredInpatients = useMemo(() => {
     const searchTerm = normalizeSearchValue(inpatientSearch);
@@ -824,7 +876,47 @@ export default function DashboardConsole({
       const parsedPayload = JSON.parse(rawPayload) as Partial<InpatientWorkflowStoragePayload>;
 
       if (parsedPayload.workflowByKey && typeof parsedPayload.workflowByKey === "object") {
-        setWorkflowByInpatientKey(parsedPayload.workflowByKey as Record<string, InpatientWorkflowState>);
+        const normalizedWorkflowByKey = Object.fromEntries(
+          Object.entries(parsedPayload.workflowByKey).flatMap(([entryKey, workflowValue]) => {
+            if (!workflowValue || typeof workflowValue !== "object") {
+              return [];
+            }
+
+            const workflow = workflowValue as Partial<InpatientWorkflowState>;
+            const status =
+              workflow.status === "Concluído" || workflow.status === "Alta"
+                ? workflow.status
+                : "Pendente";
+            const evolutionGeneratedAt =
+              typeof workflow.evolutionGeneratedAt === "string" ? workflow.evolutionGeneratedAt : null;
+            const firstVisitCompletedAt =
+              typeof workflow.firstVisitCompletedAt === "string"
+                ? workflow.firstVisitCompletedAt
+                : status === "Concluído"
+                  ? typeof workflow.updatedAt === "string"
+                    ? workflow.updatedAt
+                    : new Date().toISOString()
+                  : null;
+
+            return [
+              [
+                entryKey,
+                {
+                  status,
+                  assignedTeamId:
+                    typeof workflow.assignedTeamId === "number" ? workflow.assignedTeamId : null,
+                  mandatory: shouldRemainMandatory(status, evolutionGeneratedAt),
+                  firstVisitCompletedAt,
+                  evolutionGeneratedAt,
+                  updatedAt:
+                    typeof workflow.updatedAt === "string" ? workflow.updatedAt : new Date().toISOString()
+                } satisfies InpatientWorkflowState
+              ]
+            ];
+          })
+        );
+
+        setWorkflowByInpatientKey(normalizedWorkflowByKey);
       }
 
       if (Array.isArray(parsedPayload.trackedEntries)) {
@@ -839,6 +931,7 @@ export default function DashboardConsole({
               typeof entry.chartNumber === "string" &&
               typeof entry.admissionDate === "string" &&
               typeof entry.bed === "string" &&
+              (entry.reportedAgeYears === null || typeof entry.reportedAgeYears === "number") &&
               (entry.patientId === null || typeof entry.patientId === "number") &&
               (entry.teamId === null || typeof entry.teamId === "number") &&
               (entry.teamName === null || typeof entry.teamName === "string") &&
@@ -847,6 +940,8 @@ export default function DashboardConsole({
           })
           .map((entry) => ({
             ...entry,
+            reportedAgeYears:
+              typeof entry.reportedAgeYears === "number" ? entry.reportedAgeYears : null,
             createdAt: typeof entry.createdAt === "string" ? entry.createdAt : new Date().toISOString()
           }));
 
@@ -894,6 +989,8 @@ export default function DashboardConsole({
             status: "Pendente",
             assignedTeamId: inpatient.teamId ?? null,
             mandatory: true,
+            firstVisitCompletedAt: null,
+            evolutionGeneratedAt: null,
             updatedAt: new Date().toISOString()
           };
           hasChanges = true;
@@ -919,6 +1016,54 @@ export default function DashboardConsole({
   }, [teams]);
 
   useEffect(() => {
+    if (trackedInpatientEntries.length === 0 || patients.length === 0) {
+      return;
+    }
+
+    setTrackedInpatientEntries((current) => {
+      let hasChanges = false;
+
+      const nextEntries = current.map((entry) => {
+        const normalizedChart = normalizeSearchValue(entry.chartNumber);
+        const normalizedName = normalizeSearchValue(entry.patientName);
+        const matchedPatient = patients.find((patient) => {
+          const patientChart = normalizeSearchValue(patient.chartNumber);
+          const patientName = normalizeSearchValue(patient.fullName);
+
+          return (
+            (normalizedChart.length > 0 && patientChart === normalizedChart) ||
+            (normalizedName.length > 0 && patientName === normalizedName)
+          );
+        });
+
+        if (!matchedPatient) {
+          return entry;
+        }
+
+        if (
+          entry.patientId === matchedPatient.id &&
+          entry.patientName === matchedPatient.fullName &&
+          entry.chartNumber === matchedPatient.chartNumber &&
+          entry.reportedAgeYears === matchedPatient.ageYears
+        ) {
+          return entry;
+        }
+
+        hasChanges = true;
+        return {
+          ...entry,
+          patientId: matchedPatient.id,
+          patientName: matchedPatient.fullName,
+          chartNumber: matchedPatient.chartNumber,
+          reportedAgeYears: matchedPatient.ageYears
+        };
+      });
+
+      return hasChanges ? nextEntries : current;
+    });
+  }, [patients, trackedInpatientEntries.length]);
+
+  useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
@@ -932,18 +1077,22 @@ export default function DashboardConsole({
   }, [workflowByInpatientKey, trackedInpatientEntries, priorityTeamIds]);
 
   useEffect(() => {
-    if (inpatients.length === 0) {
+    const selectableInpatients = [...trackedInpatientEntries, ...inpatients].filter(
+      (entry) => entry.patientId !== null
+    );
+
+    if (selectableInpatients.length === 0) {
       return;
     }
 
-    const hasSelectedInpatient = inpatients.some(
+    const hasSelectedInpatient = selectableInpatients.some(
       (inpatient) => String(inpatient.patientId) === selectedPatientId
     );
     if (!hasSelectedInpatient) {
-      setSelectedPatientId(String(inpatients[0].patientId ?? ""));
+      setSelectedPatientId(String(selectableInpatients[0].patientId ?? ""));
       setPatientDetailsOpen(false);
     }
-  }, [inpatients, selectedPatientId]);
+  }, [inpatients, selectedPatientId, trackedInpatientEntries]);
 
   const teamNameById = useMemo(() => {
     const lookup = new Map<number, string>();
@@ -959,20 +1108,53 @@ export default function DashboardConsole({
         status: "Pendente",
         assignedTeamId: entry.teamId ?? null,
         mandatory: true,
+        firstVisitCompletedAt: null,
+        evolutionGeneratedAt: null,
         updatedAt: entry.createdAt
       }
     );
   }
 
   const inpatientEntries = useMemo(() => {
-    const entriesByKey = new Map<string, InpatientEntry>();
-    for (const entry of trackedInpatientEntries) {
-      entriesByKey.set(entry.key, entry);
+    const entriesByIdentity = new Map<string, InpatientEntry>();
+
+    for (const entry of [...trackedInpatientEntries, ...inpatients]) {
+      const normalizedChart = normalizeSearchValue(entry.chartNumber);
+      const normalizedName = normalizeSearchValue(entry.patientName);
+      const identity =
+        entry.patientId !== null
+          ? `patient:${entry.patientId}`
+          : normalizedChart
+            ? `chart:${normalizedChart}`
+            : `name:${normalizedName || entry.key}`;
+
+      const currentEntry = entriesByIdentity.get(identity);
+      if (!currentEntry) {
+        entriesByIdentity.set(identity, entry);
+        continue;
+      }
+
+      const shouldReplaceCurrent =
+        (currentEntry.source !== "active" && entry.source === "active") ||
+        (currentEntry.patientId === null && entry.patientId !== null);
+
+      if (shouldReplaceCurrent) {
+        entriesByIdentity.set(identity, {
+          ...entry,
+          reportedAgeYears: entry.reportedAgeYears ?? currentEntry.reportedAgeYears
+        });
+        continue;
+      }
+
+      if (currentEntry.reportedAgeYears === null && entry.reportedAgeYears !== null) {
+        entriesByIdentity.set(identity, {
+          ...currentEntry,
+          reportedAgeYears: entry.reportedAgeYears
+        });
+      }
     }
-    for (const entry of inpatients) {
-      entriesByKey.set(entry.key, entry);
-    }
-    return Array.from(entriesByKey.values());
+
+    return Array.from(entriesByIdentity.values());
   }, [trackedInpatientEntries, inpatients]);
 
   const inpatientEntriesWithWorkflow = useMemo(
@@ -991,6 +1173,14 @@ export default function DashboardConsole({
         };
       }),
     [inpatientEntries, workflowByInpatientKey, teamNameById, priorityTeamIds]
+  );
+
+  const selectedInpatientEntry = useMemo(
+    () =>
+      selectedPatient !== null
+        ? inpatientEntries.find((entry) => entry.patientId === selectedPatient.id) ?? null
+        : null,
+    [inpatientEntries, selectedPatient]
   );
 
   const teamOverviewRows = useMemo(() => {
@@ -1031,15 +1221,26 @@ export default function DashboardConsole({
   const mandatoryOverviewRows = useMemo(
     () =>
       inpatientEntriesWithWorkflow
-        .filter(({ workflow }) => workflow.mandatory && workflow.status === "Pendente")
-        .sort((first, second) => first.entry.patientName.localeCompare(second.entry.patientName, "pt-BR")),
+        .filter(({ workflow }) => workflow.mandatory)
+        .sort((first, second) => {
+          const firstPriority = first.workflow.firstVisitCompletedAt ? 1 : 0;
+          const secondPriority = second.workflow.firstVisitCompletedAt ? 1 : 0;
+          if (firstPriority !== secondPriority) {
+            return firstPriority - secondPriority;
+          }
+
+          return first.entry.patientName.localeCompare(second.entry.patientName, "pt-BR");
+        }),
     [inpatientEntriesWithWorkflow]
   );
 
   const dischargedOverviewRows = useMemo(
     () =>
       inpatientEntriesWithWorkflow
-        .filter(({ workflow }) => workflow.status === "Alta" || workflow.status === "Concluído")
+        .filter(
+          ({ workflow }) =>
+            workflow.status === "Alta" || (workflow.status === "Concluído" && !workflow.mandatory)
+        )
         .sort((first, second) => {
           const firstUpdated = new Date(first.workflow.updatedAt).getTime();
           const secondUpdated = new Date(second.workflow.updatedAt).getTime();
@@ -1063,6 +1264,41 @@ export default function DashboardConsole({
       ),
     [patientAllergies, selectedPatient]
   );
+
+  useEffect(() => {
+    if (!selectedPatient) {
+      return;
+    }
+
+    const latestAdmission = selectedPatientAdmissions[0] ?? selectedPatient.latestAdmission;
+    const latestMeasurement = selectedPatient.latestMeasurement;
+
+    setAdmissionForm({
+      admissionId: latestAdmission ? String(latestAdmission.id) : "",
+      admissionDate: latestAdmission?.admissionDate ?? selectedInpatientEntry?.admissionDate ?? "",
+      bed: latestAdmission?.bed ?? selectedInpatientEntry?.bed ?? "",
+      admissionReason:
+        latestAdmission?.admissionReason && latestAdmission.admissionReason !== "Pendente de preenchimento"
+          ? latestAdmission.admissionReason
+          : "",
+      teamId:
+        latestAdmission?.teamId !== null && latestAdmission?.teamId !== undefined
+          ? String(latestAdmission.teamId)
+          : selectedInpatientEntry?.teamId !== null && selectedInpatientEntry?.teamId !== undefined
+            ? String(selectedInpatientEntry.teamId)
+            : "",
+      weightKg:
+        latestMeasurement?.weightKg !== null && latestMeasurement?.weightKg !== undefined
+          ? String(latestMeasurement.weightKg)
+          : "",
+      heightCm:
+        latestMeasurement?.heightCm !== null && latestMeasurement?.heightCm !== undefined
+          ? String(latestMeasurement.heightCm)
+          : "",
+      bmiFormula: latestMeasurement?.bmiFormula ?? "quetelet",
+      bsaFormula: latestMeasurement?.bsaFormula ?? "mosteller"
+    });
+  }, [selectedInpatientEntry, selectedPatient, selectedPatientAdmissions]);
 
   const medicationDescriptors = useMemo(
     () =>
@@ -2041,15 +2277,17 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     setAdmissionLoading(true);
 
     try {
+      const shouldUpdateAdmission = admissionForm.admissionId.trim().length > 0;
       const response = await fetch("/api/admissions", {
-        method: "POST",
+        method: shouldUpdateAdmission ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...admissionForm,
+          admissionId: shouldUpdateAdmission ? Number(admissionForm.admissionId) : undefined,
           patientId: selectedPatient.id,
-          teamId: Number(admissionForm.teamId),
-          weightKg: Number(admissionForm.weightKg),
-          heightCm: Number(admissionForm.heightCm)
+          teamId: admissionForm.teamId ? Number(admissionForm.teamId) : undefined,
+          weightKg: admissionForm.weightKg ? Number(admissionForm.weightKg) : undefined,
+          heightCm: admissionForm.heightCm ? Number(admissionForm.heightCm) : undefined
         })
       });
 
@@ -2057,17 +2295,23 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       if (!response.ok) {
         setAdmissionFeedback({
           type: "error",
-          message: result.message ?? "Falha ao cadastrar internação."
+          message: result.message ?? "Falha ao salvar internação."
         });
         return;
       }
 
-      setAdmissionFeedback({ type: "success", message: "Internação cadastrada com sucesso." });
+      setAdmissionFeedback({
+        type: "success",
+        message: shouldUpdateAdmission
+          ? "Internação atualizada com sucesso."
+          : "Internação cadastrada com sucesso."
+      });
       setAdmissionForm({
+        admissionId: "",
         admissionDate: "",
         bed: "",
         admissionReason: "",
-        teamId: teams[0] ? String(teams[0].id) : "",
+        teamId: "",
         weightKg: "",
         heightCm: "",
         bmiFormula: "quetelet",
@@ -2077,7 +2321,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     } catch {
       setAdmissionFeedback({
         type: "error",
-        message: "Erro de conexão ao cadastrar internação."
+        message: "Erro de conexão ao salvar internação."
       });
     } finally {
       setAdmissionLoading(false);
@@ -2629,24 +2873,39 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     nextStatus: InpatientWorkflowStatus
   ): void {
     setWorkflowByInpatientKey((current) => {
+      const now = new Date().toISOString();
       const fallbackWorkflow: InpatientWorkflowState = {
         status: "Pendente",
         assignedTeamId: null,
         mandatory: true,
-        updatedAt: new Date().toISOString()
+        firstVisitCompletedAt: null,
+        evolutionGeneratedAt: null,
+        updatedAt: now
       };
       const currentWorkflow = current[inpatientKey] ?? fallbackWorkflow;
+      const nextFirstVisitCompletedAt =
+        nextStatus === "Pendente"
+          ? null
+          : nextStatus === "Concluído"
+            ? currentWorkflow.firstVisitCompletedAt ?? now
+            : currentWorkflow.firstVisitCompletedAt;
+      const nextEvolutionGeneratedAt =
+        nextStatus === "Pendente" ? null : currentWorkflow.evolutionGeneratedAt;
       const nextWorkflow: InpatientWorkflowState = {
         ...currentWorkflow,
         status: nextStatus,
-        mandatory: nextStatus === "Pendente",
-        updatedAt: new Date().toISOString()
+        mandatory: shouldRemainMandatory(nextStatus, nextEvolutionGeneratedAt),
+        firstVisitCompletedAt: nextFirstVisitCompletedAt,
+        evolutionGeneratedAt: nextEvolutionGeneratedAt,
+        updatedAt: now
       };
 
       if (
         currentWorkflow.status === nextWorkflow.status &&
         currentWorkflow.mandatory === nextWorkflow.mandatory &&
-        currentWorkflow.assignedTeamId === nextWorkflow.assignedTeamId
+        currentWorkflow.assignedTeamId === nextWorkflow.assignedTeamId &&
+        currentWorkflow.firstVisitCompletedAt === nextWorkflow.firstVisitCompletedAt &&
+        currentWorkflow.evolutionGeneratedAt === nextWorkflow.evolutionGeneratedAt
       ) {
         return current;
       }
@@ -2658,16 +2917,94 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     });
   }
 
+  function handleGenerateMandatoryEvolution(entry: InpatientEntry): void {
+    const currentWorkflow = resolveInpatientWorkflow(entry);
+    if (!currentWorkflow.firstVisitCompletedAt && currentWorkflow.status !== "Concluído") {
+      setMandatoryFeedback({
+        type: "error",
+        message: "Conclua a 1ª visita antes de gerar a evolução."
+      });
+      return;
+    }
+
+    setWorkflowByInpatientKey((current) => {
+      const now = new Date().toISOString();
+      const fallbackWorkflow: InpatientWorkflowState = {
+        status: "Concluído",
+        assignedTeamId: entry.teamId ?? null,
+        mandatory: true,
+        firstVisitCompletedAt: now,
+        evolutionGeneratedAt: null,
+        updatedAt: now
+      };
+      const baseWorkflow = current[entry.key] ?? fallbackWorkflow;
+
+      return {
+        ...current,
+        [entry.key]: {
+          ...baseWorkflow,
+          status: "Concluído",
+          mandatory: false,
+          firstVisitCompletedAt: baseWorkflow.firstVisitCompletedAt ?? now,
+          evolutionGeneratedAt: now,
+          updatedAt: now
+        }
+      };
+    });
+
+    setMandatoryFeedback({
+      type: "success",
+      message: `Evolução registrada para ${entry.patientName}. Quando você enviar o modelo, eu encaixo o texto-base.`
+    });
+  }
+
+  function handleRemoveMandatory(entry: InpatientEntry): void {
+    const confirmed = window.confirm(`Remover ${entry.patientName} da lista de obrigatórios?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setWorkflowByInpatientKey((current) => {
+      const now = new Date().toISOString();
+      const fallbackWorkflow: InpatientWorkflowState = {
+        status: "Pendente",
+        assignedTeamId: entry.teamId ?? null,
+        mandatory: true,
+        firstVisitCompletedAt: null,
+        evolutionGeneratedAt: null,
+        updatedAt: now
+      };
+      const baseWorkflow = current[entry.key] ?? fallbackWorkflow;
+
+      return {
+        ...current,
+        [entry.key]: {
+          ...baseWorkflow,
+          mandatory: false,
+          updatedAt: now
+        }
+      };
+    });
+
+    setMandatoryFeedback({
+      type: "success",
+      message: `${entry.patientName} removido da lista de obrigatórios.`
+    });
+  }
+
   function handleInpatientTeamChange(inpatientKey: string, nextTeamValue: string): void {
     const parsedTeamId = Number(nextTeamValue);
     const nextTeamId = Number.isInteger(parsedTeamId) && parsedTeamId > 0 ? parsedTeamId : null;
 
     setWorkflowByInpatientKey((current) => {
+      const now = new Date().toISOString();
       const fallbackWorkflow: InpatientWorkflowState = {
         status: "Pendente",
         assignedTeamId: null,
         mandatory: true,
-        updatedAt: new Date().toISOString()
+        firstVisitCompletedAt: null,
+        evolutionGeneratedAt: null,
+        updatedAt: now
       };
       const currentWorkflow = current[inpatientKey] ?? fallbackWorkflow;
       if (currentWorkflow.assignedTeamId === nextTeamId) {
@@ -2679,7 +3016,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
         [inpatientKey]: {
           ...currentWorkflow,
           assignedTeamId: nextTeamId,
-          updatedAt: new Date().toISOString()
+          updatedAt: now
         }
       };
     });
@@ -2691,7 +3028,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     );
   }
 
-  function handleMandatoryRawImport(): void {
+  async function handleMandatoryRawImport(): Promise<void> {
     setMandatoryFeedback(null);
 
     const rawLines = mandatoryRawInput
@@ -2707,149 +3044,232 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       return;
     }
 
-    const currentEntries = new Map(inpatientEntries.map((entry) => [entry.key, entry]));
-    const entriesByChart = new Map<string, InpatientEntry>();
-    const entriesByName = new Map<string, InpatientEntry>();
-    for (const entry of inpatientEntries) {
-      const normalizedChart = normalizeSearchValue(entry.chartNumber);
-      const normalizedName = normalizeSearchValue(entry.patientName);
-      if (normalizedChart && !entriesByChart.has(normalizedChart)) {
-        entriesByChart.set(normalizedChart, entry);
-      }
-      if (normalizedName && !entriesByName.has(normalizedName)) {
-        entriesByName.set(normalizedName, entry);
-      }
-    }
+    setMandatoryLoading(true);
 
-    const nextManualEntries: InpatientEntry[] = [];
-    const entriesToPending = new Map<string, number | null>();
-    let linkedCount = 0;
-    let createdCount = 0;
-    let skippedCount = 0;
-
-    for (const [index, rawLine] of rawLines.entries()) {
-      const parts = rawLine
-        .split(/\t|;|\|/)
-        .map((part) => part.trim())
-        .filter((part) => part.length > 0);
-      const patientName = parts[0] ?? "";
-      const chartNumber = parts[1] ?? "";
-      const bed = parts[2] ?? "";
-      const teamNameRaw = parts[3] ?? "";
-
-      if (!patientName) {
-        skippedCount += 1;
-        continue;
+    try {
+      const patientsByChart = new Map<string, PatientRecord>();
+      const patientsByName = new Map<string, PatientRecord>();
+      for (const patient of patients) {
+        const normalizedChart = normalizeSearchValue(patient.chartNumber);
+        const normalizedName = normalizeSearchValue(patient.fullName);
+        if (normalizedChart && !patientsByChart.has(normalizedChart)) {
+          patientsByChart.set(normalizedChart, patient);
+        }
+        if (normalizedName && !patientsByName.has(normalizedName)) {
+          patientsByName.set(normalizedName, patient);
+        }
       }
 
-      const normalizedChart = normalizeSearchValue(chartNumber);
-      const normalizedName = normalizeSearchValue(patientName);
+      const knownAdmissionKeys = new Set(
+        recentAdmissions.map(
+          (admission) =>
+            `${admission.patientId}:${admission.admissionDate}:${normalizeSearchValue(admission.bed)}`
+        )
+      );
 
-      const existingEntry =
-        (normalizedChart ? entriesByChart.get(normalizedChart) : null) ??
-        (normalizedName ? entriesByName.get(normalizedName) : null) ??
-        null;
+      const nextManualEntriesByKey = new Map<string, InpatientEntry>();
+      const entriesToPending = new Map<string, number | null>();
+      let createdPatientsCount = 0;
+      let createdAdmissionsCount = 0;
+      let linkedCount = 0;
+      let skippedCount = 0;
+      let lastErrorMessage = "";
 
-      const matchedTeam = teams.find((team) => {
-        const normalizedTeamName = normalizeSearchValue(team.name);
-        const normalizedRawTeamName = normalizeSearchValue(teamNameRaw);
-        return (
-          normalizedRawTeamName.length > 0 &&
-          (normalizedTeamName === normalizedRawTeamName ||
-            normalizedTeamName.includes(normalizedRawTeamName) ||
-            normalizedRawTeamName.includes(normalizedTeamName))
-        );
+      for (const rawLine of rawLines) {
+        const parts = rawLine
+          .split(/\t|;|\|/)
+          .map((part) => part.trim())
+          .filter((part) => part.length > 0);
+
+        const isBedFirstLayout = /^L:/i.test(parts[0] ?? "");
+        const patientName = isBedFirstLayout ? parts[1] ?? "" : parts[0] ?? "";
+        const chartNumber = isBedFirstLayout ? parts[3] ?? "" : parts[1] ?? "";
+        const bed = isBedFirstLayout ? normalizeMandatoryBedLabel(parts[0] ?? "") : parts[2] ?? "";
+        const admissionDate = isBedFirstLayout
+          ? parseMandatoryAdmissionDate(parts[4] ?? "")
+          : new Date().toISOString().slice(0, 10);
+
+        if (!patientName || !chartNumber || !bed) {
+          skippedCount += 1;
+          continue;
+        }
+
+        const normalizedChart = normalizeSearchValue(chartNumber);
+        const normalizedName = normalizeSearchValue(patientName);
+        let patientRecord =
+          (normalizedChart ? patientsByChart.get(normalizedChart) : null) ??
+          (normalizedName ? patientsByName.get(normalizedName) : null) ??
+          null;
+
+        if (!patientRecord) {
+          const patientResponse = await fetch("/api/patients", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              fullName: patientName,
+              chartNumber,
+              birthDate: "",
+              allergies: []
+            })
+          });
+
+          const patientResult = (await patientResponse.json()) as {
+            message?: string;
+            patient?: PatientRecord;
+          };
+
+          if (!patientResponse.ok || !patientResult.patient) {
+            skippedCount += 1;
+            lastErrorMessage = patientResult.message ?? "Falha ao cadastrar paciente do obrigatório.";
+            continue;
+          }
+
+          patientRecord = patientResult.patient;
+          createdPatientsCount += 1;
+
+          const createdChart = normalizeSearchValue(patientRecord.chartNumber);
+          const createdName = normalizeSearchValue(patientRecord.fullName);
+          if (createdChart) {
+            patientsByChart.set(createdChart, patientRecord);
+          }
+          if (createdName) {
+            patientsByName.set(createdName, patientRecord);
+          }
+        }
+
+        const entryKey = `patient-${patientRecord.id}`;
+        const admissionKey = `${patientRecord.id}:${admissionDate}:${normalizeSearchValue(bed)}`;
+
+        if (!knownAdmissionKeys.has(admissionKey)) {
+          const admissionResponse = await fetch("/api/admissions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              patientId: patientRecord.id,
+              admissionDate,
+              bed,
+              admissionReason: "",
+              teamId: undefined
+            })
+          });
+
+          const admissionResult = (await admissionResponse.json()) as {
+            message?: string;
+            admission?: AdmissionRecord;
+          };
+
+          if (!admissionResponse.ok || !admissionResult.admission) {
+            skippedCount += 1;
+            lastErrorMessage =
+              admissionResult.message ?? "Falha ao cadastrar internação do obrigatório.";
+            continue;
+          }
+
+          knownAdmissionKeys.add(admissionKey);
+          createdAdmissionsCount += 1;
+        } else {
+          linkedCount += 1;
+        }
+
+        nextManualEntriesByKey.set(entryKey, {
+          key: entryKey,
+          patientId: patientRecord.id,
+          patientName: patientRecord.fullName,
+          chartNumber: patientRecord.chartNumber,
+          reportedAgeYears: patientRecord.ageYears,
+          admissionDate,
+          bed,
+          teamName: null,
+          teamId: null,
+          source: "manual",
+          createdAt: new Date().toISOString()
+        });
+        entriesToPending.set(entryKey, null);
+      }
+
+      if (
+        createdPatientsCount === 0 &&
+        createdAdmissionsCount === 0 &&
+        linkedCount === 0 &&
+        entriesToPending.size === 0
+      ) {
+        setMandatoryFeedback({
+          type: "error",
+          message:
+            lastErrorMessage ||
+            "Nenhuma linha válida encontrada. Use: Leito;Nome;Idade;Prontuário;Admissão."
+        });
+        return;
+      }
+
+      if (nextManualEntriesByKey.size > 0) {
+        setTrackedInpatientEntries((current) => {
+          const nextByKey = new Map(current.map((entry) => [entry.key, entry]));
+          for (const manualEntry of nextManualEntriesByKey.values()) {
+            nextByKey.set(manualEntry.key, manualEntry);
+          }
+          return Array.from(nextByKey.values());
+        });
+      }
+
+      setWorkflowByInpatientKey((current) => {
+        const next = { ...current };
+        let hasChanges = false;
+
+        for (const [entryKey, assignedTeamId] of entriesToPending.entries()) {
+          const currentWorkflow = next[entryKey];
+          const fallbackWorkflow: InpatientWorkflowState = {
+            status: "Pendente",
+            assignedTeamId: null,
+            mandatory: true,
+            firstVisitCompletedAt: null,
+            evolutionGeneratedAt: null,
+            updatedAt: new Date().toISOString()
+          };
+          const baseWorkflow = currentWorkflow ?? fallbackWorkflow;
+          const updatedWorkflow: InpatientWorkflowState = {
+            ...baseWorkflow,
+            status: "Pendente",
+            mandatory: true,
+            assignedTeamId: assignedTeamId ?? null,
+            firstVisitCompletedAt: null,
+            evolutionGeneratedAt: null,
+            updatedAt: new Date().toISOString()
+          };
+
+          if (
+            !currentWorkflow ||
+            currentWorkflow.status !== updatedWorkflow.status ||
+            currentWorkflow.mandatory !== updatedWorkflow.mandatory ||
+            currentWorkflow.assignedTeamId !== updatedWorkflow.assignedTeamId ||
+            currentWorkflow.firstVisitCompletedAt !== updatedWorkflow.firstVisitCompletedAt ||
+            currentWorkflow.evolutionGeneratedAt !== updatedWorkflow.evolutionGeneratedAt
+          ) {
+            next[entryKey] = updatedWorkflow;
+            hasChanges = true;
+          }
+        }
+
+        return hasChanges ? next : current;
       });
-      const parsedTeamId = matchedTeam?.id ?? null;
 
-      if (existingEntry) {
-        entriesToPending.set(
-          existingEntry.key,
-          parsedTeamId ?? resolveInpatientWorkflow(existingEntry).assignedTeamId
-        );
-        linkedCount += 1;
-        continue;
-      }
-
-      const keyBase = normalizeMedicationName(`${patientName} ${chartNumber || index + 1}`) || `item-${index + 1}`;
-      let nextKey = `manual-${keyBase}`;
-      let iteration = 1;
-      while (currentEntries.has(nextKey) || nextManualEntries.some((entry) => entry.key === nextKey)) {
-        iteration += 1;
-        nextKey = `manual-${keyBase}-${iteration}`;
-      }
-
-      nextManualEntries.push({
-        key: nextKey,
-        patientId: null,
-        patientName,
-        chartNumber,
-        admissionDate: new Date().toISOString().slice(0, 10),
-        bed,
-        teamName: matchedTeam?.name ?? (teamNameRaw || null),
-        teamId: parsedTeamId,
-        source: "manual",
-        createdAt: new Date().toISOString()
+      setMandatoryRawInput("");
+      setMandatoryFeedback({
+        type: "success",
+        message:
+          `${createdPatientsCount} paciente(s) cadastrado(s), ${createdAdmissionsCount} internação(ões) criada(s) e ${linkedCount} registro(s) já existente(s) mantido(s) em obrigatórios.` +
+          (skippedCount > 0 ? ` ${skippedCount} linha(s) ignorada(s).` : "") +
+          (lastErrorMessage ? ` Último erro: ${lastErrorMessage}` : "")
       });
-      entriesToPending.set(nextKey, parsedTeamId);
-      createdCount += 1;
-    }
-
-    if (createdCount === 0 && linkedCount === 0) {
+      router.refresh();
+    } catch {
       setMandatoryFeedback({
         type: "error",
-        message: "Nenhuma linha válida encontrada. Use: Nome;Prontuário;Leito;Equipe."
+        message: "Erro de conexão ao importar os obrigatórios do dia."
       });
-      return;
+    } finally {
+      setMandatoryLoading(false);
     }
-
-    if (nextManualEntries.length > 0) {
-      setTrackedInpatientEntries((current) => {
-        const nextByKey = new Map(current.map((entry) => [entry.key, entry]));
-        for (const manualEntry of nextManualEntries) {
-          nextByKey.set(manualEntry.key, manualEntry);
-        }
-        return Array.from(nextByKey.values());
-      });
-    }
-
-    setWorkflowByInpatientKey((current) => {
-      const next = { ...current };
-      let hasChanges = false;
-      for (const [entryKey, assignedTeamId] of entriesToPending.entries()) {
-        const currentWorkflow = next[entryKey];
-        const fallbackWorkflow: InpatientWorkflowState = {
-          status: "Pendente",
-          assignedTeamId: null,
-          mandatory: true,
-          updatedAt: new Date().toISOString()
-        };
-        const baseWorkflow = currentWorkflow ?? fallbackWorkflow;
-        const updatedWorkflow: InpatientWorkflowState = {
-          ...baseWorkflow,
-          status: "Pendente",
-          mandatory: true,
-          assignedTeamId: assignedTeamId ?? baseWorkflow.assignedTeamId,
-          updatedAt: new Date().toISOString()
-        };
-        if (
-          !currentWorkflow ||
-          currentWorkflow.status !== updatedWorkflow.status ||
-          currentWorkflow.mandatory !== updatedWorkflow.mandatory ||
-          currentWorkflow.assignedTeamId !== updatedWorkflow.assignedTeamId
-        ) {
-          next[entryKey] = updatedWorkflow;
-          hasChanges = true;
-        }
-      }
-      return hasChanges ? next : current;
-    });
-
-    setMandatoryRawInput("");
-    setMandatoryFeedback({
-      type: "success",
-      message: `${createdCount} paciente(s) novo(s) adicionado(s), ${linkedCount} já existente(s) mantido(s) como obrigatório(s).${skippedCount > 0 ? ` ${skippedCount} linha(s) ignorada(s).` : ""}`
-    });
   }
 
   return (
@@ -3165,6 +3585,10 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                       <input value={agePreview === null ? "Idade" : `${agePreview} anos`} disabled />
                     </div>
 
+                    <p className="dashboard-muted">
+                      Se o prontuário já existir, este cadastro complementa o paciente já importado.
+                    </p>
+
                     <div className="dashboard-subsection-block">
                       <h3>Alergias iniciais</h3>
                       <div className="dashboard-two-columns">
@@ -3262,7 +3686,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 <tr key={patient.id}>
                                   <td>{patient.fullName}</td>
                                   <td>{patient.chartNumber}</td>
-                                  <td>{patient.ageYears} anos</td>
+                                  <td>{patient.ageYears !== null ? `${patient.ageYears} anos` : "-"}</td>
                                   <td>{patient.responsibleProfessionalName}</td>
                                   <td>{patient.latestAdmission ? patient.latestAdmission.admissionDate : "-"}</td>
                                   <td>{patient.latestAdmission?.bed ?? "-"}</td>
@@ -3475,17 +3899,24 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                           <div className="dashboard-subsection-block">
                             <h3>Atendimentos obrigatórios</h3>
                             <p className="dashboard-muted">
-                              Somente sai desta lista quando o status for Concluído ou Alta.
+                              Cole a lista do sistema no formato `Leito | Nome | Idade | Prontuário | Admissão`.
+                              A idade pode vir na linha, mas não é usada no cadastro inicial.
+                            </p>
+                            <p className="dashboard-muted">
+                              O paciente entra como novo cadastro e nova internação básica. `Concluído` marca
+                              apenas a 1ª visita; ele só sai daqui após `Gerar evolução`, `Alta` ou `Remover`.
                             </p>
 
                             <div className="dashboard-form">
                               <textarea
-                                placeholder="Cole várias linhas (Nome;Prontuário;Leito;Equipe)"
+                                placeholder="Cole várias linhas do sistema para cadastrar os obrigatórios do dia"
                                 value={mandatoryRawInput}
                                 onChange={(event) => setMandatoryRawInput(event.target.value)}
                               />
-                              <button type="button" onClick={handleMandatoryRawImport}>
-                                Tratar dados brutos e adicionar
+                              <button type="button" onClick={handleMandatoryRawImport} disabled={mandatoryLoading}>
+                                {mandatoryLoading
+                                  ? "Importando pacientes..."
+                                  : "Cadastrar obrigatórios do dia"}
                               </button>
                             </div>
 
@@ -3501,25 +3932,29 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                   <tr>
                                     <th>Paciente</th>
                                     <th>Prontuário</th>
+                                    <th>Admissão</th>
                                     <th>Leito</th>
                                     <th>Equipe</th>
                                     <th>Status</th>
-                                    <th>Origem</th>
+                                    <th>1ª visita</th>
+                                    <th>Evolução</th>
                                     <th>Detalhes</th>
+                                    <th>Ações</th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {mandatoryOverviewRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={7}>Nenhum atendimento obrigatório pendente.</td>
+                                      <td colSpan={10}>Nenhum atendimento obrigatório pendente.</td>
                                     </tr>
                                   ) : (
                                     mandatoryOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
                                       <tr key={entry.key}>
                                         <td>{entry.patientName}</td>
                                         <td>{entry.chartNumber || "-"}</td>
+                                        <td>{entry.admissionDate || "-"}</td>
                                         <td>{entry.bed || "-"}</td>
-                                        <td>{assignedTeamName ?? entry.teamName ?? "-"}</td>
+                                        <td>{assignedTeamName ?? entry.teamName ?? "Pendente"}</td>
                                         <td>
                                           <select
                                             className="dashboard-table-select"
@@ -3538,7 +3973,25 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                             ))}
                                           </select>
                                         </td>
-                                        <td>{entry.source === "active" ? "Internado ativo" : "Dados brutos"}</td>
+                                        <td>
+                                          {workflow.firstVisitCompletedAt
+                                            ? formatTimestamp(workflow.firstVisitCompletedAt)
+                                            : "Pendente"}
+                                        </td>
+                                        <td>
+                                          {workflow.evolutionGeneratedAt ? (
+                                            formatTimestamp(workflow.evolutionGeneratedAt)
+                                          ) : (
+                                            <button
+                                              type="button"
+                                              className="dashboard-mini-button"
+                                              onClick={() => handleGenerateMandatoryEvolution(entry)}
+                                              disabled={!workflow.firstVisitCompletedAt}
+                                            >
+                                              Gerar evolução
+                                            </button>
+                                          )}
+                                        </td>
                                         <td>
                                           {entry.patientId ? (
                                             <button
@@ -3551,6 +4004,15 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                           ) : (
                                             "-"
                                           )}
+                                        </td>
+                                        <td>
+                                          <button
+                                            type="button"
+                                            className="dashboard-chip-remove"
+                                            onClick={() => handleRemoveMandatory(entry)}
+                                          >
+                                            Remover
+                                          </button>
                                         </td>
                                       </tr>
                                     ))
@@ -3906,7 +4368,11 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                               ) : null}
 
                               <button type="submit" disabled={admissionLoading}>
-                                {admissionLoading ? "Salvando..." : "Salvar internação"}
+                                {admissionLoading
+                                  ? "Salvando..."
+                                  : admissionForm.admissionId
+                                    ? "Atualizar internação"
+                                    : "Salvar internação"}
                               </button>
                             </form>
 

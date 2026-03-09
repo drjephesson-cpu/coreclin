@@ -28,15 +28,15 @@ export async function POST(request: Request): Promise<NextResponse> {
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
 
-  if (!fullName || !chartNumber || !birthDate) {
-    return NextResponse.json({ message: "Preencha os campos obrigatórios do paciente." }, { status: 400 });
+  if (!fullName || !chartNumber) {
+    return NextResponse.json({ message: "Preencha nome e prontuário do paciente." }, { status: 400 });
   }
 
   try {
     const patient = await createPatient({
       fullName,
       chartNumber,
-      birthDate,
+      birthDate: birthDate.trim() || null,
       responsibleLogin: session.username,
       allergies
     });

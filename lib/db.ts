@@ -37,7 +37,7 @@ export type CreateProfessionalInput = {
 export type CreatePatientInput = {
   fullName: string;
   chartNumber: string;
-  birthDate: string;
+  birthDate?: string | null;
   responsibleLogin: string;
   allergies: string[];
 };
@@ -46,12 +46,25 @@ export type CreateAdmissionInput = {
   patientId: number;
   admissionDate: string;
   bed: string;
-  admissionReason: string;
-  teamId: number;
-  weightKg: number;
-  heightCm: number;
-  bmiFormula: BmiFormulaId;
-  bsaFormula: BsaFormulaId;
+  admissionReason?: string | null;
+  teamId?: number | null;
+  weightKg?: number | null;
+  heightCm?: number | null;
+  bmiFormula?: BmiFormulaId;
+  bsaFormula?: BsaFormulaId;
+  responsibleLogin: string;
+};
+
+export type UpdateAdmissionInput = {
+  admissionId: number;
+  admissionDate: string;
+  bed: string;
+  admissionReason?: string | null;
+  teamId?: number | null;
+  weightKg?: number | null;
+  heightCm?: number | null;
+  bmiFormula?: BmiFormulaId;
+  bsaFormula?: BsaFormulaId;
   responsibleLogin: string;
 };
 
@@ -325,8 +338,8 @@ function mapPatient(row: DbRow): PatientRecord {
     id: toNumber(row.id),
     fullName: String(row.full_name ?? ""),
     chartNumber: String(row.chart_number ?? ""),
-    birthDate: String(row.birth_date ?? ""),
-    ageYears: toNumber(row.age_years),
+    birthDate: row.birth_date === null ? null : String(row.birth_date),
+    ageYears: row.age_years === null ? null : toNumber(row.age_years),
     responsibleProfessionalId: toNumber(row.responsible_professional_id),
     responsibleProfessionalName: String(row.responsible_professional_name ?? ""),
     responsibleProfessionalLogin: String(row.responsible_professional_login ?? ""),
@@ -508,7 +521,7 @@ async function setupDatabase(): Promise<void> {
       full_name TEXT NOT NULL,
       chart_number TEXT NOT NULL UNIQUE,
       responsible_professional_id INTEGER NOT NULL REFERENCES professionals(id),
-      birth_date DATE NOT NULL,
+      birth_date DATE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -595,6 +608,9 @@ async function setupDatabase(): Promise<void> {
   `);
 
   await pool.query(`
+    ALTER TABLE patients
+    ALTER COLUMN birth_date DROP NOT NULL;
+
     ALTER TABLE patient_measurements
     ADD COLUMN IF NOT EXISTS admission_id INTEGER REFERENCES admissions(id) ON DELETE SET NULL;
 
@@ -1174,6 +1190,7 @@ export async function createPatient(input: CreatePatientInput): Promise<PatientR
   try {
     await client.query("BEGIN");
     const responsibleProfessionalId = await findProfessionalIdByLogin(client, input.responsibleLogin);
+    const normalizedBirthDate = input.birthDate?.trim() ? input.birthDate.trim() : null;
 
     const inserted = await client.query(
       `
@@ -1184,9 +1201,14 @@ export async function createPatient(input: CreatePatientInput): Promise<PatientR
           birth_date
         )
         VALUES ($1, $2, $3, $4)
+        ON CONFLICT (chart_number) DO UPDATE
+        SET
+          full_name = EXCLUDED.full_name,
+          responsible_professional_id = EXCLUDED.responsible_professional_id,
+          birth_date = COALESCE(EXCLUDED.birth_date, patients.birth_date)
         RETURNING id
       `,
-      [input.fullName.trim(), input.chartNumber.trim(), responsibleProfessionalId, input.birthDate]
+      [input.fullName.trim(), input.chartNumber.trim(), responsibleProfessionalId, normalizedBirthDate]
     );
 
     const patientId = toNumber((inserted.rows[0] as DbRow).id);
@@ -1222,10 +1244,6 @@ export async function createPatient(input: CreatePatientInput): Promise<PatientR
     return createdPatient;
   } catch (error) {
     await client.query("ROLLBACK");
-    const postgresError = error as { code?: string };
-    if (postgresError.code === "23505") {
-      throw new Error("Já existe paciente com este número de prontuário.");
-    }
     throw error;
   } finally {
     client.release();
@@ -1240,12 +1258,19 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
   try {
     await client.query("BEGIN");
     const responsibleProfessionalId = await findProfessionalIdByLogin(client, input.responsibleLogin);
-    const indexes = calculateClinicalIndexes(
-      input.weightKg,
-      input.heightCm,
-      input.bmiFormula,
-      input.bsaFormula
-    );
+    const hasMeasurements =
+      typeof input.weightKg === "number" &&
+      input.weightKg > 0 &&
+      typeof input.heightCm === "number" &&
+      input.heightCm > 0;
+    const indexes = hasMeasurements
+      ? calculateClinicalIndexes(
+          input.weightKg!,
+          input.heightCm!,
+          input.bmiFormula ?? "quetelet",
+          input.bsaFormula ?? "mosteller"
+        )
+      : null;
 
     const inserted = await client.query(
       `
@@ -1264,39 +1289,41 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
         input.patientId,
         input.admissionDate,
         input.bed.trim(),
-        input.admissionReason.trim(),
-        input.teamId,
+        input.admissionReason?.trim() || "Pendente de preenchimento",
+        input.teamId ?? null,
         responsibleProfessionalId
       ]
     );
 
     const admissionId = toNumber((inserted.rows[0] as DbRow).id);
 
-    await client.query(
-      `
-        INSERT INTO patient_measurements (
-          patient_id,
-          admission_id,
-          weight_kg,
-          height_cm,
-          bmi,
-          bmi_formula,
-          body_surface_area,
-          bsa_formula
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      `,
-      [
-        input.patientId,
-        admissionId,
-        input.weightKg,
-        input.heightCm,
-        indexes.bmi,
-        input.bmiFormula,
-        indexes.bodySurfaceArea,
-        input.bsaFormula
-      ]
-    );
+    if (hasMeasurements && indexes) {
+      await client.query(
+        `
+          INSERT INTO patient_measurements (
+            patient_id,
+            admission_id,
+            weight_kg,
+            height_cm,
+            bmi,
+            bmi_formula,
+            body_surface_area,
+            bsa_formula
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `,
+        [
+          input.patientId,
+          admissionId,
+          input.weightKg,
+          input.heightCm,
+          indexes.bmi,
+          input.bmiFormula ?? "quetelet",
+          indexes.bodySurfaceArea,
+          input.bsaFormula ?? "mosteller"
+        ]
+      );
+    }
 
     await client.query("COMMIT");
     const admissions = await listRecentAdmissions(200);
@@ -1305,6 +1332,102 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
       throw new Error("Internação criada, mas não foi possível carregar os dados.");
     }
     return createdAdmission;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    const postgresError = error as { code?: string };
+    if (postgresError.code === "23503") {
+      throw new Error("Paciente ou equipe inválidos para a internação.");
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function updateAdmission(input: UpdateAdmissionInput): Promise<AdmissionRecord> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await findProfessionalIdByLogin(client, input.responsibleLogin);
+
+    const updated = await client.query(
+      `
+        UPDATE admissions
+        SET
+          admission_date = $2,
+          bed = $3,
+          admission_reason = $4,
+          team_id = $5
+        WHERE id = $1
+        RETURNING id, patient_id
+      `,
+      [
+        input.admissionId,
+        input.admissionDate,
+        input.bed.trim(),
+        input.admissionReason?.trim() || "Pendente de preenchimento",
+        input.teamId ?? null
+      ]
+    );
+
+    if (updated.rows.length === 0) {
+      throw new Error("Internação não encontrada para atualização.");
+    }
+
+    const admissionRow = updated.rows[0] as DbRow;
+    const patientId = toNumber(admissionRow.patient_id);
+    const hasMeasurements =
+      typeof input.weightKg === "number" &&
+      input.weightKg > 0 &&
+      typeof input.heightCm === "number" &&
+      input.heightCm > 0;
+
+    if (hasMeasurements) {
+      const indexes = calculateClinicalIndexes(
+        input.weightKg!,
+        input.heightCm!,
+        input.bmiFormula ?? "quetelet",
+        input.bsaFormula ?? "mosteller"
+      );
+
+      await client.query(
+        `
+          INSERT INTO patient_measurements (
+            patient_id,
+            admission_id,
+            weight_kg,
+            height_cm,
+            bmi,
+            bmi_formula,
+            body_surface_area,
+            bsa_formula
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `,
+        [
+          patientId,
+          input.admissionId,
+          input.weightKg,
+          input.heightCm,
+          indexes.bmi,
+          input.bmiFormula ?? "quetelet",
+          indexes.bodySurfaceArea,
+          input.bsaFormula ?? "mosteller"
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+    const admissions = await listRecentAdmissions(200);
+    const updatedAdmission = admissions.find((admission) => admission.id === input.admissionId);
+    if (!updatedAdmission) {
+      throw new Error("Internação atualizada, mas não foi possível carregar os dados.");
+    }
+
+    return updatedAdmission;
   } catch (error) {
     await client.query("ROLLBACK");
     const postgresError = error as { code?: string };
@@ -1682,7 +1805,10 @@ export async function listPatients(): Promise<PatientRecord[]> {
       p.full_name,
       p.chart_number,
       p.birth_date::text AS birth_date,
-      DATE_PART('year', AGE(CURRENT_DATE, p.birth_date))::int AS age_years,
+      CASE
+        WHEN p.birth_date IS NULL THEN NULL
+        ELSE DATE_PART('year', AGE(CURRENT_DATE, p.birth_date))::int
+      END AS age_years,
       p.responsible_professional_id,
       rp.full_name AS responsible_professional_name,
       rp.login AS responsible_professional_login,

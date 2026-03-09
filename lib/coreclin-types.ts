@@ -76,8 +76,8 @@ export type PatientRecord = {
   id: number;
   fullName: string;
   chartNumber: string;
-  birthDate: string;
-  ageYears: number;
+  birthDate: string | null;
+  ageYears: number | null;
   responsibleProfessionalId: number;
   responsibleProfessionalName: string;
   responsibleProfessionalLogin: string;
