@@ -1966,46 +1966,42 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       selectedPatientAllergies.map((item) => normalizeMedicationName(item.allergyName))
     );
 
-    let addedPriorMedications = 0;
-    let addedAllergies = 0;
+    const priorMedicationCandidates = extractSummaryMedicationCandidates(trimmedMucExcerpt).filter(
+      (candidate) => !existingPriorMedicationNames.has(normalizeMedicationName(candidate.medicationName))
+    );
+    const allergyCandidates = extractSummaryAllergyCandidates(trimmedAllergyExcerpt).filter(
+      (allergyName) => !existingAllergyNames.has(normalizeMedicationName(allergyName))
+    );
 
-    for (const candidate of extractSummaryMedicationCandidates(trimmedMucExcerpt)) {
-      const normalizedName = normalizeMedicationName(candidate.medicationName);
-      if (existingPriorMedicationNames.has(normalizedName)) {
-        continue;
-      }
+    const [priorMedicationResults, allergyResults] = await Promise.all([
+      Promise.all(
+        priorMedicationCandidates.map(async (candidate) => {
+          const response = await fetch(`/api/patients/${patientId}/prior-medications`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(candidate)
+          });
 
-      const response = await fetch(`/api/patients/${patientId}/prior-medications`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(candidate)
-      });
+          return response.ok ? candidate.medicationName : null;
+        })
+      ),
+      Promise.all(
+        allergyCandidates.map(async (allergyName) => {
+          const response = await fetch(`/api/patients/${patientId}/allergies`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ allergyName })
+          });
 
-      if (response.ok) {
-        existingPriorMedicationNames.add(normalizedName);
-        addedPriorMedications += 1;
-      }
-    }
+          return response.ok ? allergyName : null;
+        })
+      )
+    ]);
 
-    for (const allergyName of extractSummaryAllergyCandidates(trimmedAllergyExcerpt)) {
-      const normalizedName = normalizeMedicationName(allergyName);
-      if (existingAllergyNames.has(normalizedName)) {
-        continue;
-      }
-
-      const response = await fetch(`/api/patients/${patientId}/allergies`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ allergyName })
-      });
-
-      if (response.ok) {
-        existingAllergyNames.add(normalizedName);
-        addedAllergies += 1;
-      }
-    }
-
-    return { addedPriorMedications, addedAllergies };
+    return {
+      addedPriorMedications: priorMedicationResults.filter((item) => item !== null).length,
+      addedAllergies: allergyResults.filter((item) => item !== null).length
+    };
   }
 
   function applySelectedAdmissionSummaryText(

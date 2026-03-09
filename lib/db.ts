@@ -1337,8 +1337,7 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
     }
 
     await client.query("COMMIT");
-    const admissions = await listRecentAdmissions(200);
-    const createdAdmission = admissions.find((admission) => admission.id === admissionId);
+    const createdAdmission = await getAdmissionById(admissionId);
     if (!createdAdmission) {
       throw new Error("Internação criada, mas não foi possível carregar os dados.");
     }
@@ -1434,8 +1433,7 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
     }
 
     await client.query("COMMIT");
-    const admissions = await listRecentAdmissions(200);
-    const updatedAdmission = admissions.find((admission) => admission.id === input.admissionId);
+    const updatedAdmission = await getAdmissionById(input.admissionId);
     if (!updatedAdmission) {
       throw new Error("Internação atualizada, mas não foi possível carregar os dados.");
     }
@@ -1932,6 +1930,62 @@ export async function listRecentAdmissions(limit = 40): Promise<AdmissionRecord[
   );
 
   return result.rows.map((row) => mapAdmission(row as DbRow));
+}
+
+async function getAdmissionById(admissionId: number): Promise<AdmissionRecord | null> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+
+  const result = await pool.query(
+    `
+      SELECT
+        a.id,
+        a.patient_id,
+        p.full_name AS patient_name,
+        p.chart_number,
+        a.admission_date::text AS admission_date,
+        a.bed,
+        a.admission_reason,
+        a.admission_summary,
+        a.team_id,
+        t.name AS team_name,
+        a.responsible_professional_id,
+        rp.full_name AS responsible_professional_name,
+        am.weight_kg::float8 AS weight_kg,
+        am.height_cm::float8 AS height_cm,
+        am.bmi::float8 AS bmi,
+        am.bmi_formula,
+        am.body_surface_area::float8 AS body_surface_area,
+        am.bsa_formula,
+        a.created_at
+      FROM admissions a
+      INNER JOIN patients p ON p.id = a.patient_id
+      INNER JOIN professionals rp ON rp.id = a.responsible_professional_id
+      LEFT JOIN teams t ON t.id = a.team_id
+      LEFT JOIN LATERAL (
+        SELECT
+          m.weight_kg,
+          m.height_cm,
+          m.bmi,
+          m.bmi_formula,
+          m.body_surface_area,
+          m.bsa_formula
+        FROM patient_measurements m
+        WHERE m.admission_id = a.id
+        ORDER BY m.recorded_at DESC, m.id DESC
+        LIMIT 1
+      ) am ON TRUE
+      WHERE a.id = $1
+      LIMIT 1
+    `,
+    [admissionId]
+  );
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  return mapAdmission(result.rows[0] as DbRow);
 }
 
 export async function listRecentMeasurements(limit = 30): Promise<MeasurementHistoryRecord[]> {
