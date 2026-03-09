@@ -675,6 +675,25 @@ body {
   border: 1px solid #efbcbc;
 }
 
+.dashboard-status-pill.is-renal {
+  color: #816225;
+  background: #fff5df;
+  border: 1px solid #ecd4a7;
+}
+
+.dashboard-status-pill.is-hepatic {
+  color: #8d4434;
+  background: #fcebe6;
+  border: 1px solid #efc7bc;
+}
+
+.dashboard-flag-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .dashboard-table-wrap {
   margin-top: 12px;
   overflow-x: auto;

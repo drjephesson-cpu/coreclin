@@ -16,6 +16,10 @@ import {
   type DashboardData,
   type ProfessionOption
 } from "@/lib/coreclin-types";
+import {
+  HEPATOTOXIC_MEDICATIONS,
+  RENAL_ADJUSTMENT_MEDICATIONS
+} from "@/lib/medication-safety-flags";
 
 const UF_OPTIONS = [
   "AC",
@@ -179,6 +183,11 @@ type AllergyConflictResult = {
   detail: string;
 };
 
+type MedicationSafetyFlags = {
+  renalAdjustment: boolean;
+  hepatotoxic: boolean;
+};
+
 type AllergySuggestionItem = {
   key: string;
   label: string;
@@ -202,6 +211,7 @@ type RawPrescriptionDraft = {
   validationEndAt: string | null;
   validationStatus: string;
   allergyConflict: AllergyConflictResult | null;
+  safetyFlags: MedicationSafetyFlags;
   isValid: boolean;
   validationMessage: string;
 };
@@ -316,6 +326,38 @@ function isMedicationNameCompatible(firstName: string, secondName: string): bool
   }
 
   return hasTokenBoundaryMatch(first, second) || hasTokenBoundaryMatch(second, first);
+}
+
+function matchesMedicationReferenceList(
+  medicationName: string,
+  references: readonly string[]
+): boolean {
+  return references.some((reference) => isMedicationNameCompatible(reference, medicationName));
+}
+
+function hasMedicationSafetyFlag(flags: MedicationSafetyFlags): boolean {
+  return flags.renalAdjustment || flags.hepatotoxic;
+}
+
+function resolveCatalogMedicationSafetyFlags(medication: {
+  name: string;
+  activeIngredients: string | null;
+  searchAliases: string | null;
+}): MedicationSafetyFlags {
+  const searchCandidates = [
+    medication.name,
+    ...splitCatalogTerms(medication.activeIngredients ?? "").map((term) => term.raw),
+    ...splitCatalogTerms(medication.searchAliases ?? "").map((term) => term.raw)
+  ].filter((value, index, current) => value && current.indexOf(value) === index);
+
+  return {
+    renalAdjustment: searchCandidates.some((value) =>
+      matchesMedicationReferenceList(value, RENAL_ADJUSTMENT_MEDICATIONS)
+    ),
+    hepatotoxic: searchCandidates.some((value) =>
+      matchesMedicationReferenceList(value, HEPATOTOXIC_MEDICATIONS)
+    )
+  };
 }
 
 function splitCatalogTerms(input: string): Array<{ raw: string; normalized: string }> {
@@ -1028,6 +1070,7 @@ export default function DashboardConsole({
         const activeIngredientTerms = splitCatalogTerms(medication.activeIngredients ?? "");
         const aliasTerms = splitCatalogTerms(medication.searchAliases ?? "");
         const normalizedClass = normalizeMedicationName(medication.therapeuticClass ?? "");
+        const safetyFlags = resolveCatalogMedicationSafetyFlags(medication);
 
         return {
           medication,
@@ -1036,7 +1079,8 @@ export default function DashboardConsole({
           classCodes: extractTherapeuticClassCodes(medication.therapeuticClass ?? ""),
           activeIngredientTerms,
           classTerms: splitCatalogTerms((medication.therapeuticClass ?? "").replace(/-/g, ";")),
-          aliasTerms
+          aliasTerms,
+          safetyFlags
         };
       }),
     [medications]
@@ -1273,6 +1317,27 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     return null;
   }
 
+  function resolveMedicationSafetyFlags(medicationName: string): MedicationSafetyFlags {
+    const normalizedMedication = normalizeMedicationName(medicationName);
+    if (!normalizedMedication) {
+      return {
+        renalAdjustment: false,
+        hepatotoxic: false
+      };
+    }
+
+    const matchedDescriptors = findMedicationDescriptorsByText(medicationName);
+
+    return {
+      renalAdjustment:
+        matchedDescriptors.some((descriptor) => descriptor.safetyFlags.renalAdjustment) ||
+        matchesMedicationReferenceList(medicationName, RENAL_ADJUSTMENT_MEDICATIONS),
+      hepatotoxic:
+        matchedDescriptors.some((descriptor) => descriptor.safetyFlags.hepatotoxic) ||
+        matchesMedicationReferenceList(medicationName, HEPATOTOXIC_MEDICATIONS)
+    };
+  }
+
   const selectedInitialAllergyMedication = useMemo(
     () =>
       medications.find(
@@ -1383,6 +1448,11 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
   const prescriptionAllergyConflict = useMemo(
     () => resolveAllergyConflict(prescriptionMedicationNameForAlert),
     [prescriptionMedicationNameForAlert, selectedPatientAllergies, medicationDescriptors]
+  );
+
+  const prescriptionMedicationSafetyFlags = useMemo(
+    () => resolveMedicationSafetyFlags(prescriptionMedicationNameForAlert),
+    [prescriptionMedicationNameForAlert, medicationDescriptors]
   );
 
   const selectedPatientPrescriptionGroups = useMemo(() => {
@@ -1554,6 +1624,14 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     return findCatalogMedicationMatchByName(selectedPrescriptionMedicationHistory.medicationName);
   }, [selectedPrescriptionMedicationHistory, medications]);
 
+  const selectedPrescriptionMedicationSafetyFlags = useMemo(
+    () =>
+      selectedPrescriptionMedicationHistory
+        ? resolveMedicationSafetyFlags(selectedPrescriptionMedicationHistory.medicationName)
+        : { renalAdjustment: false, hepatotoxic: false },
+    [selectedPrescriptionMedicationHistory, medicationDescriptors]
+  );
+
   useEffect(() => {
     if (!rawPrescriptionAdmissionId) {
       return;
@@ -1637,6 +1715,31 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     setPatientDetailsOpen(true);
   }
 
+  function renderMedicationFlags(
+    allergyConflict: AllergyConflictResult | null,
+    safetyFlags: MedicationSafetyFlags
+  ) {
+    if (!allergyConflict && !hasMedicationSafetyFlag(safetyFlags)) {
+      return "-";
+    }
+
+    return (
+      <div className="dashboard-flag-list">
+        {allergyConflict ? (
+          <span className="dashboard-status-pill is-allergy">
+            {buildAllergyConflictBadge(allergyConflict)}
+          </span>
+        ) : null}
+        {safetyFlags.renalAdjustment ? (
+          <span className="dashboard-status-pill is-renal">Ajuste renal</span>
+        ) : null}
+        {safetyFlags.hepatotoxic ? (
+          <span className="dashboard-status-pill is-hepatic">Hepatotóxico</span>
+        ) : null}
+      </div>
+    );
+  }
+
   function buildRawPrescriptionDrafts(
     rawInput: string,
     sharedSet: { startAt: string; endAt: string; status: string }
@@ -1693,6 +1796,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
       const matchedMedication = findCatalogMedicationMatchByName(medicationName);
       const allergyConflict = resolveAllergyConflict(medicationName);
+      const safetyFlags = resolveMedicationSafetyFlags(medicationName);
 
       const fallbackUnit = matchedMedication?.defaultUnit ?? "";
       const doseUnit = parsedDose.doseUnit || fallbackUnit;
@@ -1729,6 +1833,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
         validationEndAt,
         validationStatus,
         allergyConflict,
+        safetyFlags,
         isValid: validationMessage.length === 0,
         validationMessage: validationMessage || "Linha pronta para importação."
       };
@@ -4238,6 +4343,10 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                   </p>
                                 ) : null}
 
+                                {hasMedicationSafetyFlag(prescriptionMedicationSafetyFlags)
+                                  ? renderMedicationFlags(null, prescriptionMedicationSafetyFlags)
+                                  : null}
+
                                 <div className="dashboard-two-columns">
                                   <input
                                     type="number"
@@ -4421,15 +4530,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                             <td>{draft.administrationRoute || "-"}</td>
                                             <td>{draft.frequency || "-"}</td>
                                             <td>{draft.notes || "-"}</td>
-                                            <td>
-                                              {draft.allergyConflict ? (
-                                                <span className="dashboard-status-pill is-allergy">
-                                                  {buildAllergyConflictBadge(draft.allergyConflict)}
-                                                </span>
-                                              ) : (
-                                                "-"
-                                              )}
-                                            </td>
+                                            <td>{renderMedicationFlags(draft.allergyConflict, draft.safetyFlags)}</td>
                                             <td>
                                               <span
                                                 className={`dashboard-status-pill ${
@@ -4517,6 +4618,9 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                               const prescriptionConflict = resolveAllergyConflict(
                                                 prescription.medicationName
                                               );
+                                              const prescriptionSafetyFlags = resolveMedicationSafetyFlags(
+                                                prescription.medicationName
+                                              );
 
                                               return (
                                                 <tr key={prescription.id}>
@@ -4553,12 +4657,9 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                                   <td>{prescription.frequency}</td>
                                                   <td>{prescription.notes ?? "-"}</td>
                                                   <td>
-                                                    {prescriptionConflict ? (
-                                                      <span className="dashboard-status-pill is-allergy">
-                                                        {buildAllergyConflictBadge(prescriptionConflict)}
-                                                      </span>
-                                                    ) : (
-                                                      "-"
+                                                    {renderMedicationFlags(
+                                                      prescriptionConflict,
+                                                      prescriptionSafetyFlags
                                                     )}
                                                   </td>
                                                   <td>{formatTimestamp(prescription.createdAt)}</td>
@@ -4592,6 +4693,10 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                   Paciente: {selectedPatient?.fullName ?? "-"} | Medicamento:{" "}
                                   {selectedPrescriptionMedicationHistory.medicationName}
                                 </p>
+
+                                {hasMedicationSafetyFlag(selectedPrescriptionMedicationSafetyFlags)
+                                  ? renderMedicationFlags(null, selectedPrescriptionMedicationSafetyFlags)
+                                  : null}
 
                                 {selectedPrescriptionMedicationCatalogMatch ? (
                                   <p className="dashboard-muted">
