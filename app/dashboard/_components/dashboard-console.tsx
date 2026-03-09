@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import LogoutButton from "@/app/_components/logout-button";
 import { calculateClinicalIndexes } from "@/lib/clinical";
@@ -226,6 +226,10 @@ type DashboardConsoleProps = {
   data: DashboardData | null;
   dbError: string | null;
 };
+
+const DASHBOARD_SECTION_IDS = new Set<string>(DASHBOARD_NAV_ITEMS.map((item) => item.id));
+const INPATIENT_OVERVIEW_IDS = new Set<string>(INPATIENT_SIDEBAR_ITEMS.map((item) => item.id));
+const PATIENT_VIEW_IDS = new Set<string>(PATIENT_VIEW_ITEMS.map((item) => item.id));
 
 function calculateAge(dateString: string): number | null {
   if (!dateString) {
@@ -621,6 +625,7 @@ export default function DashboardConsole({
   dbError
 }: DashboardConsoleProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const professionals = data?.professionals ?? [];
   const teams = data?.teams ?? [];
@@ -631,8 +636,24 @@ export default function DashboardConsole({
   const priorMedications = data?.priorMedications ?? [];
   const prescriptions = data?.prescriptions ?? [];
   const currentProfessional = data?.currentProfessional ?? null;
+  const searchPatientId = searchParams.get("patientId");
+  const searchPatientView = searchParams.get("patientView");
+  const searchSection = searchParams.get("section");
+  const searchInpatientMode = searchParams.get("inpatientMode");
+  const patientPageMode = typeof searchPatientId === "string" && searchPatientId.trim().length > 0;
+  const requestedPatientView = PATIENT_VIEW_IDS.has(searchPatientView ?? "")
+    ? (searchPatientView as PatientViewId)
+    : "admission-info";
+  const requestedSection = DASHBOARD_SECTION_IDS.has(searchSection ?? "")
+    ? (searchSection as DashboardSectionId)
+    : "professional";
+  const requestedInpatientMode = INPATIENT_OVERVIEW_IDS.has(searchInpatientMode ?? "")
+    ? (searchInpatientMode as InpatientOverviewMode)
+    : "all";
 
-  const [activeSection, setActiveSection] = useState<DashboardSectionId>("professional");
+  const [activeSection, setActiveSection] = useState<DashboardSectionId>(
+    patientPageMode ? "inpatients" : requestedSection
+  );
   const [listVisibility, setListVisibility] = useState<Record<DashboardSectionId, boolean>>({
     professional: false,
     team: false,
@@ -699,10 +720,11 @@ export default function DashboardConsole({
   const [medicationBulkLoading, setMedicationBulkLoading] = useState(false);
 
   const [selectedPatientId, setSelectedPatientId] = useState<string>(
-    patients[0] ? String(patients[0].id) : ""
+    searchPatientId ?? (patients[0] ? String(patients[0].id) : "")
   );
   const [inpatientSearch, setInpatientSearch] = useState("");
-  const [inpatientOverviewMode, setInpatientOverviewMode] = useState<InpatientOverviewMode>("all");
+  const [inpatientOverviewMode, setInpatientOverviewMode] =
+    useState<InpatientOverviewMode>(requestedInpatientMode);
   const [inpatientTeamFilter, setInpatientTeamFilter] = useState("all");
   const [mandatoryRawInput, setMandatoryRawInput] = useState("");
   const [mandatoryFeedback, setMandatoryFeedback] = useState<FeedbackState>(null);
@@ -712,8 +734,10 @@ export default function DashboardConsole({
   >({});
   const [trackedInpatientEntries, setTrackedInpatientEntries] = useState<InpatientEntry[]>([]);
   const [priorityTeamIds, setPriorityTeamIds] = useState<number[]>([]);
-  const [patientDetailsOpen, setPatientDetailsOpen] = useState(false);
-  const [patientView, setPatientView] = useState<PatientViewId>("allergies");
+  const [patientDetailsOpen, setPatientDetailsOpen] = useState(patientPageMode);
+  const [patientView, setPatientView] = useState<PatientViewId>(
+    patientPageMode ? requestedPatientView : "allergies"
+  );
   const [prescriptionMode, setPrescriptionMode] = useState<PrescriptionMode>("view");
   const [selectedPrescriptionGroupKey, setSelectedPrescriptionGroupKey] = useState("");
   const [selectedPrescriptionMedicationHistory, setSelectedPrescriptionMedicationHistory] = useState<{
@@ -777,6 +801,39 @@ export default function DashboardConsole({
       setSelectedPatientId(String(patients[0].id));
     }
   }, [patients, selectedPatientId]);
+
+  useEffect(() => {
+    if (patientPageMode) {
+      setActiveSection("inpatients");
+      setInpatientOverviewMode(requestedInpatientMode);
+      setPatientView(requestedPatientView);
+      setPatientDetailsOpen(true);
+      if (searchPatientId) {
+        setSelectedPatientId(searchPatientId);
+      }
+      return;
+    }
+
+    if (searchParams.has("section")) {
+      setActiveSection(requestedSection);
+    }
+
+    if (searchParams.has("inpatientMode")) {
+      setInpatientOverviewMode(requestedInpatientMode);
+    }
+
+    if (searchParams.has("patientView") && PATIENT_VIEW_IDS.has(searchPatientView ?? "")) {
+      setPatientView(requestedPatientView);
+    }
+  }, [
+    patientPageMode,
+    requestedInpatientMode,
+    requestedPatientView,
+    requestedSection,
+    searchParams,
+    searchPatientId,
+    searchPatientView
+  ]);
 
   useEffect(() => {
     if (medications.length === 0) {
@@ -1924,6 +1981,34 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
   const prescriptionSetEndAt = normalizeHospitalDateTime(prescriptionSetForm.endAt);
   const prescriptionSetStatus = prescriptionSetForm.status.trim() || "Validado";
 
+  function buildDashboardUrl(options?: {
+    section?: DashboardSectionId;
+    inpatientMode?: InpatientOverviewMode;
+    patientId?: number;
+    patientView?: PatientViewId;
+  }): string {
+    const params = new URLSearchParams();
+
+    if (options?.section) {
+      params.set("section", options.section);
+    }
+
+    if (options?.inpatientMode) {
+      params.set("inpatientMode", options.inpatientMode);
+    }
+
+    if (typeof options?.patientId === "number" && options.patientId > 0) {
+      params.set("patientId", String(options.patientId));
+    }
+
+    if (options?.patientView) {
+      params.set("patientView", options.patientView);
+    }
+
+    const query = params.toString();
+    return query ? `/dashboard?${query}` : "/dashboard";
+  }
+
   function toggleList(sectionId: DashboardSectionId): void {
     setListVisibility((current) => ({ ...current, [sectionId]: !current[sectionId] }));
   }
@@ -1943,12 +2028,51 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     setPatientDetailsOpen(false);
   }
 
+  function openPatientView(view: PatientViewId): void {
+    setPatientView(view);
+
+    if (!patientPageMode || !selectedPatientId) {
+      return;
+    }
+
+    router.push(
+      buildDashboardUrl({
+        section: "inpatients",
+        inpatientMode: requestedInpatientMode,
+        patientId: Number(selectedPatientId),
+        patientView: view
+      })
+    );
+  }
+
   function openPatientDetails(patientId: number, targetView: PatientViewId = "admission-info"): void {
+    const nextInpatientMode =
+      activeSection === "inpatients" ? inpatientOverviewMode : requestedInpatientMode;
+
     setActiveSection("inpatients");
     setListVisibility((current) => ({ ...current, inpatients: true }));
     setSelectedPatientId(String(patientId));
     setPatientView(targetView);
     setPatientDetailsOpen(true);
+    router.push(
+      buildDashboardUrl({
+        section: "inpatients",
+        inpatientMode: nextInpatientMode,
+        patientId,
+        patientView: targetView
+      })
+    );
+  }
+
+  function closePatientDetailsPage(): void {
+    setPatientDetailsOpen(false);
+    setSelectedPrescriptionMedicationHistory(null);
+    router.push(
+      buildDashboardUrl({
+        section: "inpatients",
+        inpatientMode: requestedInpatientMode
+      })
+    );
   }
 
   function renderMedicationFlags(
@@ -3300,57 +3424,61 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
         </section>
       ) : (
         <>
-          <section className="dashboard-card dashboard-highlight">
-            <h2>Profissional logado</h2>
-            <p>
-              <strong>{responsibleProfessionalName}</strong> é o farmacêutico responsável padrão para novos
-              registros.
-            </p>
-          </section>
+          {!patientPageMode ? (
+            <section className="dashboard-card dashboard-highlight">
+              <h2>Profissional logado</h2>
+              <p>
+                <strong>{responsibleProfessionalName}</strong> é o farmacêutico responsável padrão para novos
+                registros.
+              </p>
+            </section>
+          ) : null}
 
-          <div className="dashboard-layout">
-            <aside className="dashboard-sidebar">
-              <h2>Menu</h2>
-              <nav>
-                {DASHBOARD_NAV_GROUPS.map((group) => (
-                  <section key={group.label} className="dashboard-sidebar-group">
-                    <p className="dashboard-sidebar-group-title">{group.label}</p>
-                    {group.items.map((item) => (
+          <div className={`dashboard-layout ${patientPageMode ? "is-patient-page" : ""}`}>
+            {!patientPageMode ? (
+              <aside className="dashboard-sidebar">
+                <h2>Menu</h2>
+                <nav>
+                  {DASHBOARD_NAV_GROUPS.map((group) => (
+                    <section key={group.label} className="dashboard-sidebar-group">
+                      <p className="dashboard-sidebar-group-title">{group.label}</p>
+                      {group.items.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className={`dashboard-sidebar-link ${activeSection === item.id ? "is-active" : ""}`}
+                          onClick={() => openDashboardSection(item.id)}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </section>
+                  ))}
+
+                  <div className="dashboard-sidebar-separator" />
+
+                  <section className="dashboard-sidebar-group">
+                    <p className="dashboard-sidebar-group-title">Pacientes internados</p>
+                    {INPATIENT_SIDEBAR_ITEMS.map((item) => (
                       <button
                         key={item.id}
                         type="button"
-                        className={`dashboard-sidebar-link ${activeSection === item.id ? "is-active" : ""}`}
-                        onClick={() => openDashboardSection(item.id)}
+                        className={`dashboard-sidebar-link ${
+                          activeSection === "inpatients" && inpatientOverviewMode === item.id
+                            ? "is-active"
+                            : ""
+                        }`}
+                        onClick={() => openInpatientOverview(item.id)}
                       >
                         {item.label}
                       </button>
                     ))}
                   </section>
-                ))}
+                </nav>
+              </aside>
+            ) : null}
 
-                <div className="dashboard-sidebar-separator" />
-
-                <section className="dashboard-sidebar-group">
-                  <p className="dashboard-sidebar-group-title">Pacientes internados</p>
-                  {INPATIENT_SIDEBAR_ITEMS.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`dashboard-sidebar-link ${
-                        activeSection === "inpatients" && inpatientOverviewMode === item.id
-                          ? "is-active"
-                          : ""
-                      }`}
-                      onClick={() => openInpatientOverview(item.id)}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </section>
-              </nav>
-            </aside>
-
-            <div className="dashboard-content">
+            <div className={`dashboard-content ${patientPageMode ? "is-patient-page" : ""}`}>
               {activeSection === "professional" ? (
                 <section className="dashboard-card">
                   <h2>Cadastrar Profissional</h2>
@@ -3708,8 +3836,20 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
                   {activeSection === "inpatients" ? (
                     <>
-                      <h2>Pacientes Internados</h2>
-                      {inpatientOverviewMode === "all" ? (
+                      <div className="dashboard-inline-actions">
+                        {patientPageMode ? (
+                          <button
+                            type="button"
+                            className="dashboard-mini-button"
+                            onClick={closePatientDetailsPage}
+                          >
+                            Voltar aos internados
+                          </button>
+                        ) : null}
+                      </div>
+
+                      <h2>{patientPageMode ? "Paciente internado" : "Pacientes Internados"}</h2>
+                      {!patientPageMode && inpatientOverviewMode === "all" ? (
                         <div className="dashboard-subsection-block">
                           {inpatients.length === 0 ? (
                             <p className="dashboard-muted">Nenhum paciente internado no momento.</p>
@@ -3767,7 +3907,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                         </div>
                       ) : null}
 
-                      {inpatientOverviewMode === "team" ? (
+                      {!patientPageMode && inpatientOverviewMode === "team" ? (
                         <section className="dashboard-subsection">
                           <div className="dashboard-subsection-block">
                             <h3>Pacientes por equipe</h3>
@@ -3899,7 +4039,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                         </section>
                       ) : null}
 
-                      {inpatientOverviewMode === "mandatory" ? (
+                      {!patientPageMode && inpatientOverviewMode === "mandatory" ? (
                         <section className="dashboard-subsection">
                           <div className="dashboard-subsection-block">
                             <h3>Atendimentos obrigatórios</h3>
@@ -4031,7 +4171,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                         </section>
                       ) : null}
 
-                      {inpatientOverviewMode === "discharged" ? (
+                      {!patientPageMode && inpatientOverviewMode === "discharged" ? (
                         <section className="dashboard-subsection">
                           <div className="dashboard-subsection-block">
                             <h3>Pacientes de alta</h3>
@@ -4097,9 +4237,11 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                             <button
                               type="button"
                               className="dashboard-mini-button"
-                              onClick={() => setPatientDetailsOpen(false)}
+                              onClick={() =>
+                                patientPageMode ? closePatientDetailsPage() : setPatientDetailsOpen(false)
+                              }
                             >
-                              Fechar detalhes
+                              {patientPageMode ? "Voltar aos internados" : "Fechar detalhes"}
                             </button>
                           </div>
 
@@ -4109,7 +4251,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 key={item.id}
                                 type="button"
                                 className={`dashboard-mini-button ${patientView === item.id ? "is-active" : ""}`}
-                                onClick={() => setPatientView(item.id)}
+                                onClick={() => openPatientView(item.id)}
                               >
                                 {item.label}
                               </button>

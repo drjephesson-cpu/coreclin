@@ -164,8 +164,8 @@ body {
 }
 
 .dashboard-panel {
-  width: min(1240px, 100%);
-  margin: 0 auto;
+  width: 100%;
+  margin: 0;
   border: 1px solid var(--border);
   border-radius: 24px;
   background: linear-gradient(180deg, #fbfdff 0%, #f1f6ff 100%);
@@ -208,6 +208,10 @@ body {
   grid-template-columns: 260px minmax(0, 1fr);
   gap: 14px;
   align-items: start;
+}
+
+.dashboard-layout.is-patient-page {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .dashboard-sidebar {
@@ -271,6 +275,10 @@ body {
 
 .dashboard-content {
   min-width: 0;
+}
+
+.dashboard-content.is-patient-page {
+  width: 100%;
 }
 
 .dashboard-card {
