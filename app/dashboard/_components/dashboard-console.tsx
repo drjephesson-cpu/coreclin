@@ -623,6 +623,10 @@ export default function DashboardConsole({
   const [patientView, setPatientView] = useState<PatientViewId>("allergies");
   const [prescriptionMode, setPrescriptionMode] = useState<PrescriptionMode>("view");
   const [selectedPrescriptionGroupKey, setSelectedPrescriptionGroupKey] = useState("");
+  const [selectedPrescriptionMedicationHistory, setSelectedPrescriptionMedicationHistory] = useState<{
+    medicationId: number | null;
+    medicationName: string;
+  } | null>(null);
 
   const [allergyForm, setAllergyForm] = useState({
     query: "",
@@ -1505,6 +1509,51 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     [selectedPatientPriorMedications, selectedPatientPrescriptionGroups]
   );
 
+  const selectedPrescriptionMedicationHistoryRows = useMemo(() => {
+    if (!selectedPrescriptionMedicationHistory) {
+      return [];
+    }
+
+    return selectedPatientPrescriptions
+      .filter((prescription) => {
+        if (
+          selectedPrescriptionMedicationHistory.medicationId !== null &&
+          prescription.medicationId !== null &&
+          prescription.medicationId === selectedPrescriptionMedicationHistory.medicationId
+        ) {
+          return true;
+        }
+
+        return (
+          isMedicationNameCompatible(
+            prescription.medicationName,
+            selectedPrescriptionMedicationHistory.medicationName
+          ) ||
+          isMedicationNameCompatible(
+            selectedPrescriptionMedicationHistory.medicationName,
+            prescription.medicationName
+          )
+        );
+      })
+      .sort((first, second) => {
+        const firstTime = new Date(
+          first.validationStartAt ?? first.validationEndAt ?? first.createdAt
+        ).getTime();
+        const secondTime = new Date(
+          second.validationStartAt ?? second.validationEndAt ?? second.createdAt
+        ).getTime();
+        return secondTime - firstTime;
+      });
+  }, [selectedPatientPrescriptions, selectedPrescriptionMedicationHistory]);
+
+  const selectedPrescriptionMedicationCatalogMatch = useMemo(() => {
+    if (!selectedPrescriptionMedicationHistory) {
+      return null;
+    }
+
+    return findCatalogMedicationMatchByName(selectedPrescriptionMedicationHistory.medicationName);
+  }, [selectedPrescriptionMedicationHistory, medications]);
+
   useEffect(() => {
     if (!rawPrescriptionAdmissionId) {
       return;
@@ -1525,6 +1574,37 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
     setSelectedPrescriptionGroupKey(recentPrescriptionGroups[0]?.key ?? "");
   }, [prescriptionMode, recentPrescriptionGroups[0]?.key, selectedPatient?.id]);
+
+  useEffect(() => {
+    if (!selectedPrescriptionMedicationHistory) {
+      return;
+    }
+
+    const hasMatchingPrescription = selectedPatientPrescriptions.some((prescription) => {
+      if (
+        selectedPrescriptionMedicationHistory.medicationId !== null &&
+        prescription.medicationId !== null &&
+        prescription.medicationId === selectedPrescriptionMedicationHistory.medicationId
+      ) {
+        return true;
+      }
+
+      return (
+        isMedicationNameCompatible(
+          prescription.medicationName,
+          selectedPrescriptionMedicationHistory.medicationName
+        ) ||
+        isMedicationNameCompatible(
+          selectedPrescriptionMedicationHistory.medicationName,
+          prescription.medicationName
+        )
+      );
+    });
+
+    if (!hasMatchingPrescription) {
+      setSelectedPrescriptionMedicationHistory(null);
+    }
+  }, [selectedPatientPrescriptions, selectedPrescriptionMedicationHistory]);
 
   const prescriptionSetStartAt = normalizeHospitalDateTime(prescriptionSetForm.startAt);
   const prescriptionSetEndAt = normalizeHospitalDateTime(prescriptionSetForm.endAt);
@@ -4375,6 +4455,9 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 </p>
                               ) : (
                                 <div className="dashboard-list-box">
+                                  <p className="dashboard-muted">
+                                    Clique em um medicamento para ver o histórico deste paciente.
+                                  </p>
                                   {visiblePrescriptionGroups.map((group) => {
                                     const groupNumber =
                                       selectedPatientPrescriptionGroups.findIndex(
@@ -4437,7 +4520,33 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
                                               return (
                                                 <tr key={prescription.id}>
-                                                  <td>{prescription.medicationName}</td>
+                                                  <td>
+                                                    <button
+                                                      type="button"
+                                                      className="dashboard-link-button"
+                                                      onClick={() =>
+                                                        setSelectedPrescriptionMedicationHistory((current) => {
+                                                          const sameSelection =
+                                                            current !== null &&
+                                                            ((current.medicationId !== null &&
+                                                              prescription.medicationId !== null &&
+                                                              current.medicationId ===
+                                                                prescription.medicationId) ||
+                                                              current.medicationName ===
+                                                                prescription.medicationName);
+
+                                                          return sameSelection
+                                                            ? null
+                                                            : {
+                                                                medicationId: prescription.medicationId,
+                                                                medicationName: prescription.medicationName
+                                                              };
+                                                        })
+                                                      }
+                                                    >
+                                                      {prescription.medicationName}
+                                                    </button>
+                                                  </td>
                                                   <td>{formatNumber(prescription.dose)}</td>
                                                   <td>{prescription.doseUnit}</td>
                                                   <td>{prescription.administrationRoute ?? "-"}</td>
@@ -4464,6 +4573,86 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                   })}
                                 </div>
                               )
+                            ) : null}
+
+                            {prescriptionMode === "view" && selectedPrescriptionMedicationHistory ? (
+                              <div className="dashboard-subsection-block">
+                                <div className="dashboard-inline-actions">
+                                  <button
+                                    type="button"
+                                    className="dashboard-mini-button"
+                                    onClick={() => setSelectedPrescriptionMedicationHistory(null)}
+                                  >
+                                    Fechar histórico
+                                  </button>
+                                </div>
+
+                                <h3>Histórico do medicamento</h3>
+                                <p className="dashboard-muted">
+                                  Paciente: {selectedPatient?.fullName ?? "-"} | Medicamento:{" "}
+                                  {selectedPrescriptionMedicationHistory.medicationName}
+                                </p>
+
+                                {selectedPrescriptionMedicationCatalogMatch ? (
+                                  <p className="dashboard-muted">
+                                    {selectedPrescriptionMedicationCatalogMatch.activeIngredients
+                                      ? `Princípio ativo: ${selectedPrescriptionMedicationCatalogMatch.activeIngredients}. `
+                                      : ""}
+                                    {selectedPrescriptionMedicationCatalogMatch.therapeuticClass
+                                      ? `Classe: ${selectedPrescriptionMedicationCatalogMatch.therapeuticClass}.`
+                                      : ""}
+                                  </p>
+                                ) : null}
+
+                                {selectedPrescriptionMedicationHistoryRows.length === 0 ? (
+                                  <p className="dashboard-muted">
+                                    Nenhum histórico encontrado para este medicamento neste paciente.
+                                  </p>
+                                ) : (
+                                  <div className="dashboard-table-wrap">
+                                    <table className="dashboard-table">
+                                      <thead>
+                                        <tr>
+                                          <th>Vigência</th>
+                                          <th>Status</th>
+                                          <th>Internação</th>
+                                          <th>Dose</th>
+                                          <th>Via</th>
+                                          <th>Frequência</th>
+                                          <th>Obs.</th>
+                                          <th>Registro</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {selectedPrescriptionMedicationHistoryRows.map((prescription) => (
+                                          <tr key={`history-${prescription.id}`}>
+                                            <td>
+                                              {prescription.validationStartAt
+                                                ? formatTimestamp(prescription.validationStartAt)
+                                                : prescription.validationEndAt
+                                                  ? formatTimestamp(prescription.validationEndAt)
+                                                  : "-"}
+                                            </td>
+                                            <td>{prescription.validationStatus ?? "-"}</td>
+                                            <td>
+                                              {prescription.admissionDate
+                                                ? `${prescription.admissionDate} | Leito ${prescription.bed ?? "-"}`
+                                                : "Sem vínculo"}
+                                            </td>
+                                            <td>
+                                              {formatNumber(prescription.dose)} {prescription.doseUnit}
+                                            </td>
+                                            <td>{prescription.administrationRoute ?? "-"}</td>
+                                            <td>{prescription.frequency}</td>
+                                            <td>{prescription.notes ?? "-"}</td>
+                                            <td>{formatTimestamp(prescription.createdAt)}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+                              </div>
                             ) : null}
                           </div>
                         ) : null}
