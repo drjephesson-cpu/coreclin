@@ -62,8 +62,11 @@ const DASHBOARD_NAV_GROUPS = [
   { label: "Medicamentos", items: [{ id: "medication", label: "Cadastrar medicamentos" }] }
 ] as const;
 
-const DASHBOARD_NAV_STANDALONE_ITEMS = [
-  { id: "inpatients", label: "Pacientes internados" }
+const INPATIENT_SIDEBAR_ITEMS = [
+  { id: "all", label: "Todos" },
+  { id: "team", label: "Por equipe" },
+  { id: "mandatory", label: "Obrigatórios" },
+  { id: "discharged", label: "Pacientes de alta" }
 ] as const;
 
 const PATIENT_VIEW_ITEMS = [
@@ -88,11 +91,6 @@ const PRIOR_MEDICATION_FREQUENCY_OPTIONS = [
 ] as const;
 
 const INPATIENT_STATUS_OPTIONS = ["Pendente", "Concluído", "Alta"] as const;
-const INPATIENT_OVERVIEW_ITEMS = [
-  { id: "team", label: "Por equipe" },
-  { id: "mandatory", label: "Atendimentos obrigatórios" },
-  { id: "discharged", label: "Pacientes de alta" }
-] as const;
 const INPATIENT_WORKFLOW_STORAGE_KEY = "coreclin.inpatient-workflow.v1";
 const CONCEPT_STOPWORDS = new Set([
   "de",
@@ -136,7 +134,7 @@ const THERAPEUTIC_CLASS_RELATION_RULES = [
 type DashboardSectionId = (typeof DASHBOARD_NAV_ITEMS)[number]["id"];
 type PatientViewId = (typeof PATIENT_VIEW_ITEMS)[number]["id"];
 type PrescriptionMode = "view" | "create" | "raw";
-type InpatientOverviewMode = "team" | "mandatory" | "discharged";
+type InpatientOverviewMode = (typeof INPATIENT_SIDEBAR_ITEMS)[number]["id"];
 type InpatientWorkflowStatus = (typeof INPATIENT_STATUS_OPTIONS)[number];
 type FeedbackType = "success" | "error";
 
@@ -612,7 +610,7 @@ export default function DashboardConsole({
     patients[0] ? String(patients[0].id) : ""
   );
   const [inpatientSearch, setInpatientSearch] = useState("");
-  const [inpatientOverviewMode, setInpatientOverviewMode] = useState<InpatientOverviewMode>("team");
+  const [inpatientOverviewMode, setInpatientOverviewMode] = useState<InpatientOverviewMode>("all");
   const [inpatientTeamFilter, setInpatientTeamFilter] = useState("all");
   const [mandatoryRawInput, setMandatoryRawInput] = useState("");
   const [mandatoryFeedback, setMandatoryFeedback] = useState<FeedbackState>(null);
@@ -1506,6 +1504,21 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
   function toggleList(sectionId: DashboardSectionId): void {
     setListVisibility((current) => ({ ...current, [sectionId]: !current[sectionId] }));
+  }
+
+  function openDashboardSection(sectionId: DashboardSectionId): void {
+    setActiveSection(sectionId);
+
+    if (sectionId === "inpatients") {
+      setInpatientOverviewMode("all");
+      setPatientDetailsOpen(false);
+    }
+  }
+
+  function openInpatientOverview(mode: InpatientOverviewMode): void {
+    setActiveSection("inpatients");
+    setInpatientOverviewMode(mode);
+    setPatientDetailsOpen(false);
   }
 
   function openPatientDetails(patientId: number, targetView: PatientViewId = "admission-info"): void {
@@ -2564,7 +2577,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                         key={item.id}
                         type="button"
                         className={`dashboard-sidebar-link ${activeSection === item.id ? "is-active" : ""}`}
-                        onClick={() => setActiveSection(item.id)}
+                        onClick={() => openDashboardSection(item.id)}
                       >
                         {item.label}
                       </button>
@@ -2574,16 +2587,23 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
                 <div className="dashboard-sidebar-separator" />
 
-                {DASHBOARD_NAV_STANDALONE_ITEMS.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={`dashboard-sidebar-link ${activeSection === item.id ? "is-active" : ""}`}
-                    onClick={() => setActiveSection(item.id)}
-                  >
-                    {item.label}
-                  </button>
-                ))}
+                <section className="dashboard-sidebar-group">
+                  <p className="dashboard-sidebar-group-title">Pacientes internados</p>
+                  {INPATIENT_SIDEBAR_ITEMS.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`dashboard-sidebar-link ${
+                        activeSection === "inpatients" && inpatientOverviewMode === item.id
+                          ? "is-active"
+                          : ""
+                      }`}
+                      onClick={() => openInpatientOverview(item.id)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </section>
               </nav>
             </aside>
 
@@ -2942,18 +2962,9 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                   {activeSection === "inpatients" ? (
                     <>
                       <h2>Pacientes Internados</h2>
-                      <div className="dashboard-list-box">
-                        <button
-                          type="button"
-                          className="dashboard-list-toggle"
-                          onClick={() => toggleList("inpatients")}
-                        >
-                          {listVisibility.inpatients
-                            ? "Ocultar pacientes internados"
-                            : "Ver pacientes internados"}
-                        </button>
-                        {listVisibility.inpatients ? (
-                          inpatients.length === 0 ? (
+                      {inpatientOverviewMode === "all" ? (
+                        <div className="dashboard-subsection-block">
+                          {inpatients.length === 0 ? (
                             <p className="dashboard-muted">Nenhum paciente internado no momento.</p>
                           ) : (
                             <>
@@ -3005,28 +3016,12 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 </div>
                               )}
                             </>
-                          )
-                        ) : null}
-                      </div>
-
-                      <section className="dashboard-subsection">
-                        <h3>Gestão de internados</h3>
-                        <div className="dashboard-inline-actions">
-                          {INPATIENT_OVERVIEW_ITEMS.map((item) => (
-                            <button
-                              key={item.id}
-                              type="button"
-                              className={`dashboard-mini-button ${
-                                inpatientOverviewMode === item.id ? "is-active" : ""
-                              }`}
-                              onClick={() => setInpatientOverviewMode(item.id)}
-                            >
-                              {item.label}
-                            </button>
-                          ))}
+                          )}
                         </div>
+                      ) : null}
 
-                        {inpatientOverviewMode === "team" ? (
+                      {inpatientOverviewMode === "team" ? (
+                        <section className="dashboard-subsection">
                           <div className="dashboard-subsection-block">
                             <h3>Pacientes por equipe</h3>
                             <p className="dashboard-muted">
@@ -3154,9 +3149,11 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                               </table>
                             </div>
                           </div>
-                        ) : null}
+                        </section>
+                      ) : null}
 
-                        {inpatientOverviewMode === "mandatory" ? (
+                      {inpatientOverviewMode === "mandatory" ? (
+                        <section className="dashboard-subsection">
                           <div className="dashboard-subsection-block">
                             <h3>Atendimentos obrigatórios</h3>
                             <p className="dashboard-muted">
@@ -3244,9 +3241,11 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                               </table>
                             </div>
                           </div>
-                        ) : null}
+                        </section>
+                      ) : null}
 
-                        {inpatientOverviewMode === "discharged" ? (
+                      {inpatientOverviewMode === "discharged" ? (
+                        <section className="dashboard-subsection">
                           <div className="dashboard-subsection-block">
                             <h3>Pacientes de alta</h3>
                             <p className="dashboard-muted">
@@ -3297,125 +3296,122 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                               </table>
                             </div>
                           </div>
-                        ) : null}
-                      </section>
+                        </section>
+                      ) : null}
 
-                      <section className="dashboard-subsection">
-                        <h3>Detalhes do paciente internado</h3>
-                        {selectedPatient && patientDetailsOpen ? (
+                      {selectedPatient && patientDetailsOpen ? (
+                        <section className="dashboard-subsection">
+                          <h3>Detalhes do paciente internado</h3>
                           <p className="dashboard-muted">
                             Paciente selecionado: {selectedPatient.fullName} ({selectedPatient.chartNumber})
                           </p>
-                        ) : null}
 
-                    {selectedPatient && patientDetailsOpen ? (
-                      <>
-                        <div className="dashboard-inline-actions">
-                          <button
-                            type="button"
-                            className="dashboard-mini-button"
-                            onClick={() => setPatientDetailsOpen(false)}
-                          >
-                            Fechar detalhes
-                          </button>
-                        </div>
-
-                        <div className="dashboard-inline-actions">
-                          {PATIENT_VIEW_ITEMS.map((item) => (
+                          <div className="dashboard-inline-actions">
                             <button
-                              key={item.id}
                               type="button"
-                              className={`dashboard-mini-button ${patientView === item.id ? "is-active" : ""}`}
-                              onClick={() => setPatientView(item.id)}
+                              className="dashboard-mini-button"
+                              onClick={() => setPatientDetailsOpen(false)}
                             >
-                              {item.label}
+                              Fechar detalhes
                             </button>
-                          ))}
-                        </div>
+                          </div>
 
-                        {patientView === "allergies" ? (
-                          <div className="dashboard-subsection-block">
-                            <h3>Alergias</h3>
-                            <form className="dashboard-form" onSubmit={handleAllergySubmit}>
-                              <input
-                                placeholder="Buscar alergia por medicamento, princípio ativo ou classe"
-                                value={allergyForm.query}
-                                onChange={(event) =>
-                                  setAllergyForm({
-                                    query: event.target.value,
-                                    selectedValue: ""
-                                  })
-                                }
-                              />
-
-                              <div className="dashboard-allergy-suggestions">
-                                {filteredAllergySuggestions.length === 0 ? (
-                                  <p className="dashboard-muted">
-                                    Nenhuma sugestão encontrada para essa busca.
-                                  </p>
-                                ) : (
-                                  filteredAllergySuggestions.map((suggestion) => (
-                                    <button
-                                      key={suggestion.key}
-                                      type="button"
-                                      className={`dashboard-allergy-suggestion ${
-                                        allergyForm.selectedValue === suggestion.value ? "is-active" : ""
-                                      }`}
-                                      onClick={() =>
-                                        setAllergyForm({
-                                          query: suggestion.value,
-                                          selectedValue: suggestion.value
-                                        })
-                                      }
-                                    >
-                                      {suggestion.label}
-                                    </button>
-                                  ))
-                                )}
-                              </div>
-
-                              <p className="dashboard-muted">
-                                A busca atualiza em tempo real. Você pode registrar por medicamento ou por
-                                princípio ativo (ex.: Morfina).
-                              </p>
-
-                              {allergyFeedback ? (
-                                <p className={`dashboard-feedback dashboard-feedback-${allergyFeedback.type}`}>
-                                  {allergyFeedback.message}
-                                </p>
-                              ) : null}
-
-                              <button type="submit" disabled={allergyLoading || !allergyForm.query.trim()}>
-                                {allergyLoading ? "Salvando..." : "Salvar alergia"}
+                          <div className="dashboard-inline-actions">
+                            {PATIENT_VIEW_ITEMS.map((item) => (
+                              <button
+                                key={item.id}
+                                type="button"
+                                className={`dashboard-mini-button ${patientView === item.id ? "is-active" : ""}`}
+                                onClick={() => setPatientView(item.id)}
+                              >
+                                {item.label}
                               </button>
-                            </form>
+                            ))}
+                          </div>
 
-                            <div className="dashboard-table-wrap">
-                              <table className="dashboard-table">
-                                <thead>
-                                  <tr>
-                                    <th>Alergia</th>
-                                    <th>Registro</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {selectedPatientAllergies.length === 0 ? (
-                                    <tr>
-                                      <td colSpan={2}>Nenhuma alergia cadastrada.</td>
-                                    </tr>
+                          {patientView === "allergies" ? (
+                            <div className="dashboard-subsection-block">
+                              <h3>Alergias</h3>
+                              <form className="dashboard-form" onSubmit={handleAllergySubmit}>
+                                <input
+                                  placeholder="Buscar alergia por medicamento, princípio ativo ou classe"
+                                  value={allergyForm.query}
+                                  onChange={(event) =>
+                                    setAllergyForm({
+                                      query: event.target.value,
+                                      selectedValue: ""
+                                    })
+                                  }
+                                />
+
+                                <div className="dashboard-allergy-suggestions">
+                                  {filteredAllergySuggestions.length === 0 ? (
+                                    <p className="dashboard-muted">
+                                      Nenhuma sugestão encontrada para essa busca.
+                                    </p>
                                   ) : (
-                                    selectedPatientAllergies.map((allergy) => (
-                                      <tr key={allergy.id}>
-                                        <td>{allergy.allergyName}</td>
-                                        <td>{formatTimestamp(allergy.createdAt)}</td>
-                                      </tr>
+                                    filteredAllergySuggestions.map((suggestion) => (
+                                      <button
+                                        key={suggestion.key}
+                                        type="button"
+                                        className={`dashboard-allergy-suggestion ${
+                                          allergyForm.selectedValue === suggestion.value ? "is-active" : ""
+                                        }`}
+                                        onClick={() =>
+                                          setAllergyForm({
+                                            query: suggestion.value,
+                                            selectedValue: suggestion.value
+                                          })
+                                        }
+                                      >
+                                        {suggestion.label}
+                                      </button>
                                     ))
                                   )}
-                                </tbody>
-                              </table>
+                                </div>
+
+                                <p className="dashboard-muted">
+                                  A busca atualiza em tempo real. Você pode registrar por medicamento ou por
+                                  princípio ativo (ex.: Morfina).
+                                </p>
+
+                                {allergyFeedback ? (
+                                  <p className={`dashboard-feedback dashboard-feedback-${allergyFeedback.type}`}>
+                                    {allergyFeedback.message}
+                                  </p>
+                                ) : null}
+
+                                <button type="submit" disabled={allergyLoading || !allergyForm.query.trim()}>
+                                  {allergyLoading ? "Salvando..." : "Salvar alergia"}
+                                </button>
+                              </form>
+
+                              <div className="dashboard-table-wrap">
+                                <table className="dashboard-table">
+                                  <thead>
+                                    <tr>
+                                      <th>Alergia</th>
+                                      <th>Registro</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {selectedPatientAllergies.length === 0 ? (
+                                      <tr>
+                                        <td colSpan={2}>Nenhuma alergia cadastrada.</td>
+                                      </tr>
+                                    ) : (
+                                      selectedPatientAllergies.map((allergy) => (
+                                        <tr key={allergy.id}>
+                                          <td>{allergy.allergyName}</td>
+                                          <td>{formatTimestamp(allergy.createdAt)}</td>
+                                        </tr>
+                                      ))
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
                             </div>
-                          </div>
-                        ) : null}
+                          ) : null}
 
                         {patientView === "admission-info" ? (
                           <div className="dashboard-subsection-block">
@@ -4275,13 +4271,8 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                             ) : null}
                           </div>
                         ) : null}
-                      </>
-                    ) : (
-                      <p className="dashboard-muted">
-                        Clique em um paciente internado para abrir os detalhes clínicos.
-                      </p>
-                    )}
-                  </section>
+                        </section>
+                      ) : null}
                     </>
                   ) : null}
                 </section>
