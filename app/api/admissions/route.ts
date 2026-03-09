@@ -49,6 +49,43 @@ function parseOptionalPositiveNumber(value: unknown): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function buildIsoAdmissionDate(year: number, month: number, day: number): string | null {
+  const parsed = new Date(year, month - 1, day, 12, 0, 0, 0);
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function normalizeAdmissionDate(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})(?:\b|T|$)/);
+  if (isoMatch) {
+    return buildIsoAdmissionDate(Number(isoMatch[1]), Number(isoMatch[2]), Number(isoMatch[3]));
+  }
+
+  const brMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\b|\s|$)/);
+  if (!brMatch) {
+    return null;
+  }
+
+  const day = Number(brMatch[1]);
+  const month = Number(brMatch[2]);
+  const year = Number(brMatch[3].length === 2 ? `20${brMatch[3]}` : brMatch[3]);
+
+  return buildIsoAdmissionDate(year, month, day);
+}
+
 export async function POST(request: Request): Promise<NextResponse> {
   const parsedRequest = await parseAdmissionRequest(request);
   if ("error" in parsedRequest) {
@@ -57,7 +94,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const { body, sessionUsername } = parsedRequest;
   const patientIdRaw = body.patientId;
-  const admissionDate = typeof body.admissionDate === "string" ? body.admissionDate : "";
+  const admissionDate = normalizeAdmissionDate(typeof body.admissionDate === "string" ? body.admissionDate : "");
   const bed = typeof body.bed === "string" ? body.bed.trim() : "";
   const admissionReason = typeof body.admissionReason === "string" ? body.admissionReason.trim() : "";
   const teamIdRaw = body.teamId;
@@ -77,7 +114,10 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   if (!admissionDate || !bed) {
-    return NextResponse.json({ message: "Preencha data e leito da internação." }, { status: 400 });
+    return NextResponse.json(
+      { message: "Preencha a admissão no formato DD/MM/AAAA e informe o leito." },
+      { status: 400 }
+    );
   }
 
   if ((weightKg === null) !== (heightCm === null)) {
@@ -127,7 +167,7 @@ export async function PUT(request: Request): Promise<NextResponse> {
 
   const { body, sessionUsername } = parsedRequest;
   const admissionIdRaw = body.admissionId;
-  const admissionDate = typeof body.admissionDate === "string" ? body.admissionDate : "";
+  const admissionDate = normalizeAdmissionDate(typeof body.admissionDate === "string" ? body.admissionDate : "");
   const bed = typeof body.bed === "string" ? body.bed.trim() : "";
   const admissionReason = typeof body.admissionReason === "string" ? body.admissionReason.trim() : "";
   const teamId = parseOptionalPositiveNumber(body.teamId);
@@ -143,7 +183,10 @@ export async function PUT(request: Request): Promise<NextResponse> {
   }
 
   if (!admissionDate || !bed) {
-    return NextResponse.json({ message: "Preencha data e leito da internação." }, { status: 400 });
+    return NextResponse.json(
+      { message: "Preencha a admissão no formato DD/MM/AAAA e informe o leito." },
+      { status: 400 }
+    );
   }
 
   if ((weightKg === null) !== (heightCm === null)) {

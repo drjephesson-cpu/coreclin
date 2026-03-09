@@ -330,16 +330,68 @@ function normalizeMandatoryBedLabel(input: string): string {
   return sanitized.replace(/^0+/, "") || sanitized;
 }
 
-function parseMandatoryAdmissionDate(input: string): string {
+function buildIsoAdmissionDate(year: number, month: number, day: number): string | null {
+  const parsed = new Date(year, month - 1, day, 12, 0, 0, 0);
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function normalizeAdmissionDateValue(input: string): string | null {
   const trimmed = input.trim();
-  const match = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{2,4})/);
-  if (!match) {
+  if (!trimmed) {
+    return null;
+  }
+
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})(?:\b|T|$)/);
+  if (isoMatch) {
+    return buildIsoAdmissionDate(Number(isoMatch[1]), Number(isoMatch[2]), Number(isoMatch[3]));
+  }
+
+  const brMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\b|\s|$)/);
+  if (!brMatch) {
+    return null;
+  }
+
+  const day = Number(brMatch[1]);
+  const month = Number(brMatch[2]);
+  const year = Number(brMatch[3].length === 2 ? `20${brMatch[3]}` : brMatch[3]);
+
+  return buildIsoAdmissionDate(year, month, day);
+}
+
+function formatAdmissionDateValue(input: string | null | undefined): string {
+  if (!input) {
+    return "";
+  }
+
+  const normalized = normalizeAdmissionDateValue(input);
+  if (!normalized) {
+    return input.trim();
+  }
+
+  const [year, month, day] = normalized.split("-");
+  return `${day}/${month}/${year}`;
+}
+
+function formatAdmissionDate(input: string | null | undefined): string {
+  return formatAdmissionDateValue(input) || "-";
+}
+
+function parseMandatoryAdmissionDate(input: string): string {
+  const normalized = normalizeAdmissionDateValue(input);
+  if (!normalized) {
     return new Date().toISOString().slice(0, 10);
   }
 
-  const [, day, month, rawYear] = match;
-  const year = rawYear.length === 2 ? `20${rawYear}` : rawYear;
-  return `${year}-${month}-${day}`;
+  return normalized;
 }
 
 function shouldRemainMandatory(
@@ -912,9 +964,9 @@ export default function DashboardConsole({
 
     return inpatients.filter((inpatient) =>
       normalizeSearchValue(
-        `${inpatient.patientName} ${inpatient.chartNumber} ${inpatient.admissionDate} ${inpatient.bed} ${
-          inpatient.teamName ?? ""
-        }`
+        `${inpatient.patientName} ${inpatient.chartNumber} ${inpatient.admissionDate} ${formatAdmissionDateValue(
+          inpatient.admissionDate
+        )} ${inpatient.bed} ${inpatient.teamName ?? ""}`
       ).includes(searchTerm)
     );
   }, [inpatients, inpatientSearch]);
@@ -1332,7 +1384,9 @@ export default function DashboardConsole({
 
     setAdmissionForm({
       admissionId: latestAdmission ? String(latestAdmission.id) : "",
-      admissionDate: latestAdmission?.admissionDate ?? selectedInpatientEntry?.admissionDate ?? "",
+      admissionDate: formatAdmissionDateValue(
+        latestAdmission?.admissionDate ?? selectedInpatientEntry?.admissionDate ?? ""
+      ),
       bed: latestAdmission?.bed ?? selectedInpatientEntry?.bed ?? "",
       admissionReason:
         latestAdmission?.admissionReason && latestAdmission.admissionReason !== "Pendente de preenchimento"
@@ -2398,6 +2452,15 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       return;
     }
 
+    const normalizedAdmissionDate = normalizeAdmissionDateValue(admissionForm.admissionDate);
+    if (!normalizedAdmissionDate) {
+      setAdmissionFeedback({
+        type: "error",
+        message: "Informe a admissão no formato DD/MM/AAAA."
+      });
+      return;
+    }
+
     setAdmissionLoading(true);
 
     try {
@@ -2407,6 +2470,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...admissionForm,
+          admissionDate: normalizedAdmissionDate,
           admissionId: shouldUpdateAdmission ? Number(admissionForm.admissionId) : undefined,
           patientId: selectedPatient.id,
           teamId: admissionForm.teamId ? Number(admissionForm.teamId) : undefined,
@@ -3821,7 +3885,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                   <td>{patient.chartNumber}</td>
                                   <td>{patient.ageYears !== null ? `${patient.ageYears} anos` : "-"}</td>
                                   <td>{patient.responsibleProfessionalName}</td>
-                                  <td>{patient.latestAdmission ? patient.latestAdmission.admissionDate : "-"}</td>
+                                  <td>{formatAdmissionDate(patient.latestAdmission?.admissionDate)}</td>
                                   <td>{patient.latestAdmission?.bed ?? "-"}</td>
                                 </tr>
                               ))}
@@ -3893,7 +3957,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                             </button>
                                           </td>
                                           <td>{inpatient.chartNumber}</td>
-                                          <td>{inpatient.admissionDate}</td>
+                                          <td>{formatAdmissionDate(inpatient.admissionDate)}</td>
                                           <td>{inpatient.bed}</td>
                                           <td>{inpatient.teamName ?? "-"}</td>
                                         </tr>
@@ -4098,7 +4162,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                       <tr key={entry.key}>
                                         <td>{entry.patientName}</td>
                                         <td>{entry.chartNumber || "-"}</td>
-                                        <td>{entry.admissionDate || "-"}</td>
+                                        <td>{formatAdmissionDate(entry.admissionDate)}</td>
                                         <td>{entry.bed || "-"}</td>
                                         <td>{assignedTeamName ?? entry.teamName ?? "Pendente"}</td>
                                         <td>
@@ -4381,7 +4445,9 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
                               <div className="dashboard-two-columns">
                                 <input
-                                  type="date"
+                                  type="text"
+                                  inputMode="numeric"
+                                  placeholder="Admissão (DD/MM/AAAA)"
                                   value={admissionForm.admissionDate}
                                   onChange={(event) =>
                                     setAdmissionForm((current) => ({
@@ -4546,7 +4612,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                   ) : (
                                     selectedPatientAdmissions.map((admission) => (
                                       <tr key={admission.id}>
-                                        <td>{admission.admissionDate}</td>
+                                        <td>{formatAdmissionDate(admission.admissionDate)}</td>
                                         <td>{admission.bed}</td>
                                         <td>{admission.teamName ?? "-"}</td>
                                         <td>{admission.admissionReason}</td>
@@ -4938,7 +5004,8 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                   <option value="">Sem vínculo com internação</option>
                                   {selectedPatientAdmissions.map((admission) => (
                                     <option key={admission.id} value={admission.id}>
-                                      {admission.admissionDate} | Leito {admission.bed} | {admission.teamName ?? "-"}
+                                      {formatAdmissionDate(admission.admissionDate)} | Leito {admission.bed} |{" "}
+                                      {admission.teamName ?? "-"}
                                     </option>
                                   ))}
                                 </select>
@@ -5094,7 +5161,8 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                   <option value="">Sem vínculo com internação</option>
                                   {selectedPatientAdmissions.map((admission) => (
                                     <option key={admission.id} value={admission.id}>
-                                      {admission.admissionDate} | Leito {admission.bed} | {admission.teamName ?? "-"}
+                                      {formatAdmissionDate(admission.admissionDate)} | Leito {admission.bed} |{" "}
+                                      {admission.teamName ?? "-"}
                                     </option>
                                   ))}
                                 </select>
@@ -5203,7 +5271,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                         Internação:
                                         {" "}
                                         {group.admissionDate
-                                          ? `${group.admissionDate} | Leito ${group.bed ?? "-"}`
+                                          ? `${formatAdmissionDate(group.admissionDate)} | Leito ${group.bed ?? "-"}`
                                           : "Sem vínculo"}
                                       </p>
                                       <p className="dashboard-muted">
@@ -5372,7 +5440,9 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                             <td>{prescription.validationStatus ?? "-"}</td>
                                             <td>
                                               {prescription.admissionDate
-                                                ? `${prescription.admissionDate} | Leito ${prescription.bed ?? "-"}`
+                                                ? `${formatAdmissionDate(prescription.admissionDate)} | Leito ${
+                                                    prescription.bed ?? "-"
+                                                  }`
                                                 : "Sem vínculo"}
                                             </td>
                                             <td>
