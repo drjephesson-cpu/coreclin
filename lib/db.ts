@@ -48,6 +48,7 @@ export type CreateAdmissionInput = {
   bed: string;
   admissionReason?: string | null;
   admissionSummary?: string | null;
+  admissionImportExcerpt?: string | null;
   teamId?: number | null;
   weightKg?: number | null;
   heightCm?: number | null;
@@ -62,6 +63,7 @@ export type UpdateAdmissionInput = {
   bed: string;
   admissionReason?: string | null;
   admissionSummary?: string | null;
+  admissionImportExcerpt?: string | null;
   teamId?: number | null;
   weightKg?: number | null;
   heightCm?: number | null;
@@ -240,6 +242,8 @@ function mapAdmission(row: DbRow): AdmissionRecord {
     bed: String(row.bed ?? ""),
     admissionReason: String(row.admission_reason ?? ""),
     admissionSummary: row.admission_summary === null ? null : String(row.admission_summary ?? ""),
+    admissionImportExcerpt:
+      row.admission_import_excerpt === null ? null : String(row.admission_import_excerpt ?? ""),
     teamId: row.team_id === null ? null : toNumber(row.team_id),
     teamName: row.team_name === null ? null : String(row.team_name),
     responsibleProfessionalId: toNumber(row.responsible_professional_id),
@@ -357,6 +361,10 @@ function mapPatient(row: DbRow): PatientRecord {
           admissionReason: String(row.latest_admission_reason ?? ""),
           admissionSummary:
             row.latest_admission_summary === null ? null : String(row.latest_admission_summary ?? ""),
+          admissionImportExcerpt:
+            row.latest_admission_import_excerpt === null
+              ? null
+              : String(row.latest_admission_import_excerpt ?? ""),
           teamId: row.latest_admission_team_id === null ? null : toNumber(row.latest_admission_team_id),
           teamName: row.latest_admission_team_name === null ? null : String(row.latest_admission_team_name),
           responsibleProfessionalId: toNumber(row.latest_admission_responsible_professional_id),
@@ -537,6 +545,7 @@ async function setupDatabase(): Promise<void> {
       bed TEXT NOT NULL,
       admission_reason TEXT NOT NULL,
       admission_summary TEXT,
+      admission_import_excerpt TEXT,
       team_id INTEGER REFERENCES teams(id),
       responsible_professional_id INTEGER NOT NULL REFERENCES professionals(id),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -628,6 +637,9 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE admissions
     ADD COLUMN IF NOT EXISTS admission_summary TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS admission_import_excerpt TEXT;
   `);
 
   await pool.query(`
@@ -1289,10 +1301,11 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
           bed,
           admission_reason,
           admission_summary,
+          admission_import_excerpt,
           team_id,
           responsible_professional_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING id
       `,
       [
@@ -1301,6 +1314,7 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
         input.bed.trim(),
         input.admissionReason?.trim() || "Pendente de preenchimento",
         input.admissionSummary?.trim() || null,
+        input.admissionImportExcerpt?.trim() || null,
         input.teamId ?? null,
         responsibleProfessionalId
       ]
@@ -1371,7 +1385,8 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
           bed = $3,
           admission_reason = $4,
           admission_summary = $5,
-          team_id = $6
+          admission_import_excerpt = $6,
+          team_id = $7
         WHERE id = $1
         RETURNING id, patient_id
       `,
@@ -1381,6 +1396,7 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
         input.bed.trim(),
         input.admissionReason?.trim() || "Pendente de preenchimento",
         input.admissionSummary?.trim() || null,
+        input.admissionImportExcerpt?.trim() || null,
         input.teamId ?? null
       ]
     );
@@ -1828,6 +1844,7 @@ export async function listPatients(): Promise<PatientRecord[]> {
       la.bed AS latest_admission_bed,
       la.admission_reason AS latest_admission_reason,
       la.admission_summary AS latest_admission_summary,
+      la.admission_import_excerpt AS latest_admission_import_excerpt,
       la.team_id AS latest_admission_team_id,
       t.name AS latest_admission_team_name,
       la.responsible_professional_id AS latest_admission_responsible_professional_id,
@@ -1849,6 +1866,7 @@ export async function listPatients(): Promise<PatientRecord[]> {
         a.bed,
         a.admission_reason,
         a.admission_summary,
+        a.admission_import_excerpt,
         a.team_id,
         a.responsible_professional_id,
         a.created_at
@@ -1895,6 +1913,7 @@ export async function listRecentAdmissions(limit = 40): Promise<AdmissionRecord[
         a.bed,
         a.admission_reason,
         a.admission_summary,
+        a.admission_import_excerpt,
         a.team_id,
         t.name AS team_name,
         a.responsible_professional_id,
@@ -1947,6 +1966,7 @@ async function getAdmissionById(admissionId: number): Promise<AdmissionRecord | 
         a.bed,
         a.admission_reason,
         a.admission_summary,
+        a.admission_import_excerpt,
         a.team_id,
         t.name AS team_name,
         a.responsible_professional_id,

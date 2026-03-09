@@ -809,8 +809,7 @@ export default function DashboardConsole({
     bed: "",
     admissionReason: "",
     admissionSummary: "",
-    admissionImportMucExcerpt: "",
-    admissionImportAllergyExcerpt: "",
+    admissionImportExcerpt: "",
     teamId: "",
     weightKg: "",
     heightCm: "",
@@ -1492,8 +1491,7 @@ export default function DashboardConsole({
           ? latestAdmission.admissionReason
           : "",
       admissionSummary: latestAdmission?.admissionSummary ?? "",
-      admissionImportMucExcerpt: "",
-      admissionImportAllergyExcerpt: "",
+      admissionImportExcerpt: latestAdmission?.admissionImportExcerpt ?? "",
       teamId:
         latestAdmission?.teamId !== null && latestAdmission?.teamId !== undefined
           ? String(latestAdmission.teamId)
@@ -1866,167 +1864,176 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     );
   }
 
+  function extractMedicationLabelFromSummaryChunk(chunk: string): string {
+    const withoutPrefix = chunk.replace(/^(?:muc|prescrevo muc)\s*:\s*/i, "").trim();
+    const leadingLabel = withoutPrefix.split(/\s+[–-]\s+/)[0]?.trim() ?? withoutPrefix;
+    const withoutDose = leadingLabel
+      .replace(
+        /\b\d+(?:[.,]\d+)?\s*(mg|mcg|g|kg|mL|ml|UI|ui|U|cp|cps|cmp|comprimidos?|caps?|cápsulas?|gotas?)\b/gi,
+        " "
+      )
+      .replace(/\s+/g, " ")
+      .trim();
+
+    return withoutDose || leadingLabel;
+  }
+
+  function findBestCatalogMedicationFromSummaryChunk(chunk: string) {
+    const searchCandidates = [extractMedicationLabelFromSummaryChunk(chunk), chunk]
+      .map((value) => value.trim())
+      .filter((value, index, current) => value.length > 0 && current.indexOf(value) === index);
+
+    for (const candidate of searchCandidates) {
+      const directMatch = findCatalogMedicationMatchByName(candidate);
+      if (directMatch) {
+        return directMatch;
+      }
+    }
+
+    const normalizedLabel = normalizeMedicationName(searchCandidates[0] ?? "");
+    if (!normalizedLabel) {
+      return null;
+    }
+
+    const scoredMatches = medicationDescriptors
+      .map((descriptor) => {
+        let score = 0;
+
+        if (descriptor.normalizedName === normalizedLabel) {
+          score = 100;
+        } else if (descriptor.aliasTerms.some((aliasTerm) => aliasTerm.normalized === normalizedLabel)) {
+          score = 95;
+        } else if (
+          descriptor.activeIngredientTerms.some((ingredientTerm) => ingredientTerm.normalized === normalizedLabel)
+        ) {
+          score = 85;
+        } else if (
+          hasTokenBoundaryMatch(descriptor.normalizedName, normalizedLabel) ||
+          hasTokenBoundaryMatch(normalizedLabel, descriptor.normalizedName)
+        ) {
+          score = 70;
+        } else if (
+          descriptor.aliasTerms.some(
+            (aliasTerm) =>
+              hasTokenBoundaryMatch(aliasTerm.normalized, normalizedLabel) ||
+              hasTokenBoundaryMatch(normalizedLabel, aliasTerm.normalized)
+          )
+        ) {
+          score = 65;
+        }
+
+        return score > 0 ? { descriptor, score } : null;
+      })
+      .filter((item): item is { descriptor: (typeof medicationDescriptors)[number]; score: number } => item !== null)
+      .sort((first, second) => {
+        if (second.score !== first.score) {
+          return second.score - first.score;
+        }
+
+        return first.descriptor.medication.name.length - second.descriptor.medication.name.length;
+      });
+
+    const bestMatch = scoredMatches[0] ?? null;
+    if (!bestMatch) {
+      return null;
+    }
+
+    const competingBestMatches = scoredMatches.filter((item) => item.score === bestMatch.score);
+    if (competingBestMatches.length > 1 && bestMatch.score < 100) {
+      return null;
+    }
+
+    return bestMatch.descriptor.medication;
+  }
+
   function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicationCandidate[] {
     const candidates = new Map<number, SummaryMedicationCandidate>();
-    const lines = summaryText
+    const chunks = summaryText
       .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+      .flatMap((line) =>
+        line
+          .split(";")
+          .map((chunk) => chunk.trim())
+          .filter((chunk) => chunk.length > 0)
+      );
 
-    const medicationChunks: string[] = [];
-    for (const line of lines) {
-      const mucMatch = line.match(/(?:^|\b)(?:muc|prescrevo muc)\s*:\s*(.+)$/i);
-      if (!mucMatch) {
+    for (const chunk of chunks) {
+      const medication = findBestCatalogMedicationFromSummaryChunk(chunk);
+      if (!medication || candidates.has(medication.id)) {
         continue;
       }
 
-      const chunks = mucMatch[1]
-        .split(";")
-        .map((chunk) => chunk.trim())
-        .filter((chunk) => chunk.length > 0);
-      medicationChunks.push(...chunks);
-    }
-
-    for (const chunk of medicationChunks) {
-      const mentionedMedications = findCatalogMedicationsMentionedInText(chunk);
-      for (const medication of mentionedMedications) {
-        if (candidates.has(medication.id)) {
-          continue;
-        }
-
-        const parsedDose = extractDoseFromText(chunk);
-        const dose = parsedDose.dose;
-        const doseUnit = parsedDose.doseUnit || medication.defaultUnit;
-        if (!dose || !doseUnit) {
-          continue;
-        }
-
-        candidates.set(medication.id, {
-          medicationId: medication.id,
-          medicationName: medication.name,
-          dose,
-          doseUnit,
-          frequency: extractFrequencyFromText(chunk),
-          shifts: extractShiftsFromText(chunk)
-        });
+      const parsedDose = extractDoseFromText(chunk);
+      const dose = parsedDose.dose;
+      const doseUnit = parsedDose.doseUnit || medication.defaultUnit;
+      if (!dose || !doseUnit) {
+        continue;
       }
+
+      candidates.set(medication.id, {
+        medicationId: medication.id,
+        medicationName: medication.name,
+        dose,
+        doseUnit,
+        frequency: extractFrequencyFromText(chunk),
+        shifts: extractShiftsFromText(chunk)
+      });
     }
 
     return Array.from(candidates.values());
   }
 
-  function extractSummaryAllergyCandidates(summaryText: string): string[] {
-    const allergyNames = new Map<string, string>();
-    const lines = summaryText
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-
-    for (const line of lines) {
-      const normalizedLine = normalizeMedicationName(line);
-      if (!normalizedLine.includes("alerg")) {
-        continue;
-      }
-
-      if (
-        normalizedLine.includes("sem alerg") ||
-        normalizedLine.includes("nega alerg") ||
-        normalizedLine.includes("sem historia de alerg")
-      ) {
-        continue;
-      }
-
-      const mentionedMedications = findCatalogMedicationsMentionedInText(line);
-      for (const medication of mentionedMedications) {
-        const normalizedMedicationName = normalizeMedicationName(medication.name);
-        if (!allergyNames.has(normalizedMedicationName)) {
-          allergyNames.set(normalizedMedicationName, medication.name);
-        }
-      }
-    }
-
-    return Array.from(allergyNames.values());
-  }
-
   async function autoPopulateFromAdmissionSummary(
     patientId: number,
-    mucExcerpt: string,
-    allergyExcerpt: string
-  ): Promise<{ addedPriorMedications: number; addedAllergies: number }> {
-    const trimmedMucExcerpt = mucExcerpt.trim();
-    const trimmedAllergyExcerpt = allergyExcerpt.trim();
-    if (!trimmedMucExcerpt && !trimmedAllergyExcerpt) {
-      return { addedPriorMedications: 0, addedAllergies: 0 };
+    importExcerpt: string
+  ): Promise<{ addedPriorMedications: number }> {
+    const trimmedImportExcerpt = importExcerpt.trim();
+    if (!trimmedImportExcerpt) {
+      return { addedPriorMedications: 0 };
     }
 
     const existingPriorMedicationNames = new Set(
       selectedPatientPriorMedications.map((item) => normalizeMedicationName(item.medicationName))
     );
-    const existingAllergyNames = new Set(
-      selectedPatientAllergies.map((item) => normalizeMedicationName(item.allergyName))
-    );
 
-    const priorMedicationCandidates = extractSummaryMedicationCandidates(trimmedMucExcerpt).filter(
+    const priorMedicationCandidates = extractSummaryMedicationCandidates(trimmedImportExcerpt).filter(
       (candidate) => !existingPriorMedicationNames.has(normalizeMedicationName(candidate.medicationName))
     );
-    const allergyCandidates = extractSummaryAllergyCandidates(trimmedAllergyExcerpt).filter(
-      (allergyName) => !existingAllergyNames.has(normalizeMedicationName(allergyName))
+
+    const priorMedicationResults = await Promise.all(
+      priorMedicationCandidates.map(async (candidate) => {
+        const response = await fetch(`/api/patients/${patientId}/prior-medications`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(candidate)
+        });
+
+        return response.ok ? candidate.medicationName : null;
+      })
     );
 
-    const [priorMedicationResults, allergyResults] = await Promise.all([
-      Promise.all(
-        priorMedicationCandidates.map(async (candidate) => {
-          const response = await fetch(`/api/patients/${patientId}/prior-medications`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(candidate)
-          });
-
-          return response.ok ? candidate.medicationName : null;
-        })
-      ),
-      Promise.all(
-        allergyCandidates.map(async (allergyName) => {
-          const response = await fetch(`/api/patients/${patientId}/allergies`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ allergyName })
-          });
-
-          return response.ok ? allergyName : null;
-        })
-      )
-    ]);
-
     return {
-      addedPriorMedications: priorMedicationResults.filter((item) => item !== null).length,
-      addedAllergies: allergyResults.filter((item) => item !== null).length
+      addedPriorMedications: priorMedicationResults.filter((item) => item !== null).length
     };
   }
 
-  function applySelectedAdmissionSummaryText(
-    target: "muc" | "allergies"
-  ): void {
+  function applySelectedAdmissionSummaryText(): void {
     const selectedText = admissionSummarySelection.trim();
     if (!selectedText) {
       setAdmissionFeedback({
         type: "error",
-        message: "Selecione um trecho do resumo antes de marcar MUC ou alergias."
+        message: "Selecione um trecho do resumo antes de salvar a importação."
       });
       return;
     }
 
-    const targetLabel = target === "muc" ? "MUC" : "alergias";
     setAdmissionForm((current) => ({
       ...current,
-      admissionImportMucExcerpt:
-        target === "muc" ? selectedText : current.admissionImportMucExcerpt,
-      admissionImportAllergyExcerpt:
-        target === "allergies" ? selectedText : current.admissionImportAllergyExcerpt
+      admissionImportExcerpt: selectedText
     }));
     setAdmissionFeedback({
       type: "success",
-      message: `Trecho salvo para ${targetLabel}. Agora clique em Atualizar internação para importar automaticamente.`
+      message: "Trecho selecionado salvo para importar MUC. Agora clique em Atualizar internação."
     });
   }
 
@@ -2840,25 +2847,18 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
       const summaryAutofill = await autoPopulateFromAdmissionSummary(
         selectedPatient.id,
-        admissionForm.admissionImportMucExcerpt,
-        admissionForm.admissionImportAllergyExcerpt
+        admissionForm.admissionImportExcerpt
       );
-      const autofillDetails = [
+      const autofillDetails =
         summaryAutofill.addedPriorMedications > 0
           ? `${summaryAutofill.addedPriorMedications} medicamento(s) prévio(s) identificado(s)`
-          : "",
-        summaryAutofill.addedAllergies > 0
-          ? `${summaryAutofill.addedAllergies} alergia(s) identificada(s)`
-          : ""
-      ]
-        .filter((item) => item.length > 0)
-        .join(" e ");
+          : "";
 
       setAdmissionFeedback({
         type: "success",
         message: `${
           shouldUpdateAdmission ? "Internação atualizada com sucesso." : "Internação cadastrada com sucesso."
-        }${autofillDetails ? ` Trecho de importação analisado: ${autofillDetails}.` : ""}`
+        }${autofillDetails ? ` Trecho de MUC analisado: ${autofillDetails}.` : ""}`
       });
       setAdmissionForm({
         admissionId: "",
@@ -2866,8 +2866,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
         bed: "",
         admissionReason: "",
         admissionSummary: "",
-        admissionImportMucExcerpt: "",
-        admissionImportAllergyExcerpt: "",
+        admissionImportExcerpt: "",
         teamId: "",
         weightKg: "",
         heightCm: "",
@@ -4935,23 +4934,14 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                     <button
                                       type="button"
                                       className="dashboard-mini-button"
-                                      onClick={() => applySelectedAdmissionSummaryText("muc")}
+                                      onClick={applySelectedAdmissionSummaryText}
                                       disabled={!admissionSummarySelection.trim()}
                                     >
-                                      Salvar selecao como MUC
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="dashboard-mini-button"
-                                      onClick={() => applySelectedAdmissionSummaryText("allergies")}
-                                      disabled={!admissionSummarySelection.trim()}
-                                    >
-                                      Salvar selecao como alergias
+                                      Salvar selecao para MUC
                                     </button>
                                   </div>
                                   <p className="dashboard-muted">
-                                    Selecione um trecho no resumo, clique no botao correspondente e depois em
-                                    Atualizar internação.
+                                    Selecione no resumo apenas o trecho do MUC e clique em salvar selecao.
                                   </p>
                                 </>
                               ) : null}
@@ -4965,10 +4955,10 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
                               {admissionForm.admissionSummary.trim() ? (
                                 <div className="dashboard-calculation-box">
-                                  <h3>Importação automática</h3>
+                                  <h3>Trecho salvo para MUC</h3>
                                   {admissionSummarySelection.trim() ? (
                                     <p className="dashboard-muted">
-                                      Selecao atual pronta para salvar: {admissionSummarySelection}
+                                      Selecao atual: {admissionSummarySelection}
                                     </p>
                                   ) : (
                                     <p className="dashboard-muted">
@@ -4980,61 +4970,34 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                       className="dashboard-status-pill"
                                       style={{ background: "#d7ecff", color: "#163c68" }}
                                     >
-                                      MUC {admissionForm.admissionImportMucExcerpt.trim() ? "salvo" : "não salvo"}
+                                      {admissionForm.admissionImportExcerpt.trim() ? "Trecho de MUC salvo" : "Nenhum trecho salvo"}
                                     </span>
-                                    {admissionForm.admissionImportMucExcerpt.trim() ? (
+                                    {admissionForm.admissionImportExcerpt.trim() ? (
                                       <button
                                         type="button"
                                         className="dashboard-mini-button"
                                         onClick={() =>
                                           setAdmissionForm((current) => ({
                                             ...current,
-                                            admissionImportMucExcerpt: ""
+                                            admissionImportExcerpt: ""
                                           }))
                                         }
                                       >
-                                        Limpar MUC
+                                        Limpar trecho
                                       </button>
                                     ) : null}
                                   </div>
-                                  {admissionForm.admissionImportMucExcerpt.trim() ? (
+                                  {admissionForm.admissionImportExcerpt.trim() ? (
                                     <p
                                       className="dashboard-muted"
                                       style={{ whiteSpace: "pre-wrap", background: "#d7ecff", padding: "0.75rem", borderRadius: "12px" }}
                                     >
-                                      {admissionForm.admissionImportMucExcerpt}
+                                      {admissionForm.admissionImportExcerpt}
                                     </p>
                                   ) : null}
-                                  <div className="dashboard-inline-actions">
-                                    <span
-                                      className="dashboard-status-pill"
-                                      style={{ background: "#ffe0d6", color: "#7b2f19" }}
-                                    >
-                                      Alergias {admissionForm.admissionImportAllergyExcerpt.trim() ? "salvo" : "não salvo"}
-                                    </span>
-                                    {admissionForm.admissionImportAllergyExcerpt.trim() ? (
-                                      <button
-                                        type="button"
-                                        className="dashboard-mini-button"
-                                        onClick={() =>
-                                          setAdmissionForm((current) => ({
-                                            ...current,
-                                            admissionImportAllergyExcerpt: ""
-                                          }))
-                                        }
-                                      >
-                                        Limpar alergias
-                                      </button>
-                                    ) : null}
-                                  </div>
-                                  {admissionForm.admissionImportAllergyExcerpt.trim() ? (
-                                    <p
-                                      className="dashboard-muted"
-                                      style={{ whiteSpace: "pre-wrap", background: "#ffe0d6", padding: "0.75rem", borderRadius: "12px" }}
-                                    >
-                                      {admissionForm.admissionImportAllergyExcerpt}
-                                    </p>
-                                  ) : null}
+                                  <p className="dashboard-muted">
+                                    Ao clicar em Atualizar internação, a importação automática vai usar apenas este trecho para MUC.
+                                  </p>
                                 </div>
                               ) : null}
 
