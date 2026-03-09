@@ -694,6 +694,28 @@ body {
   gap: 6px;
 }
 
+.dashboard-flag-legend {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #dbe5f2;
+  display: grid;
+  gap: 6px;
+}
+
+.dashboard-flag-legend-label {
+  color: #6f84a1;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.dashboard-flag-legend-text {
+  color: #6f84a1;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
 .dashboard-table-wrap {
   margin-top: 12px;
   overflow-x: auto;

@@ -1726,15 +1726,31 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     return (
       <div className="dashboard-flag-list">
         {allergyConflict ? (
-          <span className="dashboard-status-pill is-allergy">
-            {buildAllergyConflictBadge(allergyConflict)}
+          <span
+            className="dashboard-status-pill is-allergy"
+            title={buildAllergyConflictBadge(allergyConflict)}
+            aria-label={buildAllergyConflictBadge(allergyConflict)}
+          >
+            (A)
           </span>
         ) : null}
         {safetyFlags.renalAdjustment ? (
-          <span className="dashboard-status-pill is-renal">Ajuste renal</span>
+          <span
+            className="dashboard-status-pill is-renal"
+            title="Ajuste para função renal"
+            aria-label="Ajuste para função renal"
+          >
+            (FR)
+          </span>
         ) : null}
         {safetyFlags.hepatotoxic ? (
-          <span className="dashboard-status-pill is-hepatic">Hepatotóxico</span>
+          <span
+            className="dashboard-status-pill is-hepatic"
+            title="Medicamento hepatotóxico"
+            aria-label="Medicamento hepatotóxico"
+          >
+            (HT)
+          </span>
         ) : null}
       </div>
     );
@@ -4759,6 +4775,36 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 )}
                               </div>
                             ) : null}
+
+                            <div className="dashboard-flag-legend">
+                              <span className="dashboard-flag-legend-label">Legenda:</span>
+                              <div className="dashboard-flag-list">
+                                <span
+                                  className="dashboard-status-pill is-allergy"
+                                  title="Alergia medicamentosa"
+                                  aria-hidden="true"
+                                >
+                                  (A)
+                                </span>
+                                <span className="dashboard-flag-legend-text">Alergia</span>
+                                <span
+                                  className="dashboard-status-pill is-renal"
+                                  title="Ajuste para função renal"
+                                  aria-hidden="true"
+                                >
+                                  (FR)
+                                </span>
+                                <span className="dashboard-flag-legend-text">Função renal</span>
+                                <span
+                                  className="dashboard-status-pill is-hepatic"
+                                  title="Medicamento hepatotóxico"
+                                  aria-hidden="true"
+                                >
+                                  (HT)
+                                </span>
+                                <span className="dashboard-flag-legend-text">Hepatotóxico</span>
+                              </div>
+                            </div>
                           </div>
                         ) : null}
                         </section>
