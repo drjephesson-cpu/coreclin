@@ -622,6 +622,7 @@ export default function DashboardConsole({
   const [patientDetailsOpen, setPatientDetailsOpen] = useState(false);
   const [patientView, setPatientView] = useState<PatientViewId>("allergies");
   const [prescriptionMode, setPrescriptionMode] = useState<PrescriptionMode>("view");
+  const [selectedPrescriptionGroupKey, setSelectedPrescriptionGroupKey] = useState("");
 
   const [allergyForm, setAllergyForm] = useState({
     query: "",
@@ -1430,6 +1431,23 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     });
   }, [selectedPatientPrescriptions]);
 
+  const recentPrescriptionGroups = useMemo(
+    () => selectedPatientPrescriptionGroups.slice(0, 3),
+    [selectedPatientPrescriptionGroups]
+  );
+
+  const visiblePrescriptionGroups = useMemo(() => {
+    if (recentPrescriptionGroups.length === 0) {
+      return [];
+    }
+
+    const selectedGroup =
+      recentPrescriptionGroups.find((group) => group.key === selectedPrescriptionGroupKey) ??
+      recentPrescriptionGroups[0];
+
+    return [selectedGroup];
+  }, [recentPrescriptionGroups, selectedPrescriptionGroupKey]);
+
   const priorMedicationFormReconciliation = useMemo(() => {
     const medicationName = (
       priorMedicationCatalogMatch?.name ?? priorMedicationForm.medicationName
@@ -1499,6 +1517,14 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       setRawPrescriptionAdmissionId("");
     }
   }, [rawPrescriptionAdmissionId, selectedPatientAdmissions]);
+
+  useEffect(() => {
+    if (prescriptionMode !== "view") {
+      return;
+    }
+
+    setSelectedPrescriptionGroupKey(recentPrescriptionGroups[0]?.key ?? "");
+  }, [prescriptionMode, recentPrescriptionGroups[0]?.key, selectedPatient?.id]);
 
   const prescriptionSetStartAt = normalizeHospitalDateTime(prescriptionSetForm.startAt);
   const prescriptionSetEndAt = normalizeHospitalDateTime(prescriptionSetForm.endAt);
@@ -4000,46 +4026,87 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                               </button>
                             </div>
 
-                            <div className="dashboard-calculation-box">
-                              <h3>Vigência do conjunto da prescrição</h3>
-                              <div className="dashboard-two-columns">
-                                <input
-                                  type="datetime-local"
-                                  aria-label="Data início da vigência do conjunto"
-                                  value={prescriptionSetForm.startAt}
-                                  onChange={(event) =>
-                                    setPrescriptionSetForm((current) => ({
-                                      ...current,
-                                      startAt: event.target.value
-                                    }))
-                                  }
-                                />
-                                <input
-                                  type="datetime-local"
-                                  aria-label="Data fim da vigência do conjunto"
-                                  value={prescriptionSetForm.endAt}
-                                  onChange={(event) =>
-                                    setPrescriptionSetForm((current) => ({
-                                      ...current,
-                                      endAt: event.target.value
-                                    }))
-                                  }
-                                />
+                            {prescriptionMode === "view" ? (
+                              <div className="dashboard-subtle-picker">
+                                <p className="dashboard-subtle-picker-label">Últimas vigências</p>
+                                {recentPrescriptionGroups.length === 0 ? (
+                                  <p className="dashboard-muted">Nenhuma vigência disponível.</p>
+                                ) : (
+                                  <div className="dashboard-subtle-picker-actions">
+                                    {recentPrescriptionGroups.map((group) => {
+                                      const referenceDate =
+                                        group.validationStartAt ??
+                                        group.validationEndAt ??
+                                        group.prescriptions[0]?.createdAt ??
+                                        "";
+
+                                      return (
+                                        <button
+                                          key={group.key}
+                                          type="button"
+                                          className={`dashboard-subtle-choice ${
+                                            selectedPrescriptionGroupKey === group.key ? "is-active" : ""
+                                          }`}
+                                          onClick={() => setSelectedPrescriptionGroupKey(group.key)}
+                                          title={`Vigência: ${
+                                            group.validationStartAt
+                                              ? formatTimestamp(group.validationStartAt)
+                                              : "não definida"
+                                          } até ${
+                                            group.validationEndAt
+                                              ? formatTimestamp(group.validationEndAt)
+                                              : "não definida"
+                                          } | Status: ${group.validationStatus ?? "Sem status"}`}
+                                        >
+                                          {formatTimestamp(referenceDate)}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
                               </div>
-                              <input
-                                placeholder="Status da vigência (ex.: Validado)"
-                                value={prescriptionSetForm.status}
-                                onChange={(event) =>
-                                  setPrescriptionSetForm((current) => ({
-                                    ...current,
-                                    status: event.target.value
-                                  }))
-                                }
-                              />
-                              <p>
-                                Esta vigência vale para o conjunto atual de medicamentos, sem repetir por item.
-                              </p>
-                            </div>
+                            ) : (
+                              <div className="dashboard-calculation-box">
+                                <h3>Vigência do conjunto da prescrição</h3>
+                                <div className="dashboard-two-columns">
+                                  <input
+                                    type="datetime-local"
+                                    aria-label="Data início da vigência do conjunto"
+                                    value={prescriptionSetForm.startAt}
+                                    onChange={(event) =>
+                                      setPrescriptionSetForm((current) => ({
+                                        ...current,
+                                        startAt: event.target.value
+                                      }))
+                                    }
+                                  />
+                                  <input
+                                    type="datetime-local"
+                                    aria-label="Data fim da vigência do conjunto"
+                                    value={prescriptionSetForm.endAt}
+                                    onChange={(event) =>
+                                      setPrescriptionSetForm((current) => ({
+                                        ...current,
+                                        endAt: event.target.value
+                                      }))
+                                    }
+                                  />
+                                </div>
+                                <input
+                                  placeholder="Status da vigência (ex.: Validado)"
+                                  value={prescriptionSetForm.status}
+                                  onChange={(event) =>
+                                    setPrescriptionSetForm((current) => ({
+                                      ...current,
+                                      status: event.target.value
+                                    }))
+                                  }
+                                />
+                                <p>
+                                  Esta vigência vale para o conjunto atual de medicamentos, sem repetir por item.
+                                </p>
+                              </div>
+                            )}
 
                             {prescriptionMode === "create" ? (
                               <form className="dashboard-form" onSubmit={handlePrescriptionSubmit}>
@@ -4302,15 +4369,21 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                             ) : null}
 
                             {prescriptionMode === "view" ? (
-                              selectedPatientPrescriptionGroups.length === 0 ? (
+                              visiblePrescriptionGroups.length === 0 ? (
                                 <p className="dashboard-muted">
                                   Nenhuma prescrição cadastrada para este paciente.
                                 </p>
                               ) : (
                                 <div className="dashboard-list-box">
-                                  {selectedPatientPrescriptionGroups.map((group, index) => (
+                                  {visiblePrescriptionGroups.map((group) => {
+                                    const groupNumber =
+                                      selectedPatientPrescriptionGroups.findIndex(
+                                        (currentGroup) => currentGroup.key === group.key
+                                      ) + 1;
+
+                                    return (
                                     <div key={group.key} className="dashboard-subsection-block">
-                                      <h3>Conjunto de prescrição {index + 1}</h3>
+                                      <h3>Conjunto de prescrição {groupNumber}</h3>
                                       <p className="dashboard-muted">
                                         Internação:
                                         {" "}
@@ -4387,7 +4460,8 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                         </table>
                                       </div>
                                     </div>
-                                  ))}
+                                    );
+                                  })}
                                 </div>
                               )
                             ) : null}

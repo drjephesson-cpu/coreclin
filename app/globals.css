@@ -509,6 +509,53 @@ body {
   background: #e6efff;
 }
 
+.dashboard-subtle-picker {
+  border: 1px solid #d7e2f0;
+  border-radius: 12px;
+  background: #fbfdff;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.dashboard-subtle-picker-label {
+  margin: 0;
+  color: #6b809e;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dashboard-subtle-picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dashboard-subtle-choice {
+  border: 1px solid #d7e2f0;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #5f7694;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+}
+
+.dashboard-subtle-choice:hover {
+  border-color: #bfd1ea;
+  color: #24476f;
+}
+
+.dashboard-subtle-choice.is-active {
+  border-color: #b7cbe6;
+  background: #eef4ff;
+  color: #173760;
+}
+
 .dashboard-link-button {
   border: 0;
   background: transparent;
