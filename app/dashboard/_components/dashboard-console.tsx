@@ -219,6 +219,7 @@ type RawPrescriptionDraft = {
   safetyFlags: MedicationSafetyFlags;
   isValid: boolean;
   validationMessage: string;
+  shouldAddToPriorMedicationValidation: boolean;
 };
 
 type SummaryMedicationCandidate = {
@@ -301,6 +302,22 @@ function parseDosePart(input: string): { dose: number | null; doseUnit: string }
   };
 }
 
+function sanitizeMedicationName(input: string): { medicationName: string; isNonCatalog: boolean } {
+  const trimmed = input.trim();
+  const uncatalogedMatch = trimmed.match(/^medicamento nao cadastrado\s*:\s*(.+)$/i);
+  if (uncatalogedMatch) {
+    return {
+      medicationName: uncatalogedMatch[1]?.trim() ?? trimmed,
+      isNonCatalog: true
+    };
+  }
+
+  return {
+    medicationName: trimmed,
+    isNonCatalog: false
+  };
+}
+
 function extractDoseFromText(input: string): { dose: number | null; doseUnit: string } {
   const compactInput = input.replace(/(\d),(?=\d)/g, "$1.");
   const match = compactInput.match(
@@ -359,6 +376,80 @@ function normalizeMedicationName(input: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .toLocaleLowerCase();
+}
+
+function parseAdministrationCountPerDay(frequency: string): number | null {
+  const normalized = normalizeMedicationName(frequency);
+  if (!normalized) {
+    return null;
+  }
+
+  const hourlyMatch = normalized.match(/(?:de\s+)?(\d+)\s*\/\s*(\d+)\s*horas?/);
+  if (hourlyMatch) {
+    const hours = Number(hourlyMatch[2]);
+    if (Number.isFinite(hours) && hours > 0) {
+      return 24 / hours;
+    }
+  }
+
+  const dailyMatch =
+    normalized.match(/(\d+)\s*x\s*ao\s*dia/) ??
+    normalized.match(/(\d+)\s*vez(?:es)?\s*ao\s*dia/);
+  if (dailyMatch) {
+    const times = Number(dailyMatch[1]);
+    return Number.isFinite(times) && times > 0 ? times : null;
+  }
+
+  return null;
+}
+
+function parseScheduleUnits(shifts: string): number | null {
+  const matches = shifts.match(/\d+(?:[.,]\d+)?/g);
+  if (!matches || matches.length === 0) {
+    return null;
+  }
+
+  const total = matches.reduce((sum, item) => {
+    const value = Number(item.replace(",", "."));
+    return Number.isFinite(value) ? sum + value : sum;
+  }, 0);
+
+  return total > 0 ? total : null;
+}
+
+function calculateDailyTabletUse(input: {
+  dose: number;
+  doseUnit: string;
+  frequency: string;
+  shifts: string;
+}): number | null {
+  const shiftsTotal = parseScheduleUnits(input.shifts);
+  if (shiftsTotal !== null) {
+    return shiftsTotal;
+  }
+
+  const administrationsPerDay = parseAdministrationCountPerDay(input.frequency);
+  if (administrationsPerDay === null) {
+    return null;
+  }
+
+  return input.dose > 0 ? input.dose * administrationsPerDay : null;
+}
+
+function calculateDurationDays(quantityTablets: number | null, dailyTabletUse: number | null): number | null {
+  if (quantityTablets === null || dailyTabletUse === null || dailyTabletUse <= 0) {
+    return null;
+  }
+
+  return quantityTablets / dailyTabletUse;
+}
+
+function formatDurationDays(durationDays: number | null): string {
+  if (durationDays === null) {
+    return "-";
+  }
+
+  return `${formatNumber(durationDays)} dias`;
 }
 
 function normalizeSearchValue(input: string): string {
@@ -880,12 +971,28 @@ export default function DashboardConsole({
     dose: "",
     doseUnit: medications[0]?.defaultUnit ?? "mg",
     frequency: "",
-    shifts: ""
+    shifts: "",
+    quantityTablets: "",
+    lotNumber: "",
+    expirationDate: "",
+    manufacturer: ""
   });
   const [manualPriorMedicationOptions, setManualPriorMedicationOptions] = useState<string[]>([]);
   const [priorMedicationFeedback, setPriorMedicationFeedback] = useState<FeedbackState>(null);
   const [priorMedicationLoading, setPriorMedicationLoading] = useState(false);
   const [priorMedicationRemovingId, setPriorMedicationRemovingId] = useState<number | null>(null);
+  const [priorMedicationUpdatingId, setPriorMedicationUpdatingId] = useState<number | null>(null);
+  const [priorMedicationValidationForm, setPriorMedicationValidationForm] = useState<
+    Record<
+      number,
+      {
+        quantityTablets: string;
+        lotNumber: string;
+        expirationDate: string;
+        manufacturer: string;
+      }
+    >
+  >({});
 
   const [prescriptionForm, setPrescriptionForm] = useState({
     admissionId: "",
@@ -2057,6 +2164,23 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     [priorMedications, selectedPatient]
   );
 
+  useEffect(() => {
+    setPriorMedicationValidationForm(
+      Object.fromEntries(
+        selectedPatientPriorMedications.map((priorMedication) => [
+          priorMedication.id,
+          {
+            quantityTablets:
+              priorMedication.quantityTablets === null ? "" : String(priorMedication.quantityTablets),
+            lotNumber: priorMedication.lotNumber ?? "",
+            expirationDate: priorMedication.expirationDate ?? "",
+            manufacturer: priorMedication.manufacturer ?? ""
+          }
+        ])
+      )
+    );
+  }, [selectedPatientPriorMedications]);
+
   const priorMedicationCatalogMatch = useMemo(
     () => findCatalogMedicationMatchByName(priorMedicationForm.medicationName),
     [priorMedicationForm.medicationName, medications]
@@ -2234,12 +2358,20 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
         });
 
         const latest = history[0] ?? null;
+        const dailyTabletUse = calculateDailyTabletUse({
+          dose: priorMedication.dose,
+          doseUnit: priorMedication.doseUnit,
+          frequency: priorMedication.frequency,
+          shifts: priorMedication.shifts
+        });
         return {
           priorMedication,
           latestPrescriptionDate: latest?.prescriptionDate ?? null,
           latestReconciled: latest?.reconciled ?? null,
           reconciledInAllPrescriptions: history.length > 0 ? history.every((item) => item.reconciled) : null,
-          history
+          history,
+          dailyTabletUse,
+          durationDays: calculateDurationDays(priorMedication.quantityTablets, dailyTabletUse)
         };
       }),
     [selectedPatientPriorMedications, selectedPatientPrescriptionGroups]
@@ -2548,6 +2680,9 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
         notes = parts[5] ?? "";
       }
 
+      const sanitizedMedication = sanitizeMedicationName(medicationName);
+      medicationName = sanitizedMedication.medicationName;
+
       const matchedMedication = findCatalogMedicationMatchByName(medicationName);
       const allergyConflict = resolveAllergyConflict(medicationName);
       const safetyFlags = resolveMedicationSafetyFlags(medicationName);
@@ -2589,7 +2724,8 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
         allergyConflict,
         safetyFlags,
         isValid: validationMessage.length === 0,
-        validationMessage: validationMessage || "Linha pronta para importação."
+        validationMessage: validationMessage || "Linha pronta para importação.",
+        shouldAddToPriorMedicationValidation: sanitizedMedication.isNonCatalog
       };
     });
   }
@@ -3156,7 +3292,13 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
           dose: Number(priorMedicationForm.dose),
           doseUnit: priorMedicationForm.doseUnit,
           frequency: priorMedicationForm.frequency,
-          shifts: priorMedicationForm.shifts
+          shifts: priorMedicationForm.shifts,
+          quantityTablets: priorMedicationForm.quantityTablets
+            ? Number(priorMedicationForm.quantityTablets)
+            : undefined,
+          lotNumber: priorMedicationForm.lotNumber,
+          expirationDate: priorMedicationForm.expirationDate,
+          manufacturer: priorMedicationForm.manufacturer
         })
       });
 
@@ -3193,7 +3335,11 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
         medicationName: "",
         dose: "",
         frequency: "",
-        shifts: ""
+        shifts: "",
+        quantityTablets: "",
+        lotNumber: "",
+        expirationDate: "",
+        manufacturer: ""
       }));
       router.refresh();
     } catch {
@@ -3203,6 +3349,60 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       });
     } finally {
       setPriorMedicationLoading(false);
+    }
+  }
+
+  async function handleUpdatePriorMedicationValidation(priorMedicationId: number): Promise<void> {
+    if (!selectedPatient) {
+      setPriorMedicationFeedback({
+        type: "error",
+        message: "Selecione um paciente para atualizar o medicamento prévio."
+      });
+      return;
+    }
+
+    const formState = priorMedicationValidationForm[priorMedicationId];
+    if (!formState) {
+      return;
+    }
+
+    setPriorMedicationFeedback(null);
+    setPriorMedicationUpdatingId(priorMedicationId);
+
+    try {
+      const response = await fetch(`/api/patients/${selectedPatient.id}/prior-medications`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          priorMedicationId,
+          quantityTablets: formState.quantityTablets,
+          lotNumber: formState.lotNumber,
+          expirationDate: formState.expirationDate,
+          manufacturer: formState.manufacturer
+        })
+      });
+
+      const result = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        setPriorMedicationFeedback({
+          type: "error",
+          message: result.message ?? "Falha ao atualizar validação do medicamento prévio."
+        });
+        return;
+      }
+
+      setPriorMedicationFeedback({
+        type: "success",
+        message: "Dados de validação do medicamento prévio atualizados."
+      });
+      router.refresh();
+    } catch {
+      setPriorMedicationFeedback({
+        type: "error",
+        message: "Erro de conexão ao atualizar validação do medicamento prévio."
+      });
+    } finally {
+      setPriorMedicationUpdatingId(null);
     }
   }
 
@@ -3351,6 +3551,10 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     setRawPrescriptionLoading(true);
     try {
       const failedLines: number[] = [];
+      const existingPriorMedicationNames = new Set(
+        selectedPatientPriorMedications.map((item) => normalizeMedicationName(item.medicationName))
+      );
+      let addedPriorMedicationValidations = 0;
       for (const draft of validDrafts) {
         const response = await fetch(`/api/patients/${selectedPatient.id}/prescriptions`, {
           method: "POST",
@@ -3373,6 +3577,29 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
         if (!response.ok) {
           failedLines.push(draft.lineNumber);
+          continue;
+        }
+
+        if (
+          draft.shouldAddToPriorMedicationValidation &&
+          !existingPriorMedicationNames.has(normalizeMedicationName(draft.medicationName))
+        ) {
+          const priorMedicationResponse = await fetch(`/api/patients/${selectedPatient.id}/prior-medications`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              medicationName: draft.medicationName,
+              dose: draft.dose,
+              doseUnit: draft.doseUnit,
+              frequency: draft.frequency,
+              shifts: draft.shifts
+            })
+          });
+
+          if (priorMedicationResponse.ok) {
+            existingPriorMedicationNames.add(normalizeMedicationName(draft.medicationName));
+            addedPriorMedicationValidations += 1;
+          }
         }
       }
 
@@ -3384,7 +3611,11 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       } else {
         setRawPrescriptionFeedback({
           type: "success",
-          message: `${validDrafts.length} linha(s) importada(s) com sucesso.`
+          message: `${validDrafts.length} linha(s) importada(s) com sucesso.${
+            addedPriorMedicationValidations > 0
+              ? ` ${addedPriorMedicationValidations} medicamento(s) não cadastrado(s) enviado(s) para uso prévio.`
+              : ""
+          }`
         });
         setRawPrescriptionInput("");
         setRawPrescriptionDrafts([]);
@@ -5247,6 +5478,54 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 />
                               </div>
 
+                              <div className="dashboard-two-columns">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  placeholder="Quantidade de comprimidos"
+                                  value={priorMedicationForm.quantityTablets}
+                                  onChange={(event) =>
+                                    setPriorMedicationForm((current) => ({
+                                      ...current,
+                                      quantityTablets: event.target.value
+                                    }))
+                                  }
+                                />
+                                <input
+                                  placeholder="Lote"
+                                  value={priorMedicationForm.lotNumber}
+                                  onChange={(event) =>
+                                    setPriorMedicationForm((current) => ({
+                                      ...current,
+                                      lotNumber: event.target.value
+                                    }))
+                                  }
+                                />
+                              </div>
+
+                              <div className="dashboard-two-columns">
+                                <input
+                                  type="date"
+                                  value={priorMedicationForm.expirationDate}
+                                  onChange={(event) =>
+                                    setPriorMedicationForm((current) => ({
+                                      ...current,
+                                      expirationDate: event.target.value
+                                    }))
+                                  }
+                                />
+                                <input
+                                  placeholder="Laboratório/Marca"
+                                  value={priorMedicationForm.manufacturer}
+                                  onChange={(event) =>
+                                    setPriorMedicationForm((current) => ({
+                                      ...current,
+                                      manufacturer: event.target.value
+                                    }))
+                                  }
+                                />
+                              </div>
+
                               <p className="dashboard-muted">
                                 Para esquema semanal (ex.: 3 vezes por semana), selecione a frequência e informe a
                                 quantidade por horário no padrão da tomada (ex.: 1-1-1).
@@ -5311,6 +5590,12 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                     <th>Dose</th>
                                     <th>Frequência</th>
                                     <th>Qtd. por horário</th>
+                                    <th>Qtd. comp.</th>
+                                    <th>Lote</th>
+                                    <th>Validade</th>
+                                    <th>Laboratório/Marca</th>
+                                    <th>Consumo/dia</th>
+                                    <th>Duração</th>
                                     <th>Data da prescrição</th>
                                     <th>Reconciliado</th>
                                     <th>Reconciliado em todas</th>
@@ -5322,7 +5607,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 <tbody>
                                   {priorMedicationRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={10}>Nenhum medicamento prévio cadastrado.</td>
+                                      <td colSpan={16}>Nenhum medicamento prévio cadastrado.</td>
                                     </tr>
                                   ) : (
                                     priorMedicationRows.map((row) => (
@@ -5336,6 +5621,102 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                         </td>
                                         <td>{row.priorMedication.frequency}</td>
                                         <td>{row.priorMedication.shifts}</td>
+                                        <td>
+                                          <input
+                                            type="number"
+                                            min="0"
+                                            value={
+                                              priorMedicationValidationForm[row.priorMedication.id]
+                                                ?.quantityTablets ?? ""
+                                            }
+                                            onChange={(event) =>
+                                              setPriorMedicationValidationForm((current) => ({
+                                                ...current,
+                                                [row.priorMedication.id]: {
+                                                  ...(current[row.priorMedication.id] ?? {
+                                                    quantityTablets: "",
+                                                    lotNumber: "",
+                                                    expirationDate: "",
+                                                    manufacturer: ""
+                                                  }),
+                                                  quantityTablets: event.target.value
+                                                }
+                                              }))
+                                            }
+                                          />
+                                        </td>
+                                        <td>
+                                          <input
+                                            value={
+                                              priorMedicationValidationForm[row.priorMedication.id]?.lotNumber ?? ""
+                                            }
+                                            onChange={(event) =>
+                                              setPriorMedicationValidationForm((current) => ({
+                                                ...current,
+                                                [row.priorMedication.id]: {
+                                                  ...(current[row.priorMedication.id] ?? {
+                                                    quantityTablets: "",
+                                                    lotNumber: "",
+                                                    expirationDate: "",
+                                                    manufacturer: ""
+                                                  }),
+                                                  lotNumber: event.target.value
+                                                }
+                                              }))
+                                            }
+                                          />
+                                        </td>
+                                        <td>
+                                          <input
+                                            type="date"
+                                            value={
+                                              priorMedicationValidationForm[row.priorMedication.id]
+                                                ?.expirationDate ?? ""
+                                            }
+                                            onChange={(event) =>
+                                              setPriorMedicationValidationForm((current) => ({
+                                                ...current,
+                                                [row.priorMedication.id]: {
+                                                  ...(current[row.priorMedication.id] ?? {
+                                                    quantityTablets: "",
+                                                    lotNumber: "",
+                                                    expirationDate: "",
+                                                    manufacturer: ""
+                                                  }),
+                                                  expirationDate: event.target.value
+                                                }
+                                              }))
+                                            }
+                                          />
+                                        </td>
+                                        <td>
+                                          <input
+                                            value={
+                                              priorMedicationValidationForm[row.priorMedication.id]
+                                                ?.manufacturer ?? ""
+                                            }
+                                            onChange={(event) =>
+                                              setPriorMedicationValidationForm((current) => ({
+                                                ...current,
+                                                [row.priorMedication.id]: {
+                                                  ...(current[row.priorMedication.id] ?? {
+                                                    quantityTablets: "",
+                                                    lotNumber: "",
+                                                    expirationDate: "",
+                                                    manufacturer: ""
+                                                  }),
+                                                  manufacturer: event.target.value
+                                                }
+                                              }))
+                                            }
+                                          />
+                                        </td>
+                                        <td>
+                                          {row.dailyTabletUse !== null
+                                            ? `${formatNumber(row.dailyTabletUse)} comp/dia`
+                                            : "-"}
+                                        </td>
+                                        <td>{formatDurationDays(row.durationDays)}</td>
                                         <td>
                                           {row.latestPrescriptionDate
                                             ? formatTimestamp(row.latestPrescriptionDate)
@@ -5371,6 +5752,17 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                         </td>
                                         <td>{formatTimestamp(row.priorMedication.createdAt)}</td>
                                         <td>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleUpdatePriorMedicationValidation(row.priorMedication.id)
+                                            }
+                                            disabled={priorMedicationUpdatingId === row.priorMedication.id}
+                                          >
+                                            {priorMedicationUpdatingId === row.priorMedication.id
+                                              ? "Salvando..."
+                                              : "Salvar"}
+                                          </button>
                                           <button
                                             type="button"
                                             className="dashboard-chip-remove"

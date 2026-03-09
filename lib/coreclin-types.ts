@@ -149,6 +149,10 @@ export type PriorMedicationRecord = {
   doseUnit: string;
   frequency: string;
   shifts: string;
+  quantityTablets: number | null;
+  lotNumber: string | null;
+  expirationDate: string | null;
+  manufacturer: string | null;
   createdAt: string;
 };
 

@@ -103,6 +103,19 @@ export type AddPriorMedicationInput = {
   doseUnit: string;
   frequency: string;
   shifts: string;
+  quantityTablets?: number | null;
+  lotNumber?: string | null;
+  expirationDate?: string | null;
+  manufacturer?: string | null;
+};
+
+export type UpdatePriorMedicationInput = {
+  patientId: number;
+  priorMedicationId: number;
+  quantityTablets?: number | null;
+  lotNumber?: string | null;
+  expirationDate?: string | null;
+  manufacturer?: string | null;
 };
 
 export type AddMedicalPrescriptionInput = {
@@ -308,6 +321,10 @@ function mapPriorMedication(row: DbRow): PriorMedicationRecord {
     doseUnit: String(row.dose_unit ?? ""),
     frequency: String(row.frequency ?? ""),
     shifts: String(row.shifts ?? ""),
+    quantityTablets: row.quantity_tablets === null ? null : toNumber(row.quantity_tablets),
+    lotNumber: row.lot_number === null ? null : String(row.lot_number ?? ""),
+    expirationDate: row.expiration_date === null ? null : String(row.expiration_date),
+    manufacturer: row.manufacturer === null ? null : String(row.manufacturer ?? ""),
     createdAt: toIso(row.created_at)
   };
 }
@@ -591,6 +608,10 @@ async function setupDatabase(): Promise<void> {
       dose_unit TEXT NOT NULL,
       frequency TEXT NOT NULL,
       shifts TEXT NOT NULL,
+      quantity_tablets INTEGER,
+      lot_number TEXT,
+      expiration_date DATE,
+      manufacturer TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -640,6 +661,20 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE admissions
     ADD COLUMN IF NOT EXISTS admission_import_excerpt TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE patient_prior_medications
+    ADD COLUMN IF NOT EXISTS quantity_tablets INTEGER;
+
+    ALTER TABLE patient_prior_medications
+    ADD COLUMN IF NOT EXISTS lot_number TEXT;
+
+    ALTER TABLE patient_prior_medications
+    ADD COLUMN IF NOT EXISTS expiration_date DATE;
+
+    ALTER TABLE patient_prior_medications
+    ADD COLUMN IF NOT EXISTS manufacturer TEXT;
   `);
 
   await pool.query(`
@@ -1569,9 +1604,13 @@ export async function addPriorMedication(
           dose,
           dose_unit,
           frequency,
-          shifts
+          shifts,
+          quantity_tablets,
+          lot_number,
+          expiration_date,
+          manufacturer
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING id
       `,
       [
@@ -1581,7 +1620,11 @@ export async function addPriorMedication(
         input.dose,
         input.doseUnit.trim(),
         input.frequency.trim(),
-        input.shifts.trim()
+        input.shifts.trim(),
+        input.quantityTablets ?? null,
+        input.lotNumber?.trim() ? input.lotNumber.trim() : null,
+        input.expirationDate?.trim() ? input.expirationDate.trim() : null,
+        input.manufacturer?.trim() ? input.manufacturer.trim() : null
       ]
     );
 
@@ -1598,6 +1641,10 @@ export async function addPriorMedication(
           pm.dose_unit,
           pm.frequency,
           pm.shifts,
+          pm.quantity_tablets,
+          pm.lot_number,
+          pm.expiration_date::text AS expiration_date,
+          pm.manufacturer,
           pm.created_at
         FROM patient_prior_medications pm
         INNER JOIN patients p ON p.id = pm.patient_id
@@ -1644,6 +1691,77 @@ export async function removePriorMedication(input: RemovePriorMedicationInput): 
     }
 
     await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function updatePriorMedication(
+  input: UpdatePriorMedicationInput
+): Promise<PriorMedicationRecord> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await ensurePatientExists(client, input.patientId);
+
+    const updated = await client.query(
+      `
+        UPDATE patient_prior_medications
+        SET
+          quantity_tablets = $1,
+          lot_number = $2,
+          expiration_date = $3,
+          manufacturer = $4
+        WHERE id = $5 AND patient_id = $6
+        RETURNING id
+      `,
+      [
+        input.quantityTablets ?? null,
+        input.lotNumber?.trim() ? input.lotNumber.trim() : null,
+        input.expirationDate?.trim() ? input.expirationDate.trim() : null,
+        input.manufacturer?.trim() ? input.manufacturer.trim() : null,
+        input.priorMedicationId,
+        input.patientId
+      ]
+    );
+
+    if (updated.rowCount === 0) {
+      throw new Error("Medicamento prévio não encontrado para este paciente.");
+    }
+
+    const result = await client.query(
+      `
+        SELECT
+          pm.id,
+          pm.patient_id,
+          p.full_name AS patient_name,
+          pm.medication_id,
+          pm.medication_name,
+          pm.dose::float8 AS dose,
+          pm.dose_unit,
+          pm.frequency,
+          pm.shifts,
+          pm.quantity_tablets,
+          pm.lot_number,
+          pm.expiration_date::text AS expiration_date,
+          pm.manufacturer,
+          pm.created_at
+        FROM patient_prior_medications pm
+        INNER JOIN patients p ON p.id = pm.patient_id
+        WHERE pm.id = $1
+        LIMIT 1
+      `,
+      [input.priorMedicationId]
+    );
+
+    await client.query("COMMIT");
+    return mapPriorMedication(result.rows[0] as DbRow);
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -2069,6 +2187,10 @@ export async function listPriorMedications(): Promise<PriorMedicationRecord[]> {
       pm.dose_unit,
       pm.frequency,
       pm.shifts,
+      pm.quantity_tablets,
+      pm.lot_number,
+      pm.expiration_date::text AS expiration_date,
+      pm.manufacturer,
       pm.created_at
     FROM patient_prior_medications pm
     INNER JOIN patients p ON p.id = pm.patient_id

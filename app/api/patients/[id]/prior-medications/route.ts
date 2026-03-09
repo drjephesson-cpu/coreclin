@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
-import { addPriorMedication, removePriorMedication } from "@/lib/db";
+import { addPriorMedication, removePriorMedication, updatePriorMedication } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -39,6 +39,15 @@ export async function POST(
   const doseUnit = typeof body.doseUnit === "string" ? body.doseUnit.trim() : "";
   const frequency = typeof body.frequency === "string" ? body.frequency.trim() : "";
   const shifts = typeof body.shifts === "string" ? body.shifts.trim() : "";
+  const quantityRaw = body.quantityTablets;
+  const quantityTablets =
+    quantityRaw === undefined || quantityRaw === null || quantityRaw === ""
+      ? undefined
+      : Number(quantityRaw);
+  const lotNumber = typeof body.lotNumber === "string" ? body.lotNumber.trim() : "";
+  const expirationDate =
+    typeof body.expirationDate === "string" ? body.expirationDate.trim() : "";
+  const manufacturer = typeof body.manufacturer === "string" ? body.manufacturer.trim() : "";
 
   if (medicationId !== undefined && (!Number.isInteger(medicationId) || medicationId <= 0)) {
     return NextResponse.json({ message: "Medicamento inválido." }, { status: 400 });
@@ -58,6 +67,17 @@ export async function POST(
     );
   }
 
+  if (
+    quantityTablets !== undefined &&
+    (!Number.isInteger(quantityTablets) || quantityTablets < 0)
+  ) {
+    return NextResponse.json({ message: "Quantidade inválida." }, { status: 400 });
+  }
+
+  if (expirationDate && Number.isNaN(new Date(expirationDate).getTime())) {
+    return NextResponse.json({ message: "Validade inválida." }, { status: 400 });
+  }
+
   try {
     const priorMedication = await addPriorMedication({
       patientId,
@@ -66,7 +86,11 @@ export async function POST(
       dose,
       doseUnit,
       frequency,
-      shifts
+      shifts,
+      quantityTablets,
+      lotNumber,
+      expirationDate,
+      manufacturer
     });
 
     return NextResponse.json({ ok: true, priorMedication });
@@ -110,6 +134,69 @@ export async function DELETE(
     return NextResponse.json({ ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao remover medicamento prévio.";
+    return NextResponse.json({ message }, { status: 400 });
+  }
+}
+
+export async function PUT(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+): Promise<NextResponse> {
+  const session = await getCurrentSession();
+  if (!session) {
+    return NextResponse.json({ message: "Sessão inválida." }, { status: 401 });
+  }
+
+  const routeParams = await params;
+  const patientId = Number(routeParams.id);
+  if (!Number.isInteger(patientId) || patientId <= 0) {
+    return NextResponse.json({ message: "Paciente inválido." }, { status: 400 });
+  }
+
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return NextResponse.json({ message: "Corpo inválido." }, { status: 400 });
+  }
+
+  const body = payload as Record<string, unknown>;
+  const priorMedicationId = Number(body.priorMedicationId);
+  const quantityRaw = body.quantityTablets;
+  const quantityTablets =
+    quantityRaw === undefined || quantityRaw === null || quantityRaw === ""
+      ? null
+      : Number(quantityRaw);
+  const lotNumber = typeof body.lotNumber === "string" ? body.lotNumber.trim() : "";
+  const expirationDate =
+    typeof body.expirationDate === "string" ? body.expirationDate.trim() : "";
+  const manufacturer = typeof body.manufacturer === "string" ? body.manufacturer.trim() : "";
+
+  if (!Number.isInteger(priorMedicationId) || priorMedicationId <= 0) {
+    return NextResponse.json({ message: "Medicamento prévio inválido." }, { status: 400 });
+  }
+
+  if (quantityTablets !== null && (!Number.isInteger(quantityTablets) || quantityTablets < 0)) {
+    return NextResponse.json({ message: "Quantidade inválida." }, { status: 400 });
+  }
+
+  if (expirationDate && Number.isNaN(new Date(expirationDate).getTime())) {
+    return NextResponse.json({ message: "Validade inválida." }, { status: 400 });
+  }
+
+  try {
+    const priorMedication = await updatePriorMedication({
+      patientId,
+      priorMedicationId,
+      quantityTablets,
+      lotNumber,
+      expirationDate,
+      manufacturer
+    });
+
+    return NextResponse.json({ ok: true, priorMedication });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Falha ao atualizar medicamento prévio.";
     return NextResponse.json({ message }, { status: 400 });
   }
 }
