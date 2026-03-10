@@ -278,4 +278,14 @@ export type DashboardData = {
   examImports: PatientExamImportRecord[];
   inpatientWorkflowSnapshot: InpatientWorkflowStoragePayload | null;
   prescriptions: MedicalPrescriptionRecord[];
+  loadedPatientDetailsId: number | null;
+};
+
+export type PatientDashboardDetails = {
+  patient: PatientRecord;
+  admissions: AdmissionRecord[];
+  allergies: PatientAllergyRecord[];
+  priorMedications: PriorMedicationRecord[];
+  examImports: PatientExamImportRecord[];
+  prescriptions: MedicalPrescriptionRecord[];
 };

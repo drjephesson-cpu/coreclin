@@ -967,11 +967,15 @@ async function setupDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_measurements_patient_id ON patient_measurements (patient_id);
     CREATE INDEX IF NOT EXISTS idx_measurements_recorded_at ON patient_measurements (recorded_at DESC);
     CREATE INDEX IF NOT EXISTS idx_allergies_patient_id ON patient_allergies (patient_id);
+    CREATE INDEX IF NOT EXISTS idx_allergies_patient_latest ON patient_allergies (patient_id, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_prior_medications_patient_id ON patient_prior_medications (patient_id);
+    CREATE INDEX IF NOT EXISTS idx_prior_medications_patient_latest ON patient_prior_medications (patient_id, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_prescriptions_patient_id ON medical_prescriptions (patient_id);
     CREATE INDEX IF NOT EXISTS idx_prescriptions_admission_id ON medical_prescriptions (admission_id);
+    CREATE INDEX IF NOT EXISTS idx_prescriptions_patient_latest ON medical_prescriptions (patient_id, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_exam_imports_patient_id ON patient_exam_imports (patient_id);
     CREATE INDEX IF NOT EXISTS idx_exam_imports_created_at ON patient_exam_imports (created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_exam_imports_patient_latest ON patient_exam_imports (patient_id, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_inpatient_workflow_updated_at ON inpatient_workflow_snapshots (updated_at DESC);
   `);
 
@@ -3280,23 +3284,16 @@ export async function getDashboardData(
   const section = normalizeDashboardSection(options?.section);
   const inpatientMode = normalizeDashboardInpatientMode(options?.inpatientMode);
   const isPatientDetailsPage = section === "inpatients" && selectedPatientId !== null;
-  const shouldLoadProfessionals = section === "professional";
-  const shouldLoadTeams =
-    section === "team" ||
-    (section === "inpatients" && ((!isPatientDetailsPage && inpatientMode !== "all") || isPatientDetailsPage));
-  const shouldLoadPatients =
-    section === "patient" || isPatientDetailsPage || (section === "inpatients" && inpatientMode === "mandatory");
-  const shouldLoadInpatientOverviewEntries = section === "inpatients" && !isPatientDetailsPage;
+  const shouldLoadProfessionals = true;
+  const shouldLoadTeams = true;
+  const shouldLoadPatients = true;
+  const shouldLoadInpatientOverviewEntries = true;
   const shouldLoadRecentAdmissions = isPatientDetailsPage;
-  const shouldLoadMedications =
-    section === "patient" ||
-    section === "medication" ||
-    isPatientDetailsPage;
+  const shouldLoadMedications = true;
   const shouldLoadPatientAllergies = isPatientDetailsPage;
   const shouldLoadPriorMedications = isPatientDetailsPage;
   const shouldLoadExamImports = isPatientDetailsPage;
-  const shouldLoadWorkflow =
-    section === "inpatients" && !isPatientDetailsPage && inpatientMode !== "all";
+  const shouldLoadWorkflow = true;
   const shouldLoadPrescriptions = isPatientDetailsPage;
 
   const [
@@ -3347,6 +3344,7 @@ export async function getDashboardData(
     priorMedications,
     examImports,
     inpatientWorkflowSnapshot,
-    prescriptions
+    prescriptions,
+    loadedPatientDetailsId: isPatientDetailsPage ? selectedPatientId : null
   };
 }

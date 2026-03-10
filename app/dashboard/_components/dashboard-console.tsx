@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, Fragment, memo, useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import LogoutButton from "@/app/_components/logout-button";
 import { calculateClinicalIndexes } from "@/lib/clinical";
@@ -23,15 +23,19 @@ import {
   type InpatientWorkflowStatus,
   type InterviewInformationQuality,
   type InterviewInformationSourceType,
+  type LatestMeasurement,
   type MedicalPrescriptionRecord,
   type MedicalPrescriptionInterventionResponse,
   type InpatientWorkflowStoragePayload,
+  type PatientDashboardDetails,
   type PatientExamImportRecord,
   type PatientExamResultRecord,
   type PatientAllergyRecord,
   type PatientRecord,
   type PriorMedicationRecord,
-  type ProfessionOption
+  type ProfessionalRecord,
+  type ProfessionOption,
+  type TeamRecord
 } from "@/lib/coreclin-types";
 import {
   HEPATOTOXIC_MEDICATIONS,
@@ -2130,29 +2134,121 @@ function areInpatientEntriesEquivalent(first: InpatientEntry, second: InpatientE
   );
 }
 
+function upsertRecordById<T extends { id: number }>(records: T[], nextRecord: T): T[] {
+  const existingIndex = records.findIndex((record) => record.id === nextRecord.id);
+  if (existingIndex === -1) {
+    return [nextRecord, ...records];
+  }
+
+  return records.map((record) => (record.id === nextRecord.id ? nextRecord : record));
+}
+
+function removeRecordById<T extends { id: number }>(records: T[], recordId: number): T[] {
+  return records.filter((record) => record.id !== recordId);
+}
+
+function compareAdmissionRecency(first: AdmissionRecord | null, second: AdmissionRecord | null): number {
+  if (!first && !second) {
+    return 0;
+  }
+  if (!first) {
+    return -1;
+  }
+  if (!second) {
+    return 1;
+  }
+
+  const firstKey = `${first.admissionDate}|${first.createdAt}|${first.id}`;
+  const secondKey = `${second.admissionDate}|${second.createdAt}|${second.id}`;
+  return firstKey.localeCompare(secondKey);
+}
+
+function admissionToLatestMeasurement(admission: AdmissionRecord): LatestMeasurement | null {
+  if (
+    admission.weightKg === null ||
+    admission.heightCm === null ||
+    admission.bmi === null ||
+    admission.bmiFormula === null ||
+    admission.bodySurfaceArea === null ||
+    admission.bsaFormula === null
+  ) {
+    return null;
+  }
+
+  return {
+    weightKg: admission.weightKg,
+    heightCm: admission.heightCm,
+    bmi: admission.bmi,
+    bmiFormula: admission.bmiFormula,
+    bodySurfaceArea: admission.bodySurfaceArea,
+    bsaFormula: admission.bsaFormula,
+    recordedAt: admission.createdAt
+  };
+}
+
+function mergePatientWithAdmission(patient: PatientRecord, admission: AdmissionRecord): PatientRecord {
+  const shouldReplaceLatestAdmission = compareAdmissionRecency(admission, patient.latestAdmission) >= 0;
+  const nextMeasurement = admissionToLatestMeasurement(admission);
+
+  return {
+    ...patient,
+    latestAdmission: shouldReplaceLatestAdmission ? admission : patient.latestAdmission,
+    latestMeasurement: nextMeasurement ?? patient.latestMeasurement
+  };
+}
+
+function buildInpatientEntryFromAdmission(
+  patient: PatientRecord,
+  admission: AdmissionRecord,
+  fallbackEntry?: InpatientEntry | null
+): InpatientEntry {
+  return {
+    key: `patient-${patient.id}`,
+    patientId: patient.id,
+    patientName: patient.fullName,
+    chartNumber: patient.chartNumber,
+    reportedAgeYears: patient.ageYears,
+    admissionDate: admission.admissionDate,
+    bed: admission.bed,
+    teamName: admission.teamName ?? fallbackEntry?.teamName ?? null,
+    teamId: admission.teamId ?? fallbackEntry?.teamId ?? null,
+    source: "active",
+    createdAt: admission.createdAt
+  };
+}
+
 export default function DashboardConsole({
   currentLogin,
   data,
   dbError
 }: DashboardConsoleProps) {
-  const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
   const [isDashboardTransitionPending, startDashboardTransition] = useTransition();
   const [dashboardTransitionLabel, setDashboardTransitionLabel] = useState("");
-  const [pendingDashboardUrl, setPendingDashboardUrl] = useState<string | null>(null);
-  const [dashboardRefreshPending, setDashboardRefreshPending] = useState(false);
+  const [patientDetailsCache, setPatientDetailsCache] = useState<Record<number, PatientDashboardDetails>>({});
+  const [patientDetailsLoadingId, setPatientDetailsLoadingId] = useState<number | null>(null);
+  const [patientDetailsError, setPatientDetailsError] = useState<string | null>(null);
 
-  const professionals = data?.professionals ?? [];
-  const teams = data?.teams ?? [];
-  const patients = data?.patients ?? [];
-  const inpatientOverviewEntries = data?.inpatientOverviewEntries ?? [];
-  const recentAdmissions = data?.recentAdmissions ?? [];
-  const medications = data?.medications ?? [];
-  const patientAllergies = data?.patientAllergies ?? [];
-  const priorMedications = data?.priorMedications ?? [];
-  const examImports = data?.examImports ?? [];
-  const prescriptions = data?.prescriptions ?? [];
+  const [professionals, setProfessionals] = useState<ProfessionalRecord[]>(() => data?.professionals ?? []);
+  const [teams, setTeams] = useState<TeamRecord[]>(() => data?.teams ?? []);
+  const [patients, setPatients] = useState<PatientRecord[]>(() => data?.patients ?? []);
+  const [inpatientOverviewEntries, setInpatientOverviewEntries] = useState<InpatientEntry[]>(
+    () => data?.inpatientOverviewEntries ?? []
+  );
+  const [recentAdmissions, setRecentAdmissions] = useState<AdmissionRecord[]>(() => data?.recentAdmissions ?? []);
+  const [medications, setMedications] = useState(() => data?.medications ?? []);
+  const [patientAllergies, setPatientAllergies] = useState<PatientAllergyRecord[]>(
+    () => data?.patientAllergies ?? []
+  );
+  const [priorMedications, setPriorMedications] = useState<PriorMedicationRecord[]>(
+    () => data?.priorMedications ?? []
+  );
+  const [examImports, setExamImports] = useState<PatientExamImportRecord[]>(() => data?.examImports ?? []);
+  const [prescriptions, setPrescriptions] = useState<MedicalPrescriptionRecord[]>(
+    () => data?.prescriptions ?? []
+  );
+  const loadedPatientDetailsId = data?.loadedPatientDetailsId ?? null;
   const currentProfessional = data?.currentProfessional ?? null;
   const searchPatientId = searchParams.get("patientId");
   const searchPatientView = searchParams.get("patientView");
@@ -2172,6 +2268,46 @@ export default function DashboardConsole({
     () => normalizeInpatientWorkflowStoragePayload(data?.inpatientWorkflowSnapshot),
     [data?.inpatientWorkflowSnapshot]
   );
+
+  useEffect(() => {
+    setProfessionals(data?.professionals ?? []);
+  }, [data?.professionals]);
+
+  useEffect(() => {
+    setTeams(data?.teams ?? []);
+  }, [data?.teams]);
+
+  useEffect(() => {
+    setPatients(data?.patients ?? []);
+  }, [data?.patients]);
+
+  useEffect(() => {
+    setInpatientOverviewEntries(data?.inpatientOverviewEntries ?? []);
+  }, [data?.inpatientOverviewEntries]);
+
+  useEffect(() => {
+    setRecentAdmissions(data?.recentAdmissions ?? []);
+  }, [data?.recentAdmissions]);
+
+  useEffect(() => {
+    setMedications(data?.medications ?? []);
+  }, [data?.medications]);
+
+  useEffect(() => {
+    setPatientAllergies(data?.patientAllergies ?? []);
+  }, [data?.patientAllergies]);
+
+  useEffect(() => {
+    setPriorMedications(data?.priorMedications ?? []);
+  }, [data?.priorMedications]);
+
+  useEffect(() => {
+    setExamImports(data?.examImports ?? []);
+  }, [data?.examImports]);
+
+  useEffect(() => {
+    setPrescriptions(data?.prescriptions ?? []);
+  }, [data?.prescriptions]);
 
   const [activeSection, setActiveSection] = useState<DashboardSectionId>(
     patientPageMode ? "inpatients" : requestedSection
@@ -2455,15 +2591,71 @@ export default function DashboardConsole({
   );
 
   const selectedPatientNumericId = Number(selectedPatientId);
-  const selectedPatient =
+  const selectedPatientCachedDetails =
     Number.isInteger(selectedPatientNumericId) && selectedPatientNumericId > 0
-      ? patients.find((patient) => patient.id === selectedPatientNumericId) ?? null
+      ? patientDetailsCache[selectedPatientNumericId] ?? null
       : null;
+  const selectedPatient =
+    selectedPatientCachedDetails?.patient ??
+    (Number.isInteger(selectedPatientNumericId) && selectedPatientNumericId > 0
+      ? patients.find((patient) => patient.id === selectedPatientNumericId) ?? null
+      : null);
+  const hasSelectedPatientDetailsLoaded = selectedPatientCachedDetails !== null;
   const selectedPatientBirthDate = normalizeAdmissionDateValue(selectedPatientProfileForm.birthDate) ?? "";
   const selectedPatientAgePreview = useMemo(
     () => calculateAge(selectedPatientBirthDate),
     [selectedPatientBirthDate]
   );
+
+  useEffect(() => {
+    if (
+      loadedPatientDetailsId === null ||
+      !patients.some((patient) => patient.id === loadedPatientDetailsId)
+    ) {
+      return;
+    }
+
+    const loadedPatient = patients.find((patient) => patient.id === loadedPatientDetailsId);
+    if (!loadedPatient) {
+      return;
+    }
+
+    setPatientDetailsCache((current) => ({
+      ...current,
+      [loadedPatientDetailsId]: {
+        patient: loadedPatient,
+        admissions: recentAdmissions,
+        allergies: patientAllergies,
+        priorMedications,
+        examImports,
+        prescriptions
+      }
+    }));
+  }, [
+    examImports,
+    loadedPatientDetailsId,
+    patientAllergies,
+    patients,
+    prescriptions,
+    priorMedications,
+    recentAdmissions
+  ]);
+
+  useEffect(() => {
+    setPatientDetailsError(null);
+  }, [selectedPatientId]);
+
+  useEffect(() => {
+    if (!patientDetailsOpen || !Number.isInteger(selectedPatientNumericId) || selectedPatientNumericId <= 0) {
+      return;
+    }
+
+    if (patientDetailsCache[selectedPatientNumericId]) {
+      return;
+    }
+
+    void loadPatientDetails(selectedPatientNumericId);
+  }, [patientDetailsCache, patientDetailsOpen, selectedPatientNumericId]);
 
   const inpatients = useMemo<InpatientEntry[]>(() => {
     if (inpatientOverviewEntries.length > 0) {
@@ -2860,10 +3052,11 @@ export default function DashboardConsole({
 
   const selectedPatientAdmissions = useMemo(
     () =>
+      selectedPatientCachedDetails?.admissions ??
       recentAdmissions.filter(
         (admission) => selectedPatient !== null && admission.patientId === selectedPatient.id
       ),
-    [recentAdmissions, selectedPatient]
+    [recentAdmissions, selectedPatient, selectedPatientCachedDetails]
   );
 
   const selectedCurrentAdmission = useMemo(
@@ -2873,10 +3066,11 @@ export default function DashboardConsole({
 
   const selectedPatientAllergies = useMemo(
     () =>
+      selectedPatientCachedDetails?.allergies ??
       patientAllergies.filter(
         (allergy) => selectedPatient !== null && allergy.patientId === selectedPatient.id
       ),
-    [patientAllergies, selectedPatient]
+    [patientAllergies, selectedPatient, selectedPatientCachedDetails]
   );
 
   useEffect(() => {
@@ -3513,7 +3707,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           body: JSON.stringify(candidate)
         });
 
-        return response.ok ? candidate.medicationName : null;
+        const result = (await response.json()) as {
+          priorMedication?: PriorMedicationRecord;
+        };
+        if (!response.ok || !result.priorMedication) {
+          return null;
+        }
+
+        appendPriorMedicationLocally(result.priorMedication);
+        return candidate.medicationName;
       })
     );
 
@@ -3622,7 +3824,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             ? `${result.examImport.records.length} resultado(s) extraído(s) e salvo(s) no paciente.`
             : "Texto extraído e salvo no paciente, sem resultados estruturados identificados."
       });
-      refreshDashboard();
+      appendExamImportLocally(result.examImport);
+      setSelectedExamImportId(String(result.examImport.id));
+      setSelectedExamImportDetails(result.examImport);
     } catch {
       setExamImportResult(null);
       setExamImportFeedback({
@@ -3690,7 +3894,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         type: "success",
         message: "Importação de exames removida com sucesso."
       });
-      refreshDashboard();
+      removeExamImportLocally(selectedPatient.id, examImport.id);
     } catch {
       setExamImportFeedback({
         type: "error",
@@ -3703,18 +3907,20 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
   const selectedPatientPriorMedications = useMemo(
     () =>
+      selectedPatientCachedDetails?.priorMedications ??
       priorMedications.filter(
         (medication) => selectedPatient !== null && medication.patientId === selectedPatient.id
       ),
-    [priorMedications, selectedPatient]
+    [priorMedications, selectedPatient, selectedPatientCachedDetails]
   );
 
   const selectedPatientExamImports = useMemo(
     () =>
+      selectedPatientCachedDetails?.examImports ??
       examImports.filter(
         (examImport) => selectedPatient !== null && examImport.patientId === selectedPatient.id
       ),
-    [examImports, selectedPatient]
+    [examImports, selectedPatient, selectedPatientCachedDetails]
   );
 
   useEffect(() => {
@@ -3852,10 +4058,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
   const selectedPatientPrescriptions = useMemo(
     () =>
+      selectedPatientCachedDetails?.prescriptions ??
       prescriptions.filter(
         (prescription) => selectedPatient !== null && prescription.patientId === selectedPatient.id
       ),
-    [prescriptions, selectedPatient]
+    [prescriptions, selectedPatient, selectedPatientCachedDetails]
   );
 
   const selectedPatientMedicationValidationRows = useMemo(
@@ -4428,24 +4635,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   const prescriptionSetStartAt = normalizeHospitalDateTime(prescriptionSetForm.startAt);
   const prescriptionSetEndAt = normalizeHospitalDateTime(prescriptionSetForm.endAt);
   const prescriptionSetStatus = prescriptionSetForm.status.trim() || "Validado";
-  const currentDashboardUrl = useMemo(() => {
-    const query = searchParams.toString();
-    return query ? `${pathname}?${query}` : pathname;
-  }, [pathname, searchParams]);
-  const isDashboardLoading =
-    pendingDashboardUrl !== null || dashboardRefreshPending || (isDashboardTransitionPending && !pendingDashboardUrl);
-
-  useEffect(() => {
-    if (pendingDashboardUrl !== null && currentDashboardUrl === pendingDashboardUrl) {
-      setPendingDashboardUrl(null);
-    }
-  }, [currentDashboardUrl, pendingDashboardUrl]);
-
-  useEffect(() => {
-    if (!isDashboardTransitionPending && dashboardRefreshPending) {
-      setDashboardRefreshPending(false);
-    }
-  }, [dashboardRefreshPending, isDashboardTransitionPending]);
+  const isDashboardLoading = isDashboardTransitionPending;
 
   useEffect(() => {
     if (!isDashboardLoading && dashboardTransitionLabel) {
@@ -4453,18 +4643,181 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
   }, [dashboardTransitionLabel, isDashboardLoading]);
 
-  function navigateDashboard(url: string, label = "Carregando pagina..."): void {
-    setDashboardTransitionLabel(label);
-    setPendingDashboardUrl(url);
-    setDashboardRefreshPending(false);
-    startDashboardTransition(() => {
-      router.push(url);
+  function mutateCachedPatientDetails(
+    patientId: number,
+    updater: (details: PatientDashboardDetails) => PatientDashboardDetails
+  ): void {
+    setPatientDetailsCache((current) => {
+      const details = current[patientId];
+      if (!details) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [patientId]: updater(details)
+      };
     });
+  }
+
+  function upsertPatientRecordLocally(nextPatient: PatientRecord): void {
+    setPatients((current) => upsertRecordById(current, nextPatient));
+    mutateCachedPatientDetails(nextPatient.id, (details) => ({
+      ...details,
+      patient: nextPatient
+    }));
+  }
+
+  function upsertAdmissionRecordLocally(
+    nextAdmission: AdmissionRecord,
+    relatedPatientOverride?: PatientRecord | null
+  ): void {
+    setRecentAdmissions((current) => upsertRecordById(current, nextAdmission));
+    setPatients((current) =>
+      current.map((patient) =>
+        patient.id === nextAdmission.patientId ? mergePatientWithAdmission(patient, nextAdmission) : patient
+      )
+    );
+    setInpatientOverviewEntries((current) => {
+      const relatedPatient =
+        relatedPatientOverride ??
+        patients.find((patient) => patient.id === nextAdmission.patientId) ??
+        patientDetailsCache[nextAdmission.patientId]?.patient ??
+        null;
+      if (!relatedPatient) {
+        return current;
+      }
+
+      const previousEntry =
+        current.find((entry) => entry.patientId === nextAdmission.patientId) ??
+        null;
+      return [
+        buildInpatientEntryFromAdmission(mergePatientWithAdmission(relatedPatient, nextAdmission), nextAdmission, previousEntry),
+        ...current.filter((entry) => entry.patientId !== nextAdmission.patientId)
+      ];
+    });
+    mutateCachedPatientDetails(nextAdmission.patientId, (details) => ({
+      ...details,
+      patient: mergePatientWithAdmission(details.patient, nextAdmission),
+      admissions: upsertRecordById(details.admissions, nextAdmission)
+    }));
+  }
+
+  function appendPatientAllergyLocally(nextAllergy: PatientAllergyRecord): void {
+    setPatientAllergies((current) => upsertRecordById(current, nextAllergy));
+    mutateCachedPatientDetails(nextAllergy.patientId, (details) => ({
+      ...details,
+      allergies: upsertRecordById(details.allergies, nextAllergy)
+    }));
+  }
+
+  function removePatientAllergyLocally(patientId: number, allergyId: number): void {
+    setPatientAllergies((current) => removeRecordById(current, allergyId));
+    mutateCachedPatientDetails(patientId, (details) => ({
+      ...details,
+      allergies: removeRecordById(details.allergies, allergyId)
+    }));
+  }
+
+  function appendPriorMedicationLocally(nextMedication: PriorMedicationRecord): void {
+    setPriorMedications((current) => upsertRecordById(current, nextMedication));
+    mutateCachedPatientDetails(nextMedication.patientId, (details) => ({
+      ...details,
+      priorMedications: upsertRecordById(details.priorMedications, nextMedication)
+    }));
+  }
+
+  function updatePriorMedicationLocally(nextMedication: PriorMedicationRecord): void {
+    setPriorMedications((current) => upsertRecordById(current, nextMedication));
+    mutateCachedPatientDetails(nextMedication.patientId, (details) => ({
+      ...details,
+      priorMedications: upsertRecordById(details.priorMedications, nextMedication)
+    }));
+  }
+
+  function removePriorMedicationLocally(patientId: number, priorMedicationId: number): void {
+    setPriorMedications((current) => removeRecordById(current, priorMedicationId));
+    mutateCachedPatientDetails(patientId, (details) => ({
+      ...details,
+      priorMedications: removeRecordById(details.priorMedications, priorMedicationId)
+    }));
+  }
+
+  function appendPrescriptionLocally(nextPrescription: MedicalPrescriptionRecord): void {
+    setPrescriptions((current) => upsertRecordById(current, nextPrescription));
+    mutateCachedPatientDetails(nextPrescription.patientId, (details) => ({
+      ...details,
+      prescriptions: upsertRecordById(details.prescriptions, nextPrescription)
+    }));
+  }
+
+  function updatePrescriptionLocally(nextPrescription: MedicalPrescriptionRecord): void {
+    setPrescriptions((current) => upsertRecordById(current, nextPrescription));
+    mutateCachedPatientDetails(nextPrescription.patientId, (details) => ({
+      ...details,
+      prescriptions: upsertRecordById(details.prescriptions, nextPrescription)
+    }));
+  }
+
+  function appendExamImportLocally(nextExamImport: PatientExamImportRecord): void {
+    setExamImports((current) => upsertRecordById(current, nextExamImport));
+    mutateCachedPatientDetails(nextExamImport.patientId, (details) => ({
+      ...details,
+      examImports: upsertRecordById(details.examImports, nextExamImport)
+    }));
+  }
+
+  function removeExamImportLocally(patientId: number, examImportId: number): void {
+    setExamImports((current) => removeRecordById(current, examImportId));
+    mutateCachedPatientDetails(patientId, (details) => ({
+      ...details,
+      examImports: removeRecordById(details.examImports, examImportId)
+    }));
+  }
+
+  async function loadPatientDetails(patientId: number, options?: { force?: boolean }): Promise<void> {
+    if (!options?.force && patientDetailsCache[patientId]) {
+      return;
+    }
+
+    setPatientDetailsLoadingId(patientId);
+    setPatientDetailsError(null);
+
+    try {
+      const response = await fetch(`/api/patients/${patientId}/dashboard`);
+      const result = (await response.json()) as {
+        message?: string;
+        patientDetails?: PatientDashboardDetails;
+      };
+
+      if (!response.ok || !result.patientDetails) {
+        throw new Error(result.message || "Não foi possível carregar os dados do paciente.");
+      }
+
+      setPatientDetailsCache((current) => ({
+        ...current,
+        [patientId]: result.patientDetails!
+      }));
+    } catch (error) {
+      setPatientDetailsError(
+        error instanceof Error ? error.message : "Não foi possível carregar os dados do paciente."
+      );
+    } finally {
+      setPatientDetailsLoadingId((current) => (current === patientId ? null : current));
+    }
+  }
+
+  function pushDashboardUrl(url: string): void {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.history.pushState(window.history.state, "", url);
   }
 
   function refreshDashboard(label = "Atualizando painel..."): void {
     setDashboardTransitionLabel(label);
-    setDashboardRefreshPending(true);
+    setPatientDetailsCache({});
     startDashboardTransition(() => {
       router.refresh();
     });
@@ -4542,10 +4895,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setActiveSection(sectionId);
     setPatientDetailsOpen(false);
     setSelectedPrescriptionMedicationHistory(null);
-    navigateDashboard(
-      buildDashboardUrl({ section: sectionId }),
-      "Abrindo seção..."
-    );
+    pushDashboardUrl(buildDashboardUrl({ section: sectionId }));
   }
 
   function openInpatientOverview(mode: InpatientOverviewMode): void {
@@ -4553,12 +4903,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setInpatientOverviewMode(mode);
     setPatientDetailsOpen(false);
     setSelectedPrescriptionMedicationHistory(null);
-    navigateDashboard(
+    pushDashboardUrl(
       buildDashboardUrl({
         section: "inpatients",
         inpatientMode: mode
-      }),
-      "Abrindo pacientes..."
+      })
     );
   }
 
@@ -4572,7 +4921,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     replaceDashboardUrl(
       buildDashboardUrl({
         section: "inpatients",
-        inpatientMode: requestedInpatientMode,
+        inpatientMode: inpatientOverviewMode,
         patientId: Number(selectedPatientId),
         patientView: view
       })
@@ -4590,15 +4939,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setPatientView(targetView);
     setPatientDetailsOpen(true);
     setSelectedPrescriptionMedicationHistory(null);
-    navigateDashboard(
+    pushDashboardUrl(
       buildDashboardUrl({
         section: "inpatients",
         inpatientMode: nextInpatientMode,
         patientId,
         patientView: targetView
-      }),
-      "Abrindo paciente..."
+      })
     );
+    void loadPatientDetails(patientId);
   }
 
   function closePatientDetailsPage(): void {
@@ -4607,12 +4956,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setInpatientOverviewMode(requestedInpatientMode);
     setPatientDetailsOpen(false);
     setSelectedPrescriptionMedicationHistory(null);
-    navigateDashboard(
+    pushDashboardUrl(
       buildDashboardUrl({
         section: "inpatients",
-        inpatientMode: requestedInpatientMode
-      }),
-      "Voltando para a lista..."
+        inpatientMode: inpatientOverviewMode
+      })
     );
   }
 
@@ -4834,8 +5182,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         body: JSON.stringify(professionalForm)
       });
 
-      const result = (await response.json()) as { message?: string };
-      if (!response.ok) {
+      const result = (await response.json()) as {
+        message?: string;
+        professional?: ProfessionalRecord;
+      };
+      if (!response.ok || !result.professional) {
         setProfessionalFeedback({
           type: "error",
           message: result.message ?? "Não foi possível cadastrar o profissional."
@@ -4854,7 +5205,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         password: "",
         institution: ""
       });
-      refreshDashboard();
+      setProfessionals((current) => upsertRecordById(current, result.professional!));
     } catch {
       setProfessionalFeedback({
         type: "error",
@@ -4877,15 +5228,18 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         body: JSON.stringify({ name: teamName })
       });
 
-      const result = (await response.json()) as { message?: string };
-      if (!response.ok) {
+      const result = (await response.json()) as {
+        message?: string;
+        team?: TeamRecord;
+      };
+      if (!response.ok || !result.team) {
         setTeamFeedback({ type: "error", message: result.message ?? "Falha ao cadastrar equipe." });
         return;
       }
 
       setTeamFeedback({ type: "success", message: "Equipe cadastrada com sucesso." });
       setTeamName("");
-      refreshDashboard();
+      setTeams((current) => upsertRecordById(current, result.team!));
     } catch {
       setTeamFeedback({ type: "error", message: "Erro de conexão ao cadastrar equipe." });
     } finally {
@@ -4905,8 +5259,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         body: JSON.stringify(patientForm)
       });
 
-      const result = (await response.json()) as { message?: string };
-      if (!response.ok) {
+      const result = (await response.json()) as {
+        message?: string;
+        patient?: PatientRecord;
+      };
+      if (!response.ok || !result.patient) {
         setPatientFeedback({
           type: "error",
           message: result.message ?? "Falha ao cadastrar paciente."
@@ -4924,7 +5281,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       setPatientInitialAllergyForm({
         medicationId: medications[0] ? String(medications[0].id) : ""
       });
-      refreshDashboard();
+      upsertPatientRecordLocally(result.patient!);
     } catch {
       setPatientFeedback({
         type: "error",
@@ -4998,14 +5355,19 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           })
         });
 
-        const patientResult = (await patientResponse.json()) as { message?: string };
-        if (!patientResponse.ok) {
+        const patientResult = (await patientResponse.json()) as {
+          message?: string;
+          patient?: PatientRecord;
+        };
+        if (!patientResponse.ok || !patientResult.patient) {
           setAdmissionFeedback({
             type: "error",
             message: patientResult.message ?? "Falha ao atualizar os dados do paciente."
           });
           return;
         }
+
+        upsertPatientRecordLocally(patientResult.patient);
       }
 
       const shouldUpdateAdmission = admissionForm.admissionId.trim().length > 0;
@@ -5023,8 +5385,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         })
       });
 
-      const result = (await response.json()) as { message?: string };
-      if (!response.ok) {
+      const result = (await response.json()) as {
+        message?: string;
+        admission?: AdmissionRecord;
+      };
+      if (!response.ok || !result.admission) {
         setAdmissionFeedback({
           type: "error",
           message: result.message ?? "Falha ao salvar internação."
@@ -5051,8 +5416,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           (shouldUpdateAdmission ? "Internação atualizada com sucesso." : "Internação cadastrada com sucesso.")
         }${autofillDetails ? ` Trecho de MUC analisado: ${autofillDetails}.` : ""}`
       });
+      upsertAdmissionRecordLocally(result.admission, selectedPatient);
       setAdmissionForm(createEmptyAdmissionFormState());
-      refreshDashboard();
     } catch {
       setAdmissionFeedback({
         type: "error",
@@ -5129,8 +5494,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         body: JSON.stringify(medicationForm)
       });
 
-      const result = (await response.json()) as { message?: string };
-      if (!response.ok) {
+      const result = (await response.json()) as {
+        message?: string;
+        medication?: (typeof medications)[number];
+      };
+      if (!response.ok || !result.medication) {
         setMedicationFeedback({
           type: "error",
           message: result.message ?? "Falha ao cadastrar medicamento."
@@ -5146,7 +5514,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         therapeuticClass: "",
         searchAliases: ""
       });
-      refreshDashboard();
+      setMedications((current) => upsertRecordById(current, result.medication!));
     } catch {
       setMedicationFeedback({ type: "error", message: "Erro de conexão ao cadastrar medicamento." });
     } finally {
@@ -5285,8 +5653,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         body: JSON.stringify({ allergyName, reactionDescription })
       });
 
-      const result = (await response.json()) as { message?: string };
-      if (!response.ok) {
+      const result = (await response.json()) as {
+        message?: string;
+        allergy?: PatientAllergyRecord;
+      };
+      if (!response.ok || !result.allergy) {
         setAllergyFeedback({ type: "error", message: result.message ?? "Falha ao cadastrar alergia." });
         return;
       }
@@ -5294,7 +5665,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       setAllergyFeedback({ type: "success", message: "Alergia cadastrada com sucesso." });
       setShowAllergyComposer(false);
       setAllergyForm({ query: "", selectedValue: "", reactionDescription: "" });
-      refreshDashboard();
+      appendPatientAllergyLocally(result.allergy);
     } catch {
       setAllergyFeedback({ type: "error", message: "Erro de conexão ao cadastrar alergia." });
     } finally {
@@ -5330,7 +5701,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       }
 
       setAllergyFeedback({ type: "success", message: "Alergia removida com sucesso." });
-      refreshDashboard();
+      removePatientAllergyLocally(selectedPatient.id, allergyId);
     } catch {
       setAllergyFeedback({ type: "error", message: "Erro de conexão ao remover alergia." });
     } finally {
@@ -5386,8 +5757,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         })
       });
 
-      const result = (await response.json()) as { message?: string };
-      if (!response.ok) {
+      const result = (await response.json()) as {
+        message?: string;
+        priorMedication?: PriorMedicationRecord;
+      };
+      if (!response.ok || !result.priorMedication) {
         setPriorMedicationFeedback({
           type: "error",
           message: result.message ?? "Falha ao cadastrar medicamento de uso prévio."
@@ -5425,7 +5799,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         expirationDate: "",
         manufacturer: ""
       }));
-      refreshDashboard();
+      appendPriorMedicationLocally(result.priorMedication);
     } catch {
       setPriorMedicationFeedback({
         type: "error",
@@ -5441,7 +5815,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     priorMedicationId: number,
     formState: PriorMedicationReconciliationFormState,
     referenceMedication: PriorMedicationRecord
-  ): Promise<{ ok: true } | { ok: false; message: string }> {
+  ): Promise<{ ok: true; priorMedication: PriorMedicationRecord } | { ok: false; message: string }> {
     const trimmedDose = formState.dose.trim();
     const parsedDose = parseDosePart(trimmedDose);
 
@@ -5468,15 +5842,18 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         })
       });
 
-      const result = (await response.json()) as { message?: string };
-      if (!response.ok) {
+      const result = (await response.json()) as {
+        message?: string;
+        priorMedication?: PriorMedicationRecord;
+      };
+      if (!response.ok || !result.priorMedication) {
         return {
           ok: false,
           message: result.message ?? "Falha ao atualizar reconciliação do medicamento prévio."
         };
       }
 
-      return { ok: true };
+      return { ok: true, priorMedication: result.priorMedication };
     } catch {
       return {
         ok: false,
@@ -5521,7 +5898,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         type: "success",
         message: "Reconciliação do medicamento prévio atualizada."
       });
-      refreshDashboard();
+      updatePriorMedicationLocally(result.priorMedication);
     } finally {
       setPriorMedicationUpdatingId(null);
     }
@@ -5560,9 +5937,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         )
       );
 
+      const successfulUpdates: PriorMedicationRecord[] = [];
       const failedMessages = results.flatMap((result, index) => {
         if (result.status === "fulfilled") {
-          return result.value.ok ? [] : [`${changedRows[index].priorMedication.medicationName}: ${result.value.message}`];
+          if (result.value.ok) {
+            successfulUpdates.push(result.value.priorMedication);
+            return [];
+          }
+
+          return [`${changedRows[index].priorMedication.medicationName}: ${result.value.message}`];
         }
 
         return [`${changedRows[index].priorMedication.medicationName}: erro inesperado ao salvar.`];
@@ -5580,7 +5963,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         type: "success",
         message: `${changedRows.length} medicamento(s) prévio(s) atualizado(s).`
       });
-      refreshDashboard();
+      successfulUpdates.forEach((priorMedication) => {
+        updatePriorMedicationLocally(priorMedication);
+      });
     } finally {
       setPriorMedicationBatchSaving(false);
     }
@@ -5590,7 +5975,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     patientId: number,
     prescriptionId: number,
     formState: StockValidationFormState
-  ): Promise<{ ok: true } | { ok: false; message: string }> {
+  ): Promise<{ ok: true; prescription: MedicalPrescriptionRecord } | { ok: false; message: string }> {
     try {
       const response = await fetch(`/api/patients/${patientId}/prescriptions`, {
         method: "PUT",
@@ -5604,15 +5989,18 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         })
       });
 
-      const result = (await response.json()) as { message?: string };
-      if (!response.ok) {
+      const result = (await response.json()) as {
+        message?: string;
+        prescription?: MedicalPrescriptionRecord;
+      };
+      if (!response.ok || !result.prescription) {
         return {
           ok: false,
           message: result.message ?? "Falha ao atualizar validação do medicamento."
         };
       }
 
-      return { ok: true };
+      return { ok: true, prescription: result.prescription };
     } catch {
       return {
         ok: false,
@@ -5625,7 +6013,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     patientId: number,
     prescriptionId: number,
     formState: PrescriptionInterventionFormState
-  ): Promise<{ ok: true } | { ok: false; message: string }> {
+  ): Promise<{ ok: true; prescription: MedicalPrescriptionRecord } | { ok: false; message: string }> {
     try {
       const response = await fetch(`/api/patients/${patientId}/prescriptions`, {
         method: "PUT",
@@ -5641,15 +6029,18 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         })
       });
 
-      const result = (await response.json()) as { message?: string };
-      if (!response.ok) {
+      const result = (await response.json()) as {
+        message?: string;
+        prescription?: MedicalPrescriptionRecord;
+      };
+      if (!response.ok || !result.prescription) {
         return {
           ok: false,
           message: result.message ?? "Falha ao salvar a intervenção."
         };
       }
 
-      return { ok: true };
+      return { ok: true, prescription: result.prescription };
     } catch {
       return {
         ok: false,
@@ -5692,7 +6083,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         type: "success",
         message: "Intervenção registrada na prescrição."
       });
-      refreshDashboard();
+      updatePrescriptionLocally(result.prescription);
     } finally {
       setPrescriptionInterventionSavingId(null);
     }
@@ -5733,7 +6124,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         type: "success",
         message: "Validação do medicamento atualizada."
       });
-      refreshDashboard();
+      updatePrescriptionLocally(result.prescription);
     } finally {
       setMedicationValidationUpdatingId(null);
     }
@@ -5767,11 +6158,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         )
       );
 
+      const successfulUpdates: MedicalPrescriptionRecord[] = [];
       const failedMessages = results.flatMap((result, index) => {
         if (result.status === "fulfilled") {
-          return result.value.ok
-            ? []
-            : [`${changedRows[index].displayMedicationName}: ${result.value.message}`];
+          if (result.value.ok) {
+            successfulUpdates.push(result.value.prescription);
+            return [];
+          }
+
+          return [`${changedRows[index].displayMedicationName}: ${result.value.message}`];
         }
 
         return [`${changedRows[index].displayMedicationName}: erro inesperado ao salvar.`];
@@ -5789,7 +6184,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         type: "success",
         message: `${changedRows.length} medicamento(s) validado(s) atualizado(s).`
       });
-      refreshDashboard();
+      successfulUpdates.forEach((prescription) => {
+        updatePrescriptionLocally(prescription);
+      });
     } finally {
       setMedicationValidationBatchSaving(false);
     }
@@ -5837,7 +6234,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         type: "success",
         message: "Medicamento prévio removido com sucesso."
       });
-      refreshDashboard();
+      removePriorMedicationLocally(selectedPatient.id, priorMedicationId);
     } catch {
       setPriorMedicationFeedback({
         type: "error",
@@ -5886,8 +6283,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         })
       });
 
-      const result = (await response.json()) as { message?: string };
-      if (!response.ok) {
+      const result = (await response.json()) as {
+        message?: string;
+        prescription?: MedicalPrescriptionRecord;
+      };
+      if (!response.ok || !result.prescription) {
         setPrescriptionFeedback({
           type: "error",
           message: result.message ?? "Falha ao cadastrar prescrição médica."
@@ -5906,7 +6306,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         administrationRoute: ""
       }));
       setPrescriptionMode("view");
-      refreshDashboard();
+      appendPrescriptionLocally(result.prescription);
     } catch {
       setPrescriptionFeedback({
         type: "error",
@@ -5940,6 +6340,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setRawPrescriptionLoading(true);
     try {
       const failedLines: number[] = [];
+      const importedPrescriptions: MedicalPrescriptionRecord[] = [];
       for (const draft of validDrafts) {
         const response = await fetch(`/api/patients/${selectedPatient.id}/prescriptions`, {
           method: "POST",
@@ -5961,9 +6362,22 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           })
         });
 
-        if (!response.ok) {
+        const result = (await response.json()) as {
+          prescription?: MedicalPrescriptionRecord;
+        };
+
+        if (!response.ok || !result.prescription) {
           failedLines.push(draft.lineNumber);
+          continue;
         }
+
+        importedPrescriptions.push(result.prescription);
+      }
+
+      if (importedPrescriptions.length > 0) {
+        importedPrescriptions.forEach((prescription) => {
+          appendPrescriptionLocally(prescription);
+        });
       }
 
       if (failedLines.length > 0) {
@@ -5979,7 +6393,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         setRawPrescriptionInput("");
         setRawPrescriptionDrafts([]);
         setPrescriptionMode("view");
-        refreshDashboard();
       }
     } catch {
       setRawPrescriptionFeedback({
@@ -6260,6 +6673,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
       const nextManualEntriesByKey = new Map<string, InpatientEntry>();
       const entriesToPending = new Map<string, number | null>();
+      const createdPatients: PatientRecord[] = [];
+      const createdAdmissions: AdmissionRecord[] = [];
       let createdPatientsCount = 0;
       let createdAdmissionsCount = 0;
       let linkedCount = 0;
@@ -6321,6 +6736,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           }
 
           patientRecord = patientResult.patient;
+          createdPatients.push(patientRecord);
           createdPatientsCount += 1;
 
           const createdChart = normalizeSearchValue(patientRecord.chartNumber);
@@ -6361,6 +6777,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             continue;
           }
 
+          createdAdmissions.push(admissionResult.admission);
           knownAdmissionKeys.add(admissionKey);
           createdAdmissionsCount += 1;
         } else {
@@ -6415,6 +6832,24 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         setPriorityTeamIds(mergedPayload.priorityTeamIds);
       }
 
+      createdPatients.forEach((patient) => {
+        upsertPatientRecordLocally(patient);
+      });
+
+      if (createdAdmissions.length > 0) {
+        const patientLookup = new Map<number, PatientRecord>();
+        for (const patient of patients) {
+          patientLookup.set(patient.id, patient);
+        }
+        for (const patient of createdPatients) {
+          patientLookup.set(patient.id, patient);
+        }
+
+        createdAdmissions.forEach((admission) => {
+          upsertAdmissionRecordLocally(admission, patientLookup.get(admission.patientId) ?? null);
+        });
+      }
+
       setMandatoryRawInput("");
       setMandatoryFeedback({
         type: "success",
@@ -6423,7 +6858,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           (skippedCount > 0 ? ` ${skippedCount} linha(s) ignorada(s).` : "") +
           (lastErrorMessage ? ` Último erro: ${lastErrorMessage}` : "")
       });
-      refreshDashboard();
     } catch {
       setMandatoryFeedback({
         type: "error",
@@ -7361,7 +7795,27 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                             ))}
                           </div>
 
-                          {patientView === "allergies" ? (
+                          {!hasSelectedPatientDetailsLoaded ? (
+                            <div className="dashboard-subsection-block">
+                              <h3>Carregando dados do paciente</h3>
+                              <p className="dashboard-muted">
+                                {patientDetailsLoadingId === selectedPatient.id
+                                  ? "Buscando histórico, prescrições, exames e alergias..."
+                                  : patientDetailsError || "Os dados completos do paciente ainda não foram carregados."}
+                              </p>
+                              {patientDetailsError ? (
+                                <div className="dashboard-inline-actions">
+                                  <button
+                                    type="button"
+                                    className="dashboard-mini-button"
+                                    onClick={() => void loadPatientDetails(selectedPatient.id, { force: true })}
+                                  >
+                                    Tentar novamente
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : patientView === "allergies" ? (
                             <div className="dashboard-subsection-block">
                               <h3>Alergias</h3>
                               <div className="dashboard-inline-actions">
