@@ -15,33 +15,33 @@ function normalizeDateTimeInput(value: unknown): string | undefined {
     return undefined;
   }
 
+  const brMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/);
+  if (brMatch) {
+    const day = Number(brMatch[1]);
+    const month = Number(brMatch[2]);
+    const year = Number(brMatch[3]);
+    const hour = Number(brMatch[4] ?? "0");
+    const minute = Number(brMatch[5] ?? "0");
+    const parsed = new Date(year, month - 1, day, hour, minute, 0, 0);
+
+    if (
+      Number.isNaN(parsed.getTime()) ||
+      parsed.getFullYear() !== year ||
+      parsed.getMonth() !== month - 1 ||
+      parsed.getDate() !== day
+    ) {
+      return undefined;
+    }
+
+    return parsed.toISOString();
+  }
+
   const directParsed = new Date(trimmed);
   if (!Number.isNaN(directParsed.getTime())) {
     return directParsed.toISOString();
   }
 
-  const brMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/);
-  if (!brMatch) {
-    return undefined;
-  }
-
-  const day = Number(brMatch[1]);
-  const month = Number(brMatch[2]);
-  const year = Number(brMatch[3]);
-  const hour = Number(brMatch[4] ?? "0");
-  const minute = Number(brMatch[5] ?? "0");
-  const parsed = new Date(year, month - 1, day, hour, minute, 0, 0);
-
-  if (
-    Number.isNaN(parsed.getTime()) ||
-    parsed.getFullYear() !== year ||
-    parsed.getMonth() !== month - 1 ||
-    parsed.getDate() !== day
-  ) {
-    return undefined;
-  }
-
-  return parsed.toISOString();
+  return undefined;
 }
 
 export async function POST(

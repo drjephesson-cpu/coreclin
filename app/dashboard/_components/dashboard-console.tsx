@@ -536,6 +536,29 @@ function formatAdmissionDate(input: string | null | undefined): string {
   return formatAdmissionDateValue(input) || "-";
 }
 
+function normalizeDateOnlyKey(input: string | null | undefined): string {
+  if (!input) {
+    return "sem-data";
+  }
+
+  return formatAdmissionDateValue(input) || "sem-data";
+}
+
+function formatPrescriptionValidityDate(input: string | null | undefined): string {
+  return formatAdmissionDateValue(input) || "-";
+}
+
+function getPrescriptionValiditySortTime(input: string | null | undefined): number {
+  const dateKey = normalizeDateOnlyKey(input);
+  if (dateKey === "sem-data") {
+    return 0;
+  }
+
+  const [day, month, year] = dateKey.split("/");
+  const parsed = new Date(Number(year), Number(month) - 1, Number(day), 12, 0, 0, 0);
+  return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+}
+
 function parseMandatoryAdmissionDate(input: string): string {
   const normalized = normalizeAdmissionDateValue(input);
   if (!normalized) {
@@ -763,33 +786,33 @@ function normalizeHospitalDateTime(input: string): string | null {
     return null;
   }
 
+  const brMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/);
+  if (brMatch) {
+    const day = Number(brMatch[1]);
+    const month = Number(brMatch[2]);
+    const year = Number(brMatch[3]);
+    const hour = Number(brMatch[4] ?? "0");
+    const minute = Number(brMatch[5] ?? "0");
+    const parsed = new Date(year, month - 1, day, hour, minute, 0, 0);
+
+    if (
+      Number.isNaN(parsed.getTime()) ||
+      parsed.getFullYear() !== year ||
+      parsed.getMonth() !== month - 1 ||
+      parsed.getDate() !== day
+    ) {
+      return null;
+    }
+
+    return parsed.toISOString();
+  }
+
   const directParsed = new Date(trimmed);
   if (!Number.isNaN(directParsed.getTime())) {
     return directParsed.toISOString();
   }
 
-  const brMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?$/);
-  if (!brMatch) {
-    return null;
-  }
-
-  const day = Number(brMatch[1]);
-  const month = Number(brMatch[2]);
-  const year = Number(brMatch[3]);
-  const hour = Number(brMatch[4] ?? "0");
-  const minute = Number(brMatch[5] ?? "0");
-  const parsed = new Date(year, month - 1, day, hour, minute, 0, 0);
-
-  if (
-    Number.isNaN(parsed.getTime()) ||
-    parsed.getFullYear() !== year ||
-    parsed.getMonth() !== month - 1 ||
-    parsed.getDate() !== day
-  ) {
-    return null;
-  }
-
-  return parsed.toISOString();
+  return null;
 }
 
 function isWithinPrescriptionValidity(startAt: string | null, endAt: string | null): boolean {
@@ -797,12 +820,31 @@ function isWithinPrescriptionValidity(startAt: string | null, endAt: string | nu
     return false;
   }
 
-  const start = new Date(startAt).getTime();
-  const end = new Date(endAt).getTime();
-  const now = Date.now();
-  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+  const startDate = new Date(startAt);
+  const endDate = new Date(endAt);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
     return false;
   }
+
+  const start = new Date(
+    startDate.getFullYear(),
+    startDate.getMonth(),
+    startDate.getDate(),
+    0,
+    0,
+    0,
+    0
+  ).getTime();
+  const end = new Date(
+    endDate.getFullYear(),
+    endDate.getMonth(),
+    endDate.getDate(),
+    23,
+    59,
+    59,
+    999
+  ).getTime();
+  const now = Date.now();
 
   return now >= start && now <= end;
 }
@@ -2322,8 +2364,8 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     for (const prescription of selectedPatientPrescriptions) {
       const key = [
         prescription.admissionId ?? "sem-admissao",
-        prescription.validationStartAt ?? "sem-inicio",
-        prescription.validationEndAt ?? "sem-fim",
+        normalizeDateOnlyKey(prescription.validationStartAt),
+        normalizeDateOnlyKey(prescription.validationEndAt),
         prescription.validationStatus ?? "sem-status"
       ].join("|");
 
@@ -2345,12 +2387,8 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     }
 
     return Array.from(groups.values()).sort((firstGroup, secondGroup) => {
-      const firstTime = firstGroup.validationStartAt
-        ? new Date(firstGroup.validationStartAt).getTime()
-      : 0;
-      const secondTime = secondGroup.validationStartAt
-        ? new Date(secondGroup.validationStartAt).getTime()
-      : 0;
+      const firstTime = getPrescriptionValiditySortTime(firstGroup.validationStartAt);
+      const secondTime = getPrescriptionValiditySortTime(secondGroup.validationStartAt);
       return secondTime - firstTime;
     });
   }, [selectedPatientPrescriptions]);
@@ -5935,15 +5973,15 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                           onClick={() => setSelectedPrescriptionGroupKey(group.key)}
                                           title={`Vigência: ${
                                             group.validationStartAt
-                                              ? formatTimestamp(group.validationStartAt)
+                                              ? formatPrescriptionValidityDate(group.validationStartAt)
                                               : "não definida"
                                           } até ${
                                             group.validationEndAt
-                                              ? formatTimestamp(group.validationEndAt)
+                                              ? formatPrescriptionValidityDate(group.validationEndAt)
                                               : "não definida"
                                           } | Status: ${group.validationStatus ?? "Sem status"}`}
                                         >
-                                          {formatTimestamp(referenceDate)}
+                                          {formatPrescriptionValidityDate(referenceDate)}
                                         </button>
                                       );
                                     })}
@@ -5955,8 +5993,9 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 <h3>Vigência do conjunto da prescrição</h3>
                                 <div className="dashboard-two-columns">
                                   <input
-                                    type="datetime-local"
+                                    type="text"
                                     aria-label="Data início da vigência do conjunto"
+                                    placeholder="DD/MM/AAAA HH:MM"
                                     value={prescriptionSetForm.startAt}
                                     onChange={(event) =>
                                       setPrescriptionSetForm((current) => ({
@@ -5966,8 +6005,9 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                     }
                                   />
                                   <input
-                                    type="datetime-local"
+                                    type="text"
                                     aria-label="Data fim da vigência do conjunto"
+                                    placeholder="DD/MM/AAAA HH:MM"
                                     value={prescriptionSetForm.endAt}
                                     onChange={(event) =>
                                       setPrescriptionSetForm((current) => ({
@@ -6148,11 +6188,15 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                 <p className="dashboard-muted">
                                   Vigência atual:
                                   {" "}
-                                  {prescriptionSetStartAt ? formatTimestamp(prescriptionSetStartAt) : "não definida"}
+                                  {prescriptionSetStartAt
+                                    ? formatPrescriptionValidityDate(prescriptionSetStartAt)
+                                    : "não definida"}
                                   {" "}
                                   até
                                   {" "}
-                                  {prescriptionSetEndAt ? formatTimestamp(prescriptionSetEndAt) : "não definida"}
+                                  {prescriptionSetEndAt
+                                    ? formatPrescriptionValidityDate(prescriptionSetEndAt)
+                                    : "não definida"}
                                   {" "}
                                   | Status: {prescriptionSetStatus}
                                 </p>
@@ -6281,13 +6325,13 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                         Vigência:
                                         {" "}
                                         {group.validationStartAt
-                                          ? formatTimestamp(group.validationStartAt)
+                                          ? formatPrescriptionValidityDate(group.validationStartAt)
                                           : "não definida"}
                                         {" "}
                                         até
                                         {" "}
                                         {group.validationEndAt
-                                          ? formatTimestamp(group.validationEndAt)
+                                          ? formatPrescriptionValidityDate(group.validationEndAt)
                                           : "não definida"}
                                         {" "}
                                         | Status: {group.validationStatus ?? "Sem status"}
@@ -6435,9 +6479,9 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                           <tr key={`history-${prescription.id}`}>
                                             <td>
                                               {prescription.validationStartAt
-                                                ? formatTimestamp(prescription.validationStartAt)
+                                                ? formatPrescriptionValidityDate(prescription.validationStartAt)
                                                 : prescription.validationEndAt
-                                                  ? formatTimestamp(prescription.validationEndAt)
+                                                  ? formatPrescriptionValidityDate(prescription.validationEndAt)
                                                   : "-"}
                                             </td>
                                             <td>{prescription.validationStatus ?? "-"}</td>
