@@ -73,7 +73,7 @@ const DASHBOARD_NAV_GROUPS = [
 const INPATIENT_SIDEBAR_ITEMS = [
   { id: "all", label: "Todos" },
   { id: "team", label: "Por equipe" },
-  { id: "mandatory", label: "Obrigatórios" },
+  { id: "mandatory", label: "Lista diária" },
   { id: "discharged", label: "Pacientes de alta" }
 ] as const;
 
@@ -1392,16 +1392,6 @@ export default function DashboardConsole({
       }
     >
   >({});
-  const [mandatoryProfessionalSnapshots, setMandatoryProfessionalSnapshots] = useState<
-    Array<{
-      login: string;
-      name: string;
-      workflowByKey: Record<string, InpatientWorkflowState>;
-      trackedEntries: InpatientEntry[];
-      priorityTeamIds: number[];
-    }>
-  >([]);
-
   const [prescriptionForm, setPrescriptionForm] = useState({
     admissionId: "",
     medicationId: medications[0] ? String(medications[0].id) : "",
@@ -1504,42 +1494,10 @@ export default function DashboardConsole({
 
   const agePreview = useMemo(() => calculateAge(patientForm.birthDate), [patientForm.birthDate]);
   const responsibleProfessionalName = currentProfessional?.fullName ?? currentLogin;
-  const normalizedCurrentLogin = useMemo(
-    () => currentLogin.trim().toLowerCase(),
-    [currentLogin]
-  );
   const inpatientWorkflowStorageKey = useMemo(
     () => buildInpatientWorkflowStorageKey(currentLogin),
     [currentLogin]
   );
-  const mandatoryProfessionals = useMemo(() => {
-    const items = new Map<string, { login: string; name: string }>();
-
-    for (const professional of professionals) {
-      if (professional.profession !== "Farmacêutico") {
-        continue;
-      }
-
-      const login = professional.login.trim().toLowerCase();
-      if (!login) {
-        continue;
-      }
-
-      items.set(login, { login, name: professional.fullName });
-    }
-
-    if (!items.has(normalizedCurrentLogin)) {
-      items.set(normalizedCurrentLogin, {
-        login: normalizedCurrentLogin,
-        name: responsibleProfessionalName
-      });
-    }
-
-    return Array.from(items.values()).sort((first, second) =>
-      first.name.localeCompare(second.name, "pt-BR")
-    );
-  }, [normalizedCurrentLogin, professionals, responsibleProfessionalName]);
-
   const admissionPreview = useMemo(() => {
     const weight = Number(admissionForm.weightKg);
     const height = Number(admissionForm.heightCm);
@@ -1745,52 +1703,6 @@ export default function DashboardConsole({
   }, [workflowByInpatientKey, trackedInpatientEntries, priorityTeamIds, inpatientWorkflowStorageKey]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const snapshots = mandatoryProfessionals.map((professional) => {
-      if (professional.login === normalizedCurrentLogin) {
-        return {
-          login: professional.login,
-          name: professional.name,
-          workflowByKey: workflowByInpatientKey,
-          trackedEntries: trackedInpatientEntries,
-          priorityTeamIds
-        };
-      }
-
-      try {
-        const rawPayload = window.localStorage.getItem(buildInpatientWorkflowStorageKey(professional.login));
-        const parsedPayload = rawPayload
-          ? (JSON.parse(rawPayload) as Partial<InpatientWorkflowStoragePayload>)
-          : null;
-        const normalizedPayload = normalizeInpatientWorkflowStoragePayload(parsedPayload);
-
-        return {
-          login: professional.login,
-          name: professional.name,
-          ...normalizedPayload
-        };
-      } catch {
-        return {
-          login: professional.login,
-          name: professional.name,
-          ...createEmptyInpatientWorkflowStoragePayload()
-        };
-      }
-    });
-
-    setMandatoryProfessionalSnapshots(snapshots);
-  }, [
-    mandatoryProfessionals,
-    normalizedCurrentLogin,
-    workflowByInpatientKey,
-    trackedInpatientEntries,
-    priorityTeamIds
-  ]);
-
-  useEffect(() => {
     const selectableInpatients = [...trackedInpatientEntries, ...inpatients].filter(
       (entry) => entry.patientId !== null
     );
@@ -1950,65 +1862,6 @@ export default function DashboardConsole({
         });
     },
     [inpatientEntriesWithWorkflow, trackedInpatientEntries]
-  );
-
-  const mandatoryOverviewRowsByProfessional = useMemo(
-    () =>
-      mandatoryProfessionalSnapshots.flatMap((snapshot) => {
-        const rows = snapshot.trackedEntries
-          .map((entry) => {
-            const workflow =
-              snapshot.workflowByKey[entry.key] ?? {
-                status: "Pendente",
-                assignedTeamId: entry.teamId ?? null,
-                mandatory: true,
-                firstVisitCompletedAt: null,
-                evolutionGeneratedAt: null,
-                updatedAt: entry.createdAt
-              };
-
-            return {
-              professionalLogin: snapshot.login,
-              professionalName: snapshot.name,
-              isCurrentProfessional: snapshot.login === normalizedCurrentLogin,
-              entry,
-              workflow,
-              assignedTeamName:
-                workflow.assignedTeamId !== null
-                  ? teamNameById.get(workflow.assignedTeamId) ?? null
-                  : null
-            };
-          })
-          .filter(({ workflow }) => workflow.mandatory)
-          .sort((first, second) => {
-            const firstPriority = first.workflow.firstVisitCompletedAt ? 1 : 0;
-            const secondPriority = second.workflow.firstVisitCompletedAt ? 1 : 0;
-            if (firstPriority !== secondPriority) {
-              return firstPriority - secondPriority;
-            }
-
-            return first.entry.patientName.localeCompare(second.entry.patientName, "pt-BR");
-          });
-
-        return rows;
-      }).sort((first, second) => {
-        const professionalComparison = first.professionalName.localeCompare(
-          second.professionalName,
-          "pt-BR"
-        );
-        if (professionalComparison !== 0) {
-          return professionalComparison;
-        }
-
-        const firstPriority = first.workflow.firstVisitCompletedAt ? 1 : 0;
-        const secondPriority = second.workflow.firstVisitCompletedAt ? 1 : 0;
-        if (firstPriority !== secondPriority) {
-          return firstPriority - secondPriority;
-        }
-
-        return first.entry.patientName.localeCompare(second.entry.patientName, "pt-BR");
-      }),
-    [mandatoryProfessionalSnapshots, normalizedCurrentLogin, teamNameById]
   );
 
   const dischargedOverviewRows = useMemo(
@@ -4459,12 +4312,12 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
     setMandatoryFeedback({
       type: "success",
-      message: `Evolução registrada para ${entry.patientName}. Quando você enviar o modelo, eu encaixo o texto-base.`
+      message: `Evolução registrada para ${entry.patientName} na sua lista diária.`
     });
   }
 
   function handleRemoveMandatory(entry: InpatientEntry): void {
-    const confirmed = window.confirm(`Remover ${entry.patientName} da lista de obrigatórios?`);
+    const confirmed = window.confirm(`Remover ${entry.patientName} da sua lista diária?`);
     if (!confirmed) {
       return;
     }
@@ -4493,7 +4346,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
     setMandatoryFeedback({
       type: "success",
-      message: `${entry.patientName} removido da lista de obrigatórios.`
+      message: `${entry.patientName} removido da sua lista diária.`
     });
   }
 
@@ -4544,7 +4397,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     if (rawLines.length === 0) {
       setMandatoryFeedback({
         type: "error",
-        message: "Cole ao menos uma linha para tratar os atendimentos obrigatórios."
+        message: "Cole ao menos uma linha para montar a lista diária."
       });
       return;
     }
@@ -4630,7 +4483,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
           if (!patientResponse.ok || !patientResult.patient) {
             skippedCount += 1;
-            lastErrorMessage = patientResult.message ?? "Falha ao cadastrar paciente do obrigatório.";
+            lastErrorMessage = patientResult.message ?? "Falha ao cadastrar paciente da lista diária.";
             continue;
           }
 
@@ -4671,7 +4524,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
           if (!admissionResponse.ok || !admissionResult.admission) {
             skippedCount += 1;
             lastErrorMessage =
-              admissionResult.message ?? "Falha ao cadastrar internação do obrigatório.";
+              admissionResult.message ?? "Falha ao cadastrar internação da lista diária.";
             continue;
           }
 
@@ -4712,46 +4565,28 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
         return;
       }
 
-      if (typeof window !== "undefined" && nextManualEntriesByKey.size > 0) {
+      if (nextManualEntriesByKey.size > 0) {
         const manualEntries = Array.from(nextManualEntriesByKey.values());
-        const professionalTargets =
-          mandatoryProfessionals.length > 0
-            ? mandatoryProfessionals
-            : [{ login: normalizedCurrentLogin, name: responsibleProfessionalName }];
-        let currentProfessionalPayload: InpatientWorkflowStoragePayload | null = null;
+        const mergedPayload = mergeMandatoryEntriesIntoPayload(
+          {
+            workflowByKey: workflowByInpatientKey,
+            trackedEntries: trackedInpatientEntries,
+            priorityTeamIds
+          },
+          manualEntries,
+          entriesToPending
+        );
 
-        for (const professional of professionalTargets) {
-          const storageKey = buildInpatientWorkflowStorageKey(professional.login);
-          const rawPayload = window.localStorage.getItem(storageKey);
-          const parsedPayload = rawPayload
-            ? (JSON.parse(rawPayload) as Partial<InpatientWorkflowStoragePayload>)
-            : null;
-          const normalizedPayload = normalizeInpatientWorkflowStoragePayload(parsedPayload);
-          const mergedPayload = mergeMandatoryEntriesIntoPayload(
-            normalizedPayload,
-            manualEntries,
-            entriesToPending
-          );
-
-          window.localStorage.setItem(storageKey, JSON.stringify(mergedPayload));
-
-          if (professional.login === normalizedCurrentLogin) {
-            currentProfessionalPayload = mergedPayload;
-          }
-        }
-
-        if (currentProfessionalPayload) {
-          setTrackedInpatientEntries(currentProfessionalPayload.trackedEntries);
-          setWorkflowByInpatientKey(currentProfessionalPayload.workflowByKey);
-          setPriorityTeamIds(currentProfessionalPayload.priorityTeamIds);
-        }
+        setTrackedInpatientEntries(mergedPayload.trackedEntries);
+        setWorkflowByInpatientKey(mergedPayload.workflowByKey);
+        setPriorityTeamIds(mergedPayload.priorityTeamIds);
       }
 
       setMandatoryRawInput("");
       setMandatoryFeedback({
         type: "success",
         message:
-          `${createdPatientsCount} paciente(s) cadastrado(s), ${createdAdmissionsCount} internação(ões) criada(s) e ${linkedCount} registro(s) já existente(s) distribuído(s) para ${Math.max(mandatoryProfessionals.length, 1)} farmacêutico(s).` +
+          `${createdPatientsCount} paciente(s) cadastrado(s), ${createdAdmissionsCount} internação(ões) criada(s) e ${linkedCount} registro(s) já existente(s) adicionados à sua lista diária.` +
           (skippedCount > 0 ? ` ${skippedCount} linha(s) ignorada(s).` : "") +
           (lastErrorMessage ? ` Último erro: ${lastErrorMessage}` : "")
       });
@@ -4759,7 +4594,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     } catch {
       setMandatoryFeedback({
         type: "error",
-        message: "Erro de conexão ao importar os obrigatórios do dia."
+        message: "Erro de conexão ao importar a lista diária."
       });
     } finally {
       setMandatoryLoading(false);
@@ -5407,27 +5242,26 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                       {!effectivePatientPageMode && inpatientOverviewMode === "mandatory" ? (
                         <section className="dashboard-subsection">
                           <div className="dashboard-subsection-block">
-                            <h3>Atendimentos obrigatórios</h3>
+                            <h3>Lista diária</h3>
                             <p className="dashboard-muted">
                               Cole a lista do sistema no formato `Leito | Nome | Prontuário | Admissão` ou
                               `Leito | Nome | Idade | Prontuário | Admissão`.
                             </p>
                             <p className="dashboard-muted">
-                              A importação distribui os pacientes para todos os farmacêuticos. Aqui a lista fica
-                              separada por profissional. `Concluído` marca apenas a 1ª visita; o paciente só sai
-                              daqui após `Gerar evolução`, `Alta` ou `Remover`.
+                              Aqui aparecem apenas os pacientes adicionados por você. `Concluído` marca apenas
+                              a 1ª visita; o paciente só sai daqui após `Gerar evolução`, `Alta` ou `Remover`.
                             </p>
 
                             <div className="dashboard-form">
                               <textarea
-                                placeholder="Cole várias linhas do sistema para cadastrar os obrigatórios do dia"
+                                placeholder="Cole várias linhas do sistema para montar sua lista diária"
                                 value={mandatoryRawInput}
                                 onChange={(event) => setMandatoryRawInput(event.target.value)}
                               />
                               <button type="button" onClick={handleMandatoryRawImport} disabled={mandatoryLoading}>
                                 {mandatoryLoading
                                   ? "Importando pacientes..."
-                                  : "Cadastrar obrigatórios do dia"}
+                                  : "Adicionar à lista diária"}
                               </button>
                             </div>
 
@@ -5441,7 +5275,6 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                               <table className="dashboard-table">
                                 <thead>
                                   <tr>
-                                    <th>Farmacêutico</th>
                                     <th>Paciente</th>
                                     <th>Prontuário</th>
                                     <th>Admissão</th>
@@ -5456,51 +5289,35 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {mandatoryOverviewRowsByProfessional.length === 0 ? (
+                                  {mandatoryOverviewRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={12}>Nenhum atendimento obrigatório pendente.</td>
+                                      <td colSpan={11}>Nenhum paciente na sua lista diária.</td>
                                     </tr>
                                   ) : (
-                                    mandatoryOverviewRowsByProfessional.map(
-                                      ({
-                                        professionalName,
-                                        professionalLogin,
-                                        isCurrentProfessional,
-                                        entry,
-                                        workflow,
-                                        assignedTeamName
-                                      }) => (
-                                      <tr key={`${professionalLogin}-${entry.key}`}>
-                                        <td>
-                                          {professionalName}
-                                          {isCurrentProfessional ? " (você)" : ""}
-                                        </td>
+                                    mandatoryOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
+                                      <tr key={entry.key}>
                                         <td>{entry.patientName}</td>
                                         <td>{entry.chartNumber || "-"}</td>
                                         <td>{formatAdmissionDate(entry.admissionDate)}</td>
                                         <td>{entry.bed || "-"}</td>
                                         <td>{assignedTeamName ?? entry.teamName ?? "Pendente"}</td>
                                         <td>
-                                          {isCurrentProfessional ? (
-                                            <select
-                                              className="dashboard-table-select"
-                                              value={workflow.status}
-                                              onChange={(event) =>
-                                                handleInpatientStatusChange(
-                                                  entry.key,
-                                                  event.target.value as InpatientWorkflowStatus
-                                                )
-                                              }
-                                            >
-                                              {INPATIENT_STATUS_OPTIONS.map((statusOption) => (
-                                                <option key={statusOption} value={statusOption}>
-                                                  {statusOption}
-                                                </option>
-                                              ))}
-                                            </select>
-                                          ) : (
-                                            workflow.status
-                                          )}
+                                          <select
+                                            className="dashboard-table-select"
+                                            value={workflow.status}
+                                            onChange={(event) =>
+                                              handleInpatientStatusChange(
+                                                entry.key,
+                                                event.target.value as InpatientWorkflowStatus
+                                              )
+                                            }
+                                          >
+                                            {INPATIENT_STATUS_OPTIONS.map((statusOption) => (
+                                              <option key={statusOption} value={statusOption}>
+                                                {statusOption}
+                                              </option>
+                                            ))}
+                                          </select>
                                         </td>
                                         <td>
                                           {workflow.firstVisitCompletedAt
@@ -5510,8 +5327,6 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                         <td>
                                           {workflow.evolutionGeneratedAt ? (
                                             formatTimestamp(workflow.evolutionGeneratedAt)
-                                          ) : !isCurrentProfessional ? (
-                                            "Pendente"
                                           ) : (
                                             <button
                                               type="button"
@@ -5538,17 +5353,13 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                           )}
                                         </td>
                                         <td>
-                                          {isCurrentProfessional ? (
-                                            <button
-                                              type="button"
-                                              className="dashboard-chip-remove"
-                                              onClick={() => handleRemoveMandatory(entry)}
-                                            >
-                                              Remover
-                                            </button>
-                                          ) : (
-                                            "-"
-                                          )}
+                                          <button
+                                            type="button"
+                                            className="dashboard-chip-remove"
+                                            onClick={() => handleRemoveMandatory(entry)}
+                                          >
+                                            Remover
+                                          </button>
                                         </td>
                                       </tr>
                                     ))
