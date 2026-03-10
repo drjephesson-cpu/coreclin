@@ -442,6 +442,35 @@ function sanitizeMedicationName(input: string): { medicationName: string; isNonC
   };
 }
 
+function getMedicationReferenceName(input: string): string {
+  const sanitizedMedication = sanitizeMedicationName(input);
+  return sanitizedMedication.medicationName || input.trim();
+}
+
+function getPrescriptionMedicationDisplayName(
+  medicationName: string,
+  externalValidationCandidate: boolean
+): string {
+  const trimmedName = medicationName.trim();
+  if (!trimmedName) {
+    return "";
+  }
+
+  if (!externalValidationCandidate) {
+    return trimmedName;
+  }
+
+  const hasUncatalogedPrefix = normalizeMedicationName(trimmedName).startsWith(
+    "medicamento nao cadastrado"
+  );
+  if (hasUncatalogedPrefix) {
+    return trimmedName;
+  }
+
+  const referenceName = getMedicationReferenceName(trimmedName);
+  return referenceName ? `MEDICAMENTO NAO CADASTRADO: ${referenceName}` : trimmedName;
+}
+
 function extractDoseFromText(input: string): { dose: number | null; doseUnit: string } {
   const compactInput = input.replace(/(\d),(?=\d)/g, "$1.");
   const match = compactInput.match(
@@ -1318,6 +1347,7 @@ export default function DashboardConsole({
   const [selectedPrescriptionMedicationHistory, setSelectedPrescriptionMedicationHistory] = useState<{
     medicationId: number | null;
     medicationName: string;
+    externalValidationCandidate: boolean;
   } | null>(null);
 
   const [allergyForm, setAllergyForm] = useState({
@@ -2740,12 +2770,20 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
           return {
             prescription,
-            displayMedicationName: sanitizeMedicationName(prescription.medicationName).medicationName,
+            displayMedicationName: getMedicationReferenceName(prescription.medicationName),
             dailyTabletUse,
             durationDays: calculateDurationDays(prescription.quantityTablets, dailyTabletUse)
           };
         }),
     [selectedPatientPrescriptions]
+  );
+
+  const selectedPrescriptionMedicationReferenceName = useMemo(
+    () =>
+      selectedPrescriptionMedicationHistory
+        ? getMedicationReferenceName(selectedPrescriptionMedicationHistory.medicationName)
+        : "",
+    [selectedPrescriptionMedicationHistory]
   );
 
   useEffect(() => {
@@ -2933,10 +2971,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         return (
           isMedicationNameCompatible(
             prescription.medicationName,
-            selectedPrescriptionMedicationHistory.medicationName
+            selectedPrescriptionMedicationReferenceName
           ) ||
           isMedicationNameCompatible(
-            selectedPrescriptionMedicationHistory.medicationName,
+            selectedPrescriptionMedicationReferenceName,
             prescription.medicationName
           )
         );
@@ -2950,22 +2988,22 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         ).getTime();
         return secondTime - firstTime;
       });
-  }, [selectedPatientPrescriptions, selectedPrescriptionMedicationHistory]);
+  }, [selectedPatientPrescriptions, selectedPrescriptionMedicationHistory, selectedPrescriptionMedicationReferenceName]);
 
   const selectedPrescriptionMedicationCatalogMatch = useMemo(() => {
     if (!selectedPrescriptionMedicationHistory) {
       return null;
     }
 
-    return findCatalogMedicationMatchByName(selectedPrescriptionMedicationHistory.medicationName);
-  }, [selectedPrescriptionMedicationHistory, medications]);
+    return findCatalogMedicationMatchByName(selectedPrescriptionMedicationReferenceName);
+  }, [selectedPrescriptionMedicationReferenceName, medications]);
 
   const selectedPrescriptionMedicationSafetyFlags = useMemo(
     () =>
       selectedPrescriptionMedicationHistory
-        ? resolveMedicationSafetyFlags(selectedPrescriptionMedicationHistory.medicationName)
+        ? resolveMedicationSafetyFlags(selectedPrescriptionMedicationReferenceName)
         : { renalAdjustment: false, hepatotoxic: false },
-    [selectedPrescriptionMedicationHistory, medicationDescriptors]
+    [selectedPrescriptionMedicationHistory, selectedPrescriptionMedicationReferenceName, medicationDescriptors]
   );
 
   useEffect(() => {
@@ -3006,10 +3044,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       return (
         isMedicationNameCompatible(
           prescription.medicationName,
-          selectedPrescriptionMedicationHistory.medicationName
+          selectedPrescriptionMedicationReferenceName
         ) ||
         isMedicationNameCompatible(
-          selectedPrescriptionMedicationHistory.medicationName,
+          selectedPrescriptionMedicationReferenceName,
           prescription.medicationName
         )
       );
@@ -3018,7 +3056,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     if (!hasMatchingPrescription) {
       setSelectedPrescriptionMedicationHistory(null);
     }
-  }, [selectedPatientPrescriptions, selectedPrescriptionMedicationHistory]);
+  }, [selectedPatientPrescriptions, selectedPrescriptionMedicationHistory, selectedPrescriptionMedicationReferenceName]);
 
   const prescriptionSetStartAt = normalizeHospitalDateTime(prescriptionSetForm.startAt);
   const prescriptionSetEndAt = normalizeHospitalDateTime(prescriptionSetForm.endAt);
@@ -3219,17 +3257,21 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       }
 
       const sanitizedMedication = sanitizeMedicationName(medicationName);
-      medicationName = sanitizedMedication.medicationName;
+      const referenceMedicationName = sanitizedMedication.medicationName;
+      const storedMedicationName = getPrescriptionMedicationDisplayName(
+        medicationName,
+        sanitizedMedication.isNonCatalog
+      );
 
-      const matchedMedication = findCatalogMedicationMatchByName(medicationName);
-      const allergyConflict = resolveAllergyConflict(medicationName);
-      const safetyFlags = resolveMedicationSafetyFlags(medicationName);
+      const matchedMedication = findCatalogMedicationMatchByName(referenceMedicationName);
+      const allergyConflict = resolveAllergyConflict(referenceMedicationName);
+      const safetyFlags = resolveMedicationSafetyFlags(referenceMedicationName);
 
       const fallbackUnit = matchedMedication?.defaultUnit ?? "";
       const doseUnit = parsedDose.doseUnit || fallbackUnit;
 
       let validationMessage = "";
-      if (!medicationName) {
+      if (!referenceMedicationName) {
         validationMessage = "Nome do medicamento ausente.";
       } else if (!parsedDose.dose || parsedDose.dose <= 0) {
         validationMessage = "Dose inválida.";
@@ -3249,7 +3291,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         lineNumber: index + 1,
         rawLine: line,
         medicationId: matchedMedication?.id ?? null,
-        medicationName,
+        medicationName: storedMedicationName,
         dose: parsedDose.dose,
         doseUnit,
         administrationRoute,
@@ -6888,10 +6930,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                           <tbody>
                                             {group.prescriptions.map((prescription) => {
                                               const prescriptionConflict = resolveAllergyConflict(
-                                                prescription.medicationName
+                                                getMedicationReferenceName(prescription.medicationName)
                                               );
                                               const prescriptionSafetyFlags = resolveMedicationSafetyFlags(
-                                                prescription.medicationName
+                                                getMedicationReferenceName(prescription.medicationName)
                                               );
 
                                               return (
@@ -6915,12 +6957,17 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                                             ? null
                                                             : {
                                                                 medicationId: prescription.medicationId,
-                                                                medicationName: prescription.medicationName
+                                                                medicationName: prescription.medicationName,
+                                                                externalValidationCandidate:
+                                                                  prescription.externalValidationCandidate
                                                               };
                                                         })
                                                       }
                                                     >
-                                                      {prescription.medicationName}
+                                                      {getPrescriptionMedicationDisplayName(
+                                                        prescription.medicationName,
+                                                        prescription.externalValidationCandidate
+                                                      )}
                                                     </button>
                                                   </td>
                                                   <td>{formatNumber(prescription.dose)}</td>
@@ -6963,7 +7010,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 <h3>Histórico do medicamento</h3>
                                 <p className="dashboard-muted">
                                   Paciente: {selectedPatient?.fullName ?? "-"} | Medicamento:{" "}
-                                  {selectedPrescriptionMedicationHistory.medicationName}
+                                  {getPrescriptionMedicationDisplayName(
+                                    selectedPrescriptionMedicationHistory.medicationName,
+                                    selectedPrescriptionMedicationHistory.externalValidationCandidate
+                                  )}
                                 </p>
 
                                 {hasMedicationSafetyFlag(selectedPrescriptionMedicationSafetyFlags)
