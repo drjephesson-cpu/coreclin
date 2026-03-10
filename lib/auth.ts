@@ -35,7 +35,15 @@ export function createSessionToken(username: string): string {
 export function getSessionFromToken(token: string): SessionData | null {
   try {
     const decoded = Buffer.from(token, "base64url").toString("utf8");
-    const [username, issuedAtRaw, expiresAtRaw, signature] = decoded.split(".");
+    const parts = decoded.split(".");
+    if (parts.length < 4) {
+      return null;
+    }
+
+    const signature = parts.at(-1) ?? "";
+    const expiresAtRaw = parts.at(-2) ?? "";
+    const issuedAtRaw = parts.at(-3) ?? "";
+    const username = parts.slice(0, -3).join(".");
     if (!username || !issuedAtRaw || !expiresAtRaw || !signature) {
       return null;
     }
