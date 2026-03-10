@@ -191,17 +191,6 @@ const MEDICATION_VARIANT_STOPWORDS = new Set([
   "anidro",
   "base"
 ]);
-const THERAPEUTIC_CLASS_RELATION_RULES = [
-  { allergyToken: "penicilin", classTokens: ["betalactam"] },
-  { allergyToken: "cefalospor", classTokens: ["betalactam"] },
-  { allergyToken: "carbapen", classTokens: ["betalactam"] },
-  { allergyToken: "monobact", classTokens: ["betalactam"] },
-  {
-    allergyToken: "betalactam",
-    classTokens: ["betalactam", "penicilin", "cefalospor", "carbapen", "monobact"]
-  }
-] as const;
-
 type DashboardSectionId = (typeof DASHBOARD_NAV_ITEMS)[number]["id"];
 type PatientViewId = (typeof PATIENT_VIEW_ITEMS)[number]["id"];
 type PrescriptionMode = "view" | "create" | "raw";
@@ -2833,24 +2822,7 @@ export default function DashboardConsole({
     );
   }
 
-function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized: string): boolean {
-  if (!allergyNormalized || !classNormalized) {
-    return false;
-  }
-
-  for (const rule of THERAPEUTIC_CLASS_RELATION_RULES) {
-    if (!allergyNormalized.includes(rule.allergyToken)) {
-      continue;
-      }
-      if (rule.classTokens.some((classToken) => classNormalized.includes(classToken))) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  function resolveAllergyConflict(medicationName: string): AllergyConflictResult | null {
+function resolveAllergyConflict(medicationName: string): AllergyConflictResult | null {
     const normalizedMedication = normalizeMedicationName(medicationName);
     if (!normalizedMedication) {
       return null;
@@ -2863,9 +2835,8 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       if (!normalizedAllergy) {
         continue;
       }
-      const allergyClassCodes = extractTherapeuticClassCodes(allergy.allergyName);
 
-      if (isMedicationNameCompatible(medicationName, allergy.allergyName)) {
+      if (isStrictMedicationReferenceMatch(medicationName, allergy.allergyName)) {
         return {
           allergyName: allergy.allergyName,
           kind: "direct",
@@ -2873,9 +2844,9 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
         };
       }
 
-      for (const descriptor of prescribedDescriptors) {
-        const ingredientMatch = descriptor.activeIngredientTerms.find((ingredientTerm) =>
-          hasConceptTermMatch(ingredientTerm.normalized, normalizedAllergy)
+      for (const prescribedDescriptor of prescribedDescriptors) {
+        const ingredientMatch = prescribedDescriptor.activeIngredientTerms.find((ingredientTerm) =>
+          isStrictMedicationReferenceMatch(ingredientTerm.raw, allergy.allergyName)
         );
         if (ingredientMatch) {
           return {
@@ -2884,92 +2855,34 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
             detail: ingredientMatch.raw
           };
         }
-      }
 
-      const allergyDescriptors = findMedicationDescriptorsByText(allergy.allergyName);
-
-      for (const prescribedDescriptor of prescribedDescriptors) {
-        if (
-          hasTherapeuticClassCodeMatch(allergyClassCodes, prescribedDescriptor.classCodes)
-        ) {
+        if (isStrictMedicationReferenceMatch(prescribedDescriptor.medication.name, allergy.allergyName)) {
           return {
             allergyName: allergy.allergyName,
-            kind: "therapeutic-class",
-            detail: prescribedDescriptor.medication.therapeuticClass ?? allergy.allergyName
+            kind: "direct",
+            detail: prescribedDescriptor.medication.name
           };
         }
 
-        for (const allergyDescriptor of allergyDescriptors) {
-          if (
-            hasTherapeuticClassCodeMatch(
-              allergyDescriptor.classCodes,
-              prescribedDescriptor.classCodes
-            )
-          ) {
-            return {
-              allergyName: allergy.allergyName,
-              kind: "therapeutic-class",
-              detail:
-                prescribedDescriptor.medication.therapeuticClass ??
-                allergyDescriptor.medication.therapeuticClass ??
-                allergy.allergyName
-            };
-          }
-
-          for (const allergyIngredientTerm of allergyDescriptor.activeIngredientTerms) {
-            const ingredientOverlap = prescribedDescriptor.activeIngredientTerms.find(
-              (prescribedIngredientTerm) =>
-                hasConceptTermMatch(
-                  prescribedIngredientTerm.normalized,
-                  allergyIngredientTerm.normalized
-                )
-            );
-            if (ingredientOverlap) {
-              return {
-                allergyName: allergy.allergyName,
-                kind: "active-ingredient",
-                detail: ingredientOverlap.raw
-              };
-            }
-          }
-
-          if (
-            allergyDescriptor.normalizedClass &&
-            hasTherapeuticClassRelation(
-              allergyDescriptor.normalizedClass,
-              prescribedDescriptor.normalizedClass
-            )
-          ) {
-            return {
-              allergyName: allergy.allergyName,
-              kind: "therapeutic-class",
-              detail:
-                prescribedDescriptor.medication.therapeuticClass ??
-                allergyDescriptor.medication.therapeuticClass ??
-                allergy.allergyName
-            };
-          }
-        }
-
-        if (
-          prescribedDescriptor.normalizedClass &&
-          hasTherapeuticClassRelation(normalizedAllergy, prescribedDescriptor.normalizedClass)
-        ) {
+        const aliasMatch = splitCatalogTerms(
+          prescribedDescriptor.medication.searchAliases ?? ""
+        ).find((aliasTerm) => isStrictMedicationReferenceMatch(aliasTerm.raw, allergy.allergyName));
+        if (aliasMatch) {
           return {
             allergyName: allergy.allergyName,
-            kind: "therapeutic-class",
-            detail: prescribedDescriptor.medication.therapeuticClass ?? allergy.allergyName
+            kind: "direct",
+            detail: aliasMatch.raw
           };
         }
 
-        const classTokenMatch = prescribedDescriptor.classTerms.find((classTerm) =>
-          hasConceptTermMatch(classTerm.normalized, normalizedAllergy)
+        const exactTokenMatch = extractMedicationIdentityTokens(prescribedDescriptor.medication.name).find(
+          (token) => token === normalizedAllergy
         );
-        if (classTokenMatch) {
+        if (exactTokenMatch) {
           return {
             allergyName: allergy.allergyName,
-            kind: "therapeutic-class",
-            detail: classTokenMatch.raw
+            kind: "direct",
+            detail: prescribedDescriptor.medication.name
           };
         }
       }
