@@ -11,6 +11,11 @@ type DashboardPageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
+function getFirstSearchParam(rawValue: string | string[] | undefined): string | null {
+  const candidate = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+  return typeof candidate === "string" && candidate.trim().length > 0 ? candidate.trim() : null;
+}
+
 function parseSelectedPatientId(rawValue: string | string[] | undefined): number | null {
   const candidate = Array.isArray(rawValue) ? rawValue[0] : rawValue;
   const parsedValue = Number(candidate);
@@ -30,6 +35,9 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const selectedPatientId = parseSelectedPatientId(resolvedSearchParams?.patientId);
+  const section = getFirstSearchParam(resolvedSearchParams?.section);
+  const patientView = getFirstSearchParam(resolvedSearchParams?.patientView);
+  const inpatientMode = getFirstSearchParam(resolvedSearchParams?.inpatientMode);
 
   let dbError: string | null = null;
   let data: DashboardData | null = null;
@@ -38,7 +46,12 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
     dbError = "A variável DATABASE_URL não foi encontrada.";
   } else {
     try {
-      data = await getDashboardData(session.username, { selectedPatientId });
+      data = await getDashboardData(session.username, {
+        selectedPatientId,
+        section,
+        patientView,
+        inpatientMode
+      });
     } catch (error) {
       dbError = error instanceof Error ? error.message : "Não foi possível carregar os dados do painel.";
     }

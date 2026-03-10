@@ -996,11 +996,29 @@ function isMedicationNameCompatible(firstName: string, secondName: string): bool
   return hasConceptTermMatch(first, second);
 }
 
+function isStrictMedicationReferenceMatch(firstName: string, secondName: string): boolean {
+  const first = normalizeMedicationName(firstName);
+  const second = normalizeMedicationName(secondName);
+  if (!first || !second) {
+    return false;
+  }
+
+  if (first === second) {
+    return true;
+  }
+
+  if (hasTokenBoundaryMatch(first, second) || hasTokenBoundaryMatch(second, first)) {
+    return true;
+  }
+
+  return hasEquivalentMedicationIdentity(firstName, secondName);
+}
+
 function matchesMedicationReferenceList(
   medicationName: string,
   references: readonly string[]
 ): boolean {
-  return references.some((reference) => isMedicationNameCompatible(reference, medicationName));
+  return references.some((reference) => isStrictMedicationReferenceMatch(reference, medicationName));
 }
 
 function hasMedicationSafetyFlag(flags: MedicationSafetyFlags): boolean {
@@ -2206,6 +2224,41 @@ export default function DashboardConsole({
     });
   }
 
+  function findMedicationDescriptorsForSafety(searchText: string) {
+    const normalizedSearchText = normalizeMedicationName(searchText);
+    if (!normalizedSearchText) {
+      return [];
+    }
+
+    return medicationDescriptors.filter((descriptor) => {
+      if (isStrictMedicationReferenceMatch(descriptor.medication.name, searchText)) {
+        return true;
+      }
+
+      if (descriptor.normalizedName === normalizedSearchText) {
+        return true;
+      }
+
+      if (
+        descriptor.aliasTerms.some(
+          (aliasTerm) =>
+            aliasTerm.normalized === normalizedSearchText ||
+            isStrictMedicationReferenceMatch(aliasTerm.raw, searchText) ||
+            hasTokenBoundaryMatch(aliasTerm.normalized, normalizedSearchText) ||
+            hasTokenBoundaryMatch(normalizedSearchText, aliasTerm.normalized)
+        )
+      ) {
+        return true;
+      }
+
+      return descriptor.activeIngredientTerms.some(
+        (ingredientTerm) =>
+          ingredientTerm.normalized === normalizedSearchText ||
+          isStrictMedicationReferenceMatch(ingredientTerm.raw, searchText)
+      );
+    });
+  }
+
   function isMedicationReconciled(prescriptionName: string, referenceMedicationName: string): boolean {
     if (isMedicationNameCompatible(prescriptionName, referenceMedicationName)) {
       return true;
@@ -2401,7 +2454,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       };
     }
 
-    const matchedDescriptors = findMedicationDescriptorsByText(medicationName);
+    const matchedDescriptors = findMedicationDescriptorsForSafety(medicationName);
 
     return {
       renalAdjustment:
@@ -3250,17 +3303,26 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
   function openDashboardSection(sectionId: DashboardSectionId): void {
     setActiveSection(sectionId);
-
-    if (sectionId === "inpatients") {
-      setInpatientOverviewMode("all");
-      setPatientDetailsOpen(false);
-    }
+    setPatientDetailsOpen(false);
+    setSelectedPrescriptionMedicationHistory(null);
+    navigateDashboard(
+      buildDashboardUrl({ section: sectionId }),
+      "Abrindo seção..."
+    );
   }
 
   function openInpatientOverview(mode: InpatientOverviewMode): void {
     setActiveSection("inpatients");
     setInpatientOverviewMode(mode);
     setPatientDetailsOpen(false);
+    setSelectedPrescriptionMedicationHistory(null);
+    navigateDashboard(
+      buildDashboardUrl({
+        section: "inpatients",
+        inpatientMode: mode
+      }),
+      "Abrindo pacientes..."
+    );
   }
 
   function openPatientView(view: PatientViewId): void {

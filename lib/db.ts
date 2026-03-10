@@ -2375,11 +2375,13 @@ export async function addPatientMeasurement(
   });
 }
 
-export async function listPatients(): Promise<PatientRecord[]> {
+export async function listPatients(patientId?: number | null): Promise<PatientRecord[]> {
   await ensureDatabaseReady();
   const pool = getPool();
+  const shouldFilterByPatientId = Number.isInteger(patientId) && Number(patientId) > 0;
 
-  const result = await pool.query(`
+  const result = await pool.query(
+    `
     SELECT
       p.id,
       p.full_name,
@@ -2444,16 +2446,23 @@ export async function listPatients(): Promise<PatientRecord[]> {
       ORDER BY m.recorded_at DESC, m.id DESC
       LIMIT 1
     ) latest_m ON TRUE
+    ${shouldFilterByPatientId ? "WHERE p.id = $1" : ""}
     ORDER BY p.created_at DESC, p.id DESC
-  `);
+  `,
+    shouldFilterByPatientId ? [Number(patientId)] : []
+  );
 
   return result.rows.map((row) => mapPatient(row as DbRow));
 }
 
-export async function listRecentAdmissions(limit = 40): Promise<AdmissionRecord[]> {
+export async function listRecentAdmissions(
+  limit = 40,
+  patientId?: number | null
+): Promise<AdmissionRecord[]> {
   await ensureDatabaseReady();
   const pool = getPool();
   const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(300, Math.floor(limit))) : 40;
+  const shouldFilterByPatientId = Number.isInteger(patientId) && Number(patientId) > 0;
 
   const result = await pool.query(
     `
@@ -2483,22 +2492,23 @@ export async function listRecentAdmissions(limit = 40): Promise<AdmissionRecord[
       INNER JOIN professionals rp ON rp.id = a.responsible_professional_id
       LEFT JOIN teams t ON t.id = a.team_id
       LEFT JOIN LATERAL (
-        SELECT
-          m.weight_kg,
-          m.height_cm,
-          m.bmi,
-          m.bmi_formula,
-          m.body_surface_area,
-          m.bsa_formula
+      SELECT
+        m.weight_kg,
+        m.height_cm,
+        m.bmi,
+        m.bmi_formula,
+        m.body_surface_area,
+        m.bsa_formula
         FROM patient_measurements m
         WHERE m.admission_id = a.id
         ORDER BY m.recorded_at DESC, m.id DESC
         LIMIT 1
       ) am ON TRUE
+      ${shouldFilterByPatientId ? "WHERE a.patient_id = $2" : ""}
       ORDER BY a.admission_date DESC, a.created_at DESC, a.id DESC
       LIMIT $1
     `,
-    [safeLimit]
+    shouldFilterByPatientId ? [safeLimit, Number(patientId)] : [safeLimit]
   );
 
   return result.rows.map((row) => mapAdmission(row as DbRow));
@@ -2718,15 +2728,89 @@ export async function listMedicalPrescriptions(
   return result.rows.map((row) => mapMedicalPrescription(row as DbRow));
 }
 
+function normalizeDashboardSection(
+  section?: string | null
+): "professional" | "team" | "patient" | "medication" | "inpatients" {
+  switch (section) {
+    case "team":
+    case "patient":
+    case "medication":
+    case "inpatients":
+      return section;
+    default:
+      return "professional";
+  }
+}
+
+function normalizeDashboardPatientView(
+  patientView?: string | null
+): "allergies" | "admission-info" | "exams" | "prior-use" | "medication-validation" | "prescriptions" {
+  switch (patientView) {
+    case "allergies":
+    case "exams":
+    case "prior-use":
+    case "medication-validation":
+    case "prescriptions":
+      return patientView;
+    default:
+      return "admission-info";
+  }
+}
+
+function normalizeDashboardInpatientMode(
+  inpatientMode?: string | null
+): "all" | "team" | "mandatory" | "discharged" {
+  switch (inpatientMode) {
+    case "team":
+    case "mandatory":
+    case "discharged":
+      return inpatientMode;
+    default:
+      return "all";
+  }
+}
+
 export async function getDashboardData(
   currentLogin: string,
-  options?: { selectedPatientId?: number | null }
+  options?: {
+    selectedPatientId?: number | null;
+    section?: string | null;
+    patientView?: string | null;
+    inpatientMode?: string | null;
+  }
 ): Promise<DashboardData> {
   await ensureDatabaseReady();
   const selectedPatientId =
     Number.isInteger(options?.selectedPatientId) && Number(options?.selectedPatientId) > 0
       ? Number(options?.selectedPatientId)
       : null;
+  const section = normalizeDashboardSection(options?.section);
+  const patientView = normalizeDashboardPatientView(options?.patientView);
+  const inpatientMode = normalizeDashboardInpatientMode(options?.inpatientMode);
+  const isPatientDetailsPage = section === "inpatients" && selectedPatientId !== null;
+  const shouldLoadProfessionals = section === "professional";
+  const shouldLoadTeams =
+    section === "team" ||
+    (section === "inpatients" &&
+      ((!isPatientDetailsPage && inpatientMode !== "all") ||
+        (isPatientDetailsPage && patientView === "admission-info")));
+  const shouldLoadPatients = section === "patient" || section === "inpatients";
+  const shouldLoadRecentAdmissions = section === "inpatients";
+  const shouldLoadMedications =
+    section === "patient" ||
+    section === "medication" ||
+    (isPatientDetailsPage &&
+      ["allergies", "admission-info", "prior-use", "prescriptions"].includes(patientView));
+  const shouldLoadPatientAllergies =
+    isPatientDetailsPage && ["allergies", "prescriptions"].includes(patientView);
+  const shouldLoadPriorMedications =
+    isPatientDetailsPage && ["admission-info", "prior-use", "prescriptions"].includes(patientView);
+  const shouldLoadExamImports = isPatientDetailsPage && patientView === "exams";
+  const shouldLoadWorkflow =
+    section === "inpatients" && !isPatientDetailsPage && inpatientMode !== "all";
+  const shouldLoadPrescriptions =
+    isPatientDetailsPage &&
+    ["prior-use", "medication-validation", "prescriptions"].includes(patientView);
 
   const [
     currentProfessional,
@@ -2734,7 +2818,6 @@ export async function getDashboardData(
     teams,
     patients,
     recentAdmissions,
-    recentMeasurements,
     medications,
     patientAllergies,
     priorMedications,
@@ -2743,17 +2826,20 @@ export async function getDashboardData(
     prescriptions
   ] = await Promise.all([
     findProfessionalByLogin(currentLogin),
-    listProfessionals(),
-    listTeams(),
-    listPatients(),
-    listRecentAdmissions(80),
-    listRecentMeasurements(80),
-    listMedicationCatalog(),
-    listPatientAllergies(selectedPatientId),
-    listPriorMedications(selectedPatientId),
-    listPatientExamImports(selectedPatientId),
-    getInpatientWorkflowSnapshotByLogin(currentLogin),
-    listMedicalPrescriptions(selectedPatientId)
+    shouldLoadProfessionals ? listProfessionals() : Promise.resolve([]),
+    shouldLoadTeams ? listTeams() : Promise.resolve([]),
+    shouldLoadPatients
+      ? listPatients(isPatientDetailsPage ? selectedPatientId : null)
+      : Promise.resolve([]),
+    shouldLoadRecentAdmissions
+      ? listRecentAdmissions(isPatientDetailsPage ? 200 : 80, isPatientDetailsPage ? selectedPatientId : null)
+      : Promise.resolve([]),
+    shouldLoadMedications ? listMedicationCatalog() : Promise.resolve([]),
+    shouldLoadPatientAllergies ? listPatientAllergies(selectedPatientId) : Promise.resolve([]),
+    shouldLoadPriorMedications ? listPriorMedications(selectedPatientId) : Promise.resolve([]),
+    shouldLoadExamImports ? listPatientExamImports(selectedPatientId) : Promise.resolve([]),
+    shouldLoadWorkflow ? getInpatientWorkflowSnapshotByLogin(currentLogin) : Promise.resolve(null),
+    shouldLoadPrescriptions ? listMedicalPrescriptions(selectedPatientId) : Promise.resolve([])
   ]);
 
   return {
@@ -2762,7 +2848,6 @@ export async function getDashboardData(
     teams,
     patients,
     recentAdmissions,
-    recentMeasurements,
     medications,
     patientAllergies,
     priorMedications,

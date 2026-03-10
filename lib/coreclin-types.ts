@@ -243,7 +243,6 @@ export type DashboardData = {
   teams: TeamRecord[];
   patients: PatientRecord[];
   recentAdmissions: AdmissionRecord[];
-  recentMeasurements: MeasurementHistoryRecord[];
   medications: MedicationRecord[];
   patientAllergies: PatientAllergyRecord[];
   priorMedications: PriorMedicationRecord[];
