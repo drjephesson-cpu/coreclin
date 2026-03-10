@@ -238,6 +238,11 @@ type DashboardConsoleProps = {
   dbError: string | null;
 };
 
+function buildInpatientWorkflowStorageKey(currentLogin: string): string {
+  const normalizedLogin = normalizeSearchValue(currentLogin) || "default";
+  return `${INPATIENT_WORKFLOW_STORAGE_KEY}:${normalizedLogin}`;
+}
+
 const DASHBOARD_SECTION_IDS = new Set<string>(DASHBOARD_NAV_ITEMS.map((item) => item.id));
 const INPATIENT_OVERVIEW_IDS = new Set<string>(INPATIENT_SIDEBAR_ITEMS.map((item) => item.id));
 const PATIENT_VIEW_IDS = new Set<string>(PATIENT_VIEW_ITEMS.map((item) => item.id));
@@ -1146,6 +1151,10 @@ export default function DashboardConsole({
 
   const agePreview = useMemo(() => calculateAge(patientForm.birthDate), [patientForm.birthDate]);
   const responsibleProfessionalName = currentProfessional?.fullName ?? currentLogin;
+  const inpatientWorkflowStorageKey = useMemo(
+    () => buildInpatientWorkflowStorageKey(currentLogin),
+    [currentLogin]
+  );
 
   const admissionPreview = useMemo(() => {
     const weight = Number(admissionForm.weightKg);
@@ -1225,8 +1234,11 @@ export default function DashboardConsole({
     }
 
     try {
-      const rawPayload = window.localStorage.getItem(INPATIENT_WORKFLOW_STORAGE_KEY);
+      const rawPayload = window.localStorage.getItem(inpatientWorkflowStorageKey);
       if (!rawPayload) {
+        setWorkflowByInpatientKey({});
+        setTrackedInpatientEntries([]);
+        setPriorityTeamIds([]);
         return;
       }
 
@@ -1313,7 +1325,7 @@ export default function DashboardConsole({
     } catch {
       // ignore persisted workflow errors and keep default behavior
     }
-  }, []);
+  }, [inpatientWorkflowStorageKey]);
 
   useEffect(() => {
     if (inpatients.length === 0) {
@@ -1326,7 +1338,7 @@ export default function DashboardConsole({
 
       for (const inpatient of inpatients) {
         const currentEntry = nextByKey.get(inpatient.key);
-        if (!currentEntry || !areInpatientEntriesEquivalent(currentEntry, inpatient)) {
+        if (currentEntry && !areInpatientEntriesEquivalent(currentEntry, inpatient)) {
           nextByKey.set(inpatient.key, inpatient);
           hasChanges = true;
         }
@@ -1342,15 +1354,6 @@ export default function DashboardConsole({
       for (const inpatient of inpatients) {
         const existingWorkflow = next[inpatient.key];
         if (!existingWorkflow) {
-          next[inpatient.key] = {
-            status: "Pendente",
-            assignedTeamId: inpatient.teamId ?? null,
-            mandatory: true,
-            firstVisitCompletedAt: null,
-            evolutionGeneratedAt: null,
-            updatedAt: new Date().toISOString()
-          };
-          hasChanges = true;
           continue;
         }
 
@@ -1430,8 +1433,8 @@ export default function DashboardConsole({
       trackedEntries: trackedInpatientEntries,
       priorityTeamIds
     };
-    window.localStorage.setItem(INPATIENT_WORKFLOW_STORAGE_KEY, JSON.stringify(payload));
-  }, [workflowByInpatientKey, trackedInpatientEntries, priorityTeamIds]);
+    window.localStorage.setItem(inpatientWorkflowStorageKey, JSON.stringify(payload));
+  }, [workflowByInpatientKey, trackedInpatientEntries, priorityTeamIds, inpatientWorkflowStorageKey]);
 
   useEffect(() => {
     const selectableInpatients = [...trackedInpatientEntries, ...inpatients].filter(
@@ -1576,8 +1579,11 @@ export default function DashboardConsole({
   }, [inpatientEntriesWithWorkflow, inpatientTeamFilter]);
 
   const mandatoryOverviewRows = useMemo(
-    () =>
-      inpatientEntriesWithWorkflow
+    () => {
+      const trackedKeys = new Set(trackedInpatientEntries.map((entry) => entry.key));
+
+      return inpatientEntriesWithWorkflow
+        .filter(({ entry }) => trackedKeys.has(entry.key))
         .filter(({ workflow }) => workflow.mandatory)
         .sort((first, second) => {
           const firstPriority = first.workflow.firstVisitCompletedAt ? 1 : 0;
@@ -1587,8 +1593,9 @@ export default function DashboardConsole({
           }
 
           return first.entry.patientName.localeCompare(second.entry.patientName, "pt-BR");
-        }),
-    [inpatientEntriesWithWorkflow]
+        });
+    },
+    [inpatientEntriesWithWorkflow, trackedInpatientEntries]
   );
 
   const dischargedOverviewRows = useMemo(
@@ -4830,12 +4837,15 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                           <div className="dashboard-subsection-block">
                             <h3>Atendimentos obrigatórios</h3>
                             <p className="dashboard-muted">
+                              Farmacêutico responsável pela lista: {responsibleProfessionalName}
+                            </p>
+                            <p className="dashboard-muted">
                               Cole a lista do sistema no formato `Leito | Nome | Prontuário | Admissão` ou
                               `Leito | Nome | Idade | Prontuário | Admissão`.
                             </p>
                             <p className="dashboard-muted">
-                              O paciente entra como novo cadastro e nova internação básica. `Concluído` marca
-                              apenas a 1ª visita; ele só sai daqui após `Gerar evolução`, `Alta` ou `Remover`.
+                              Cada login mantém sua própria lista. `Concluído` marca apenas a 1ª visita; o
+                              paciente só sai daqui após `Gerar evolução`, `Alta` ou `Remover`.
                             </p>
 
                             <div className="dashboard-form">
