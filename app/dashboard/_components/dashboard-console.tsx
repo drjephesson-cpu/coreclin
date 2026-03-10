@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, Fragment, memo, useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import LogoutButton from "@/app/_components/logout-button";
 import { calculateClinicalIndexes } from "@/lib/clinical";
@@ -2135,10 +2135,13 @@ export default function DashboardConsole({
   data,
   dbError
 }: DashboardConsoleProps) {
+  const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
   const [isDashboardTransitionPending, startDashboardTransition] = useTransition();
   const [dashboardTransitionLabel, setDashboardTransitionLabel] = useState("");
+  const [pendingDashboardUrl, setPendingDashboardUrl] = useState<string | null>(null);
+  const [dashboardRefreshPending, setDashboardRefreshPending] = useState(false);
 
   const professionals = data?.professionals ?? [];
   const teams = data?.teams ?? [];
@@ -4425,15 +4428,35 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   const prescriptionSetStartAt = normalizeHospitalDateTime(prescriptionSetForm.startAt);
   const prescriptionSetEndAt = normalizeHospitalDateTime(prescriptionSetForm.endAt);
   const prescriptionSetStatus = prescriptionSetForm.status.trim() || "Validado";
+  const currentDashboardUrl = useMemo(() => {
+    const query = searchParams.toString();
+    return query ? `${pathname}?${query}` : pathname;
+  }, [pathname, searchParams]);
+  const isDashboardLoading =
+    pendingDashboardUrl !== null || dashboardRefreshPending || (isDashboardTransitionPending && !pendingDashboardUrl);
 
   useEffect(() => {
-    if (!isDashboardTransitionPending && dashboardTransitionLabel) {
+    if (pendingDashboardUrl !== null && currentDashboardUrl === pendingDashboardUrl) {
+      setPendingDashboardUrl(null);
+    }
+  }, [currentDashboardUrl, pendingDashboardUrl]);
+
+  useEffect(() => {
+    if (!isDashboardTransitionPending && dashboardRefreshPending) {
+      setDashboardRefreshPending(false);
+    }
+  }, [dashboardRefreshPending, isDashboardTransitionPending]);
+
+  useEffect(() => {
+    if (!isDashboardLoading && dashboardTransitionLabel) {
       setDashboardTransitionLabel("");
     }
-  }, [dashboardTransitionLabel, isDashboardTransitionPending]);
+  }, [dashboardTransitionLabel, isDashboardLoading]);
 
   function navigateDashboard(url: string, label = "Carregando pagina..."): void {
     setDashboardTransitionLabel(label);
+    setPendingDashboardUrl(url);
+    setDashboardRefreshPending(false);
     startDashboardTransition(() => {
       router.push(url);
     });
@@ -4441,6 +4464,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
   function refreshDashboard(label = "Atualizando painel..."): void {
     setDashboardTransitionLabel(label);
+    setDashboardRefreshPending(true);
     startDashboardTransition(() => {
       router.refresh();
     });
@@ -6411,8 +6435,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   }
 
   return (
-    <section className="dashboard-panel" aria-busy={isDashboardTransitionPending}>
-      {isDashboardTransitionPending ? (
+    <section className="dashboard-panel" aria-busy={isDashboardLoading}>
+      {isDashboardLoading ? (
         <div className="dashboard-loading-overlay" role="status" aria-live="polite">
           <div className="dashboard-loading-card">
             <span className="dashboard-loading-spinner" aria-hidden="true" />
