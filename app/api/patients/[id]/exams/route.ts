@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
-import { addPatientExamImport, getPatientExamImportById, removePatientExamImport } from "@/lib/db";
+import {
+  addPatientExamImport,
+  getPatientExamImportById,
+  removePatientExamImport,
+  removePatientExamRecord
+} from "@/lib/db";
 import { extractExamImportFromPdf } from "@/lib/exam-pdf";
 import { type PatientExamResultRecord } from "@/lib/coreclin-types";
 
@@ -225,6 +230,14 @@ export async function DELETE(
   }
 
   try {
+    const searchParams = new URL(request.url).searchParams;
+    const recordKey = searchParams.get("recordKey")?.trim() ?? "";
+
+    if (recordKey) {
+      const examImport = await removePatientExamRecord({ patientId, examImportId, recordKey });
+      return NextResponse.json({ ok: true, examImport });
+    }
+
     await removePatientExamImport({ patientId, examImportId });
     return NextResponse.json({ ok: true });
   } catch (error) {

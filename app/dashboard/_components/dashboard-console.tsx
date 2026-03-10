@@ -101,7 +101,8 @@ const PATIENT_VIEW_ITEMS = [
   { id: "exams", label: "Exames" },
   { id: "prior-use", label: "Medicamentos de uso prévio" },
   { id: "medication-validation", label: "Validação de medicamentos" },
-  { id: "prescriptions", label: "Prescrição médica" }
+  { id: "prescriptions", label: "Prescrição médica" },
+  { id: "evolution", label: "Evolução atualizada" }
 ] as const;
 
 const PRIOR_MEDICATION_FREQUENCY_OPTIONS = [
@@ -1690,11 +1691,15 @@ function groupExamRecordsByDate(
 function ExamResultsPanel({
   records,
   rawText,
-  emptyMessage
+  emptyMessage,
+  onRemoveRecord,
+  removingRecordKey
 }: {
   records: PatientExamResultRecord[];
   rawText?: string;
   emptyMessage: string;
+  onRemoveRecord?: (record: PatientExamResultRecord) => void;
+  removingRecordKey?: string | null;
 }) {
   if (records.length === 0) {
     return <p className="dashboard-muted">{emptyMessage}</p>;
@@ -1722,6 +1727,7 @@ function ExamResultsPanel({
                   <th>Unidade</th>
                   <th>Referência</th>
                   <th>Página</th>
+                  {onRemoveRecord ? <th>Ações</th> : null}
                 </tr>
               </thead>
               <tbody>
@@ -1732,6 +1738,19 @@ function ExamResultsPanel({
                     <td>{record.unit || "-"}</td>
                     <td>{record.referenceRange || "-"}</td>
                     <td>{record.pageNumber}</td>
+                    {onRemoveRecord ? (
+                      <td>
+                        <button
+                          type="button"
+                          className="dashboard-chip-remove"
+                          onClick={() => onRemoveRecord(record)}
+                          disabled={removingRecordKey === record.key}
+                          aria-label={`Remover exame ${record.examName}`}
+                        >
+                          {removingRecordKey === record.key ? "Removendo..." : "Remover"}
+                        </button>
+                      </td>
+                    ) : null}
                   </tr>
                 ))}
               </tbody>
@@ -1908,6 +1927,47 @@ function extractConceptTokens(input: string): string[] {
 
 function extractMedicationIdentityTokens(input: string): string[] {
   return extractConceptTokens(input).filter((token) => !MEDICATION_VARIANT_STOPWORDS.has(token));
+}
+
+function extractMedicationIdentityLabel(input: string): string {
+  const referenceName = getMedicationReferenceName(input);
+  if (!referenceName) {
+    return "";
+  }
+
+  return referenceName
+    .split(/\s+/)
+    .map((fragment) => fragment.trim())
+    .filter((fragment) => fragment.length > 0)
+    .filter((fragment) => {
+      const normalizedFragment = normalizeMedicationName(fragment);
+      return (
+        normalizedFragment.length >= 3 &&
+        !/\d/.test(normalizedFragment) &&
+        !CONCEPT_STOPWORDS.has(normalizedFragment) &&
+        !MEDICATION_VARIANT_STOPWORDS.has(normalizedFragment)
+      );
+    })
+    .join(" ")
+    .trim();
+}
+
+function isStrictMedicationAllergyMatch(firstName: string, secondName: string): boolean {
+  const firstIdentity = normalizeMedicationName(extractMedicationIdentityLabel(firstName));
+  const secondIdentity = normalizeMedicationName(extractMedicationIdentityLabel(secondName));
+  if (!firstIdentity || !secondIdentity) {
+    return false;
+  }
+
+  if (firstIdentity === secondIdentity) {
+    return true;
+  }
+
+  if (hasTokenBoundaryMatch(firstIdentity, secondIdentity) || hasTokenBoundaryMatch(secondIdentity, firstIdentity)) {
+    return true;
+  }
+
+  return hasEquivalentMedicationIdentity(firstName, secondName);
 }
 
 function areMedicationTokensEquivalent(firstToken: string, secondToken: string): boolean {
@@ -2353,7 +2413,7 @@ export default function DashboardConsole({
   const [admissionForm, setAdmissionForm] = useState(createEmptyAdmissionFormState);
   const [admissionFeedback, setAdmissionFeedback] = useState<FeedbackState>(null);
   const [admissionLoading, setAdmissionLoading] = useState(false);
-  const [interviewFeedback, setInterviewFeedback] = useState<FeedbackState>(null);
+  const [evolutionFeedback, setEvolutionFeedback] = useState<FeedbackState>(null);
 
   const [medicationForm, setMedicationForm] = useState({
     name: "",
@@ -2488,6 +2548,7 @@ export default function DashboardConsole({
     useState<PatientExamImportRecord | null>(null);
   const [selectedExamImportDetailsLoading, setSelectedExamImportDetailsLoading] = useState(false);
   const [examImportRemovingId, setExamImportRemovingId] = useState<number | null>(null);
+  const [examRecordRemovingKey, setExamRecordRemovingKey] = useState<string | null>(null);
   const [inpatientWorkflowPersistenceReady, setInpatientWorkflowPersistenceReady] = useState(false);
   const lastPersistedInpatientWorkflowRef = useRef(
     JSON.stringify(persistedInpatientWorkflowPayload)
@@ -3083,9 +3144,10 @@ export default function DashboardConsole({
     setAdmissionSummarySelection("");
     setAllergyForm({ query: "", selectedValue: "", reactionDescription: "" });
     setAllergyFeedback(null);
-    setInterviewFeedback(null);
+    setEvolutionFeedback(null);
     setExamImportFeedback(null);
     setExamImportResult(null);
+    setExamRecordRemovingKey(null);
     if (examPdfInputRef.current) {
       examPdfInputRef.current.value = "";
     }
@@ -3170,7 +3232,8 @@ export default function DashboardConsole({
     const suggestionMap = new Map<string, AllergySuggestionItem>();
 
     for (const descriptor of medicationDescriptors) {
-      const medicationValue = descriptor.medication.name.trim();
+      const medicationValue =
+        extractMedicationIdentityLabel(descriptor.medication.name) || descriptor.medication.name.trim();
       const medicationKey = `medication:${normalizeMedicationName(medicationValue)}`;
       if (medicationValue && !suggestionMap.has(medicationKey)) {
         suggestionMap.set(medicationKey, {
@@ -3188,8 +3251,8 @@ export default function DashboardConsole({
       }
 
       for (const ingredientTerm of descriptor.activeIngredientTerms) {
-        const ingredientValue = ingredientTerm.raw.trim();
-        const ingredientKey = `ingredient:${ingredientTerm.normalized}`;
+        const ingredientValue = extractMedicationIdentityLabel(ingredientTerm.raw) || ingredientTerm.raw.trim();
+        const ingredientKey = `ingredient:${normalizeMedicationName(ingredientValue)}`;
         if (ingredientValue && !suggestionMap.has(ingredientKey)) {
           suggestionMap.set(ingredientKey, {
             key: ingredientKey,
@@ -3384,7 +3447,12 @@ function resolveAllergyConflict(medicationName: string): AllergyConflictResult |
         continue;
       }
 
-      if (isStrictMedicationReferenceMatch(medicationName, allergy.allergyName)) {
+      const normalizedAllergyIdentity = normalizeMedicationName(extractMedicationIdentityLabel(allergy.allergyName));
+      if (!normalizedAllergyIdentity && MEDICATION_VARIANT_STOPWORDS.has(normalizedAllergy)) {
+        continue;
+      }
+
+      if (isStrictMedicationAllergyMatch(medicationName, allergy.allergyName)) {
         return {
           allergyName: allergy.allergyName,
           kind: "direct",
@@ -3394,7 +3462,7 @@ function resolveAllergyConflict(medicationName: string): AllergyConflictResult |
 
       for (const prescribedDescriptor of prescribedDescriptors) {
         const ingredientMatch = prescribedDescriptor.activeIngredientTerms.find((ingredientTerm) =>
-          isStrictMedicationReferenceMatch(ingredientTerm.raw, allergy.allergyName)
+          isStrictMedicationAllergyMatch(ingredientTerm.raw, allergy.allergyName)
         );
         if (ingredientMatch) {
           return {
@@ -3404,7 +3472,7 @@ function resolveAllergyConflict(medicationName: string): AllergyConflictResult |
           };
         }
 
-        if (isStrictMedicationReferenceMatch(prescribedDescriptor.medication.name, allergy.allergyName)) {
+        if (isStrictMedicationAllergyMatch(prescribedDescriptor.medication.name, allergy.allergyName)) {
           return {
             allergyName: allergy.allergyName,
             kind: "direct",
@@ -3414,7 +3482,7 @@ function resolveAllergyConflict(medicationName: string): AllergyConflictResult |
 
         const aliasMatch = splitCatalogTerms(
           prescribedDescriptor.medication.searchAliases ?? ""
-        ).find((aliasTerm) => isStrictMedicationReferenceMatch(aliasTerm.raw, allergy.allergyName));
+        ).find((aliasTerm) => isStrictMedicationAllergyMatch(aliasTerm.raw, allergy.allergyName));
         if (aliasMatch) {
           return {
             allergyName: allergy.allergyName,
@@ -3424,7 +3492,7 @@ function resolveAllergyConflict(medicationName: string): AllergyConflictResult |
         }
 
         const exactTokenMatch = extractMedicationIdentityTokens(prescribedDescriptor.medication.name).find(
-          (token) => token === normalizedAllergy
+          (token) => token === normalizedAllergyIdentity
         );
         if (exactTokenMatch) {
           return {
@@ -3902,6 +3970,83 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       });
     } finally {
       setExamImportRemovingId(null);
+    }
+  }
+
+  async function handleRemoveExamRecord(
+    examImport: PatientExamImportRecord,
+    record: PatientExamResultRecord
+  ): Promise<void> {
+    if (!selectedPatient) {
+      setExamImportFeedback({
+        type: "error",
+        message: "Selecione um paciente antes de remover o exame."
+      });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Remover o exame "${record.examName}" (${record.result}) desta importação?`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setExamImportFeedback(null);
+    setExamRecordRemovingKey(record.key);
+
+    try {
+      const response = await fetch(
+        `/api/patients/${selectedPatient.id}/exams?examImportId=${examImport.id}&recordKey=${encodeURIComponent(
+          record.key
+        )}`,
+        {
+          method: "DELETE"
+        }
+      );
+
+      const result = (await response.json()) as {
+        message?: string;
+        examImport?: PatientExamImportRecord;
+      };
+
+      if (!response.ok || !result.examImport) {
+        setExamImportFeedback({
+          type: "error",
+          message: result.message ?? "Não foi possível remover o exame selecionado."
+        });
+        return;
+      }
+
+      updateExamImportLocally(result.examImport);
+
+      if (selectedExamImportId === String(result.examImport.id)) {
+        setSelectedExamImportDetails(result.examImport);
+      }
+
+      if (
+        examImportResult &&
+        examImport.fileName === examImportResult.fileName &&
+        examImport.createdAt === examImportResult.importedAt
+      ) {
+        setExamImportResult({
+          ...examImportResult,
+          records: result.examImport.records,
+          rawText: result.examImport.rawText
+        });
+      }
+
+      setExamImportFeedback({
+        type: "success",
+        message: "Exame removido da importação com sucesso."
+      });
+    } catch {
+      setExamImportFeedback({
+        type: "error",
+        message: "Erro de conexão ao remover o exame selecionado."
+      });
+    } finally {
+      setExamRecordRemovingKey(null);
     }
   }
 
@@ -4767,6 +4912,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }));
   }
 
+  function updateExamImportLocally(nextExamImport: PatientExamImportRecord): void {
+    setExamImports((current) => upsertRecordById(current, nextExamImport));
+    mutateCachedPatientDetails(nextExamImport.patientId, (details) => ({
+      ...details,
+      examImports: upsertRecordById(details.examImports, nextExamImport)
+    }));
+  }
+
   function removeExamImportLocally(patientId: number, examImportId: number): void {
     setExamImports((current) => removeRecordById(current, examImportId));
     mutateCachedPatientDetails(patientId, (details) => ({
@@ -5300,7 +5453,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     connectionErrorMessage?: string;
   }): Promise<void> {
     setAdmissionFeedback(null);
-    setInterviewFeedback(null);
+    setEvolutionFeedback(null);
 
     if (!selectedPatient) {
       setAdmissionFeedback({
@@ -5443,11 +5596,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     });
   }
 
-  async function handleCopyInterviewEvolution(): Promise<void> {
-    setInterviewFeedback(null);
+  async function handleCopyEvolution(): Promise<void> {
+    setEvolutionFeedback(null);
 
     if (!visibleInterviewEvolutionText.trim()) {
-      setInterviewFeedback({
+      setEvolutionFeedback({
         type: "error",
         message: "Preencha algum dado da entrevista para gerar a evolução."
       });
@@ -5456,12 +5609,12 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
     try {
       await navigator.clipboard.writeText(visibleInterviewEvolutionText);
-      setInterviewFeedback({
+      setEvolutionFeedback({
         type: "success",
         message: "Padrão de evolução copiado."
       });
     } catch {
-      setInterviewFeedback({
+      setEvolutionFeedback({
         type: "error",
         message: "Não foi possível copiar a evolução."
       });
@@ -5634,13 +5787,23 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       return;
     }
 
-    const allergyName = (allergyForm.selectedValue || allergyForm.query).trim();
+    const rawAllergyName = (allergyForm.selectedValue || allergyForm.query).trim();
     const reactionDescription = allergyForm.reactionDescription.trim();
+    const allergyIdentityLabel = extractMedicationIdentityLabel(rawAllergyName);
+    const allergyName = allergyIdentityLabel || rawAllergyName;
 
     if (!allergyName) {
       setAllergyFeedback({
         type: "error",
         message: "Informe uma alergia para registrar (medicamento, princípio ativo ou classe)."
+      });
+      return;
+    }
+
+    if (!allergyIdentityLabel && MEDICATION_VARIANT_STOPWORDS.has(normalizeMedicationName(rawAllergyName))) {
+      setAllergyFeedback({
+        type: "error",
+        message: "Informe o nome do medicamento ou princípio ativo sem o sal (ex.: levotiroxina)."
       });
       return;
     }
@@ -8306,8 +8469,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                           <div className="dashboard-subsection-block">
                             <h3>Entrevista</h3>
                             <p className="dashboard-muted">
-                              Registre a fonte da informação e gere uma evolução padronizada só com os dados
-                              disponíveis desta internação.
+                              Registre a fonte da informação e os dados clínicos disponíveis desta internação.
                             </p>
 
                             <form className="dashboard-form" onSubmit={handleInterviewSubmit}>
@@ -8435,12 +8597,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 </p>
                               ) : null}
 
-                              {interviewFeedback ? (
-                                <p className={`dashboard-feedback dashboard-feedback-${interviewFeedback.type}`}>
-                                  {interviewFeedback.message}
-                                </p>
-                              ) : null}
-
                               <div className="dashboard-inline-actions">
                                 <button
                                   type="submit"
@@ -8448,38 +8604,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 >
                                   {admissionLoading ? "Salvando..." : "Salvar entrevista"}
                                 </button>
-                                <button
-                                  type="button"
-                                  className="dashboard-mini-button"
-                                  onClick={() => void handleCopyInterviewEvolution()}
-                                >
-                                  Copiar evolução
-                                </button>
                               </div>
                             </form>
-
-                            <div className="dashboard-calculation-box">
-                              <h3>Padrão de evolução</h3>
-                              <p className="dashboard-muted">
-                                Só entram no texto os blocos que já tiverem informação preenchida.
-                              </p>
-                              <label className="dashboard-inline-toggle">
-                                <input
-                                  type="checkbox"
-                                  checked={interviewEvolutionIncludeTitles}
-                                  onChange={(event) =>
-                                    setInterviewEvolutionIncludeTitles(event.target.checked)
-                                  }
-                                />
-                                Mostrar títulos automáticos
-                              </label>
-                              <textarea
-                                className="dashboard-evolution-preview"
-                                value={visibleInterviewEvolutionText}
-                                readOnly
-                                rows={22}
-                              />
-                            </div>
                           </div>
                         ) : null}
 
@@ -8619,6 +8745,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
                                       <div className="dashboard-calculation-box">
                                         <h3>Painel dos exames salvos</h3>
+                                        <p className="dashboard-muted">
+                                          Você pode remover resultados individualmente sem excluir a importação inteira.
+                                        </p>
                                         {selectedExamImportDetailsLoading ? (
                                           <p className="dashboard-muted">
                                             Carregando detalhes completos da importação...
@@ -8628,6 +8757,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                           records={selectedSavedExamImportDetails.records}
                                           rawText={selectedSavedExamImportDetails.rawText}
                                           emptyMessage="Essa importação não gerou resultados estruturados, mas o texto foi salvo."
+                                          onRemoveRecord={(record) =>
+                                            void handleRemoveExamRecord(
+                                              selectedSavedExamImportDetails,
+                                              record
+                                            )
+                                          }
+                                          removingRecordKey={examRecordRemovingKey}
                                         />
                                       </div>
 
@@ -9786,6 +9922,55 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 </span>
                                 <span className="dashboard-flag-legend-text">Hepatotóxico</span>
                               </div>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {patientView === "evolution" ? (
+                          <div className="dashboard-subsection-block">
+                            <h3>Evolução atualizada</h3>
+                            <p className="dashboard-muted">
+                              O texto considera os dados já preenchidos da internação, exames importados,
+                              reconciliação e intervenções da prescrição.
+                            </p>
+
+                            {evolutionFeedback ? (
+                              <p className={`dashboard-feedback dashboard-feedback-${evolutionFeedback.type}`}>
+                                {evolutionFeedback.message}
+                              </p>
+                            ) : null}
+
+                            <div className="dashboard-inline-actions">
+                              <button
+                                type="button"
+                                className="dashboard-mini-button"
+                                onClick={() => void handleCopyEvolution()}
+                              >
+                                Copiar evolução
+                              </button>
+                            </div>
+
+                            <div className="dashboard-calculation-box">
+                              <h3>Prévia da evolução</h3>
+                              <p className="dashboard-muted">
+                                Só entram no texto os blocos que já tiverem informação preenchida.
+                              </p>
+                              <label className="dashboard-inline-toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={interviewEvolutionIncludeTitles}
+                                  onChange={(event) =>
+                                    setInterviewEvolutionIncludeTitles(event.target.checked)
+                                  }
+                                />
+                                Mostrar títulos automáticos
+                              </label>
+                              <textarea
+                                className="dashboard-evolution-preview"
+                                value={visibleInterviewEvolutionText}
+                                readOnly
+                                rows={22}
+                              />
                             </div>
                           </div>
                         ) : null}

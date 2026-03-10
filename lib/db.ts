@@ -130,6 +130,12 @@ export type RemovePatientExamImportInput = {
   examImportId: number;
 };
 
+export type RemovePatientExamRecordInput = {
+  patientId: number;
+  examImportId: number;
+  recordKey: string;
+};
+
 export type AddPriorMedicationInput = {
   patientId: number;
   medicationId?: number;
@@ -2398,6 +2404,98 @@ export async function removePatientExamImport(input: RemovePatientExamImportInpu
     }
 
     await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function removePatientExamRecord(
+  input: RemovePatientExamRecordInput
+): Promise<PatientExamImportRecord> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await ensurePatientExists(client, input.patientId);
+
+    const normalizedRecordKey = input.recordKey.trim();
+    if (!normalizedRecordKey) {
+      throw new Error("Resultado de exame inválido.");
+    }
+
+    const currentExamImportResult = await client.query(
+      `
+        SELECT
+          pei.id,
+          pei.patient_id,
+          p.full_name AS patient_name,
+          pei.imported_by_professional_id,
+          prof.full_name AS imported_by_professional_name,
+          pei.file_name,
+          pei.page_count,
+          pei.raw_text,
+          pei.extracted_records,
+          pei.created_at
+        FROM patient_exam_imports pei
+        INNER JOIN patients p ON p.id = pei.patient_id
+        INNER JOIN professionals prof ON prof.id = pei.imported_by_professional_id
+        WHERE pei.id = $1 AND pei.patient_id = $2
+        LIMIT 1
+      `,
+      [input.examImportId, input.patientId]
+    );
+
+    if (currentExamImportResult.rowCount === 0) {
+      throw new Error("Importação de exames não encontrada para este paciente.");
+    }
+
+    const currentExamImport = mapPatientExamImport(currentExamImportResult.rows[0] as DbRow);
+    const nextRecords = currentExamImport.records.filter((record) => record.key !== normalizedRecordKey);
+
+    if (nextRecords.length === currentExamImport.records.length) {
+      throw new Error("Resultado de exame não encontrado nesta importação.");
+    }
+
+    const normalizedRecords = normalizeExamImportRecords(nextRecords);
+
+    await client.query(
+      `
+        UPDATE patient_exam_imports
+        SET extracted_records = $3::jsonb
+        WHERE id = $1 AND patient_id = $2
+      `,
+      [input.examImportId, input.patientId, JSON.stringify(normalizedRecords)]
+    );
+
+    const updatedExamImportResult = await client.query(
+      `
+        SELECT
+          pei.id,
+          pei.patient_id,
+          p.full_name AS patient_name,
+          pei.imported_by_professional_id,
+          prof.full_name AS imported_by_professional_name,
+          pei.file_name,
+          pei.page_count,
+          pei.raw_text,
+          pei.extracted_records,
+          pei.created_at
+        FROM patient_exam_imports pei
+        INNER JOIN patients p ON p.id = pei.patient_id
+        INNER JOIN professionals prof ON prof.id = pei.imported_by_professional_id
+        WHERE pei.id = $1 AND pei.patient_id = $2
+        LIMIT 1
+      `,
+      [input.examImportId, input.patientId]
+    );
+
+    await client.query("COMMIT");
+    return mapPatientExamImport(updatedExamImportResult.rows[0] as DbRow);
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
