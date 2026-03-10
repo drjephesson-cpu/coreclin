@@ -2590,10 +2590,12 @@ export async function listRecentMeasurements(limit = 30): Promise<MeasurementHis
   return result.rows.map((row) => mapMeasurement(row as DbRow));
 }
 
-export async function listPatientAllergies(): Promise<PatientAllergyRecord[]> {
+export async function listPatientAllergies(patientId?: number | null): Promise<PatientAllergyRecord[]> {
   await ensureDatabaseReady();
   const pool = getPool();
-  const result = await pool.query(`
+  const shouldFilterByPatientId = Number.isInteger(patientId) && Number(patientId) > 0;
+  const result = await pool.query(
+    `
     SELECT
       pa.id,
       pa.patient_id,
@@ -2602,16 +2604,21 @@ export async function listPatientAllergies(): Promise<PatientAllergyRecord[]> {
       pa.created_at
     FROM patient_allergies pa
     INNER JOIN patients p ON p.id = pa.patient_id
+    ${shouldFilterByPatientId ? "WHERE pa.patient_id = $1" : ""}
     ORDER BY pa.created_at DESC, pa.id DESC
-  `);
+  `,
+    shouldFilterByPatientId ? [Number(patientId)] : []
+  );
 
   return result.rows.map((row) => mapPatientAllergy(row as DbRow));
 }
 
-export async function listPriorMedications(): Promise<PriorMedicationRecord[]> {
+export async function listPriorMedications(patientId?: number | null): Promise<PriorMedicationRecord[]> {
   await ensureDatabaseReady();
   const pool = getPool();
-  const result = await pool.query(`
+  const shouldFilterByPatientId = Number.isInteger(patientId) && Number(patientId) > 0;
+  const result = await pool.query(
+    `
     SELECT
       pm.id,
       pm.patient_id,
@@ -2629,16 +2636,21 @@ export async function listPriorMedications(): Promise<PriorMedicationRecord[]> {
       pm.created_at
     FROM patient_prior_medications pm
     INNER JOIN patients p ON p.id = pm.patient_id
+    ${shouldFilterByPatientId ? "WHERE pm.patient_id = $1" : ""}
     ORDER BY pm.created_at DESC, pm.id DESC
-  `);
+  `,
+    shouldFilterByPatientId ? [Number(patientId)] : []
+  );
 
   return result.rows.map((row) => mapPriorMedication(row as DbRow));
 }
 
-export async function listPatientExamImports(): Promise<PatientExamImportRecord[]> {
+export async function listPatientExamImports(patientId?: number | null): Promise<PatientExamImportRecord[]> {
   await ensureDatabaseReady();
   const pool = getPool();
-  const result = await pool.query(`
+  const shouldFilterByPatientId = Number.isInteger(patientId) && Number(patientId) > 0;
+  const result = await pool.query(
+    `
     SELECT
       pei.id,
       pei.patient_id,
@@ -2653,16 +2665,23 @@ export async function listPatientExamImports(): Promise<PatientExamImportRecord[
     FROM patient_exam_imports pei
     INNER JOIN patients p ON p.id = pei.patient_id
     INNER JOIN professionals prof ON prof.id = pei.imported_by_professional_id
+    ${shouldFilterByPatientId ? "WHERE pei.patient_id = $1" : ""}
     ORDER BY pei.created_at DESC, pei.id DESC
-  `);
+  `,
+    shouldFilterByPatientId ? [Number(patientId)] : []
+  );
 
   return result.rows.map((row) => mapPatientExamImport(row as DbRow));
 }
 
-export async function listMedicalPrescriptions(): Promise<MedicalPrescriptionRecord[]> {
+export async function listMedicalPrescriptions(
+  patientId?: number | null
+): Promise<MedicalPrescriptionRecord[]> {
   await ensureDatabaseReady();
   const pool = getPool();
-  const result = await pool.query(`
+  const shouldFilterByPatientId = Number.isInteger(patientId) && Number(patientId) > 0;
+  const result = await pool.query(
+    `
     SELECT
       mp.id,
       mp.patient_id,
@@ -2690,14 +2709,24 @@ export async function listMedicalPrescriptions(): Promise<MedicalPrescriptionRec
     FROM medical_prescriptions mp
     INNER JOIN patients p ON p.id = mp.patient_id
     LEFT JOIN admissions a ON a.id = mp.admission_id
+    ${shouldFilterByPatientId ? "WHERE mp.patient_id = $1" : ""}
     ORDER BY mp.created_at DESC, mp.id DESC
-  `);
+  `,
+    shouldFilterByPatientId ? [Number(patientId)] : []
+  );
 
   return result.rows.map((row) => mapMedicalPrescription(row as DbRow));
 }
 
-export async function getDashboardData(currentLogin: string): Promise<DashboardData> {
+export async function getDashboardData(
+  currentLogin: string,
+  options?: { selectedPatientId?: number | null }
+): Promise<DashboardData> {
   await ensureDatabaseReady();
+  const selectedPatientId =
+    Number.isInteger(options?.selectedPatientId) && Number(options?.selectedPatientId) > 0
+      ? Number(options?.selectedPatientId)
+      : null;
 
   const [
     currentProfessional,
@@ -2720,11 +2749,11 @@ export async function getDashboardData(currentLogin: string): Promise<DashboardD
     listRecentAdmissions(80),
     listRecentMeasurements(80),
     listMedicationCatalog(),
-    listPatientAllergies(),
-    listPriorMedications(),
-    listPatientExamImports(),
+    listPatientAllergies(selectedPatientId),
+    listPriorMedications(selectedPatientId),
+    listPatientExamImports(selectedPatientId),
     getInpatientWorkflowSnapshotByLogin(currentLogin),
-    listMedicalPrescriptions()
+    listMedicalPrescriptions(selectedPatientId)
   ]);
 
   return {

@@ -7,11 +7,29 @@ import { getDashboardData, isDatabaseConfigured } from "@/lib/db";
 
 export const runtime = "nodejs";
 
-export default async function DashboardPage() {
+type DashboardPageProps = {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+};
+
+function parseSelectedPatientId(rawValue: string | string[] | undefined): number | null {
+  const candidate = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+  const parsedValue = Number(candidate);
+
+  if (!Number.isInteger(parsedValue) || parsedValue <= 0) {
+    return null;
+  }
+
+  return parsedValue;
+}
+
+export default async function DashboardPage({ searchParams }: DashboardPageProps) {
   const session = await getCurrentSession();
   if (!session) {
     redirect("/");
   }
+
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+  const selectedPatientId = parseSelectedPatientId(resolvedSearchParams?.patientId);
 
   let dbError: string | null = null;
   let data: DashboardData | null = null;
@@ -20,7 +38,7 @@ export default async function DashboardPage() {
     dbError = "A variável DATABASE_URL não foi encontrada.";
   } else {
     try {
-      data = await getDashboardData(session.username);
+      data = await getDashboardData(session.username, { selectedPatientId });
     } catch (error) {
       dbError = error instanceof Error ? error.message : "Não foi possível carregar os dados do painel.";
     }

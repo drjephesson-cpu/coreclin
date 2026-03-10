@@ -20,6 +20,14 @@ type PdfJsModule = {
   getDocument: (source: unknown) => {
     promise: Promise<PdfJsDocument>;
   };
+  GlobalWorkerOptions?: {
+    workerPort?: unknown;
+    workerSrc?: string;
+  };
+};
+
+type PdfJsWorkerModule = {
+  WorkerMessageHandler?: unknown;
 };
 
 type MatrixLike =
@@ -326,6 +334,23 @@ function ensurePdfJsNodePolyfills(): void {
   }
 }
 
+async function ensurePdfJsWorkerRegistered(): Promise<void> {
+  const runtime = globalThis as unknown as {
+    pdfjsWorker?: {
+      WorkerMessageHandler?: unknown;
+    };
+  };
+
+  if (runtime.pdfjsWorker?.WorkerMessageHandler) {
+    return;
+  }
+
+  const workerModule = (await import("pdfjs-dist/legacy/build/pdf.worker.mjs")) as PdfJsWorkerModule;
+  runtime.pdfjsWorker = {
+    WorkerMessageHandler: workerModule.WorkerMessageHandler
+  };
+}
+
 function getUnknownErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
     return error.message.trim();
@@ -577,7 +602,12 @@ export async function extractExamImportFromPdf(
   pdfBytes: Uint8Array
 ): Promise<ExtractedExamImportPayload> {
   ensurePdfJsNodePolyfills();
+  await ensurePdfJsWorkerRegistered();
   const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as PdfJsModule;
+  if (pdfjs.GlobalWorkerOptions) {
+    pdfjs.GlobalWorkerOptions.workerPort = null;
+    pdfjs.GlobalWorkerOptions.workerSrc = "";
+  }
   const pdfDocument = await loadPdfDocument(pdfjs, pdfBytes);
   const pageLines: Array<{ pageNumber: number; line: string }> = [];
 
