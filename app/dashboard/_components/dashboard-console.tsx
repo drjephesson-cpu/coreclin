@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import LogoutButton from "@/app/_components/logout-button";
@@ -125,6 +125,9 @@ const CONCEPT_STOPWORDS = new Set([
   "capsulas",
   "ampola",
   "ampolas",
+  "medicamento",
+  "cadastrado",
+  "nao",
   "mg",
   "g",
   "ml",
@@ -133,6 +136,45 @@ const CONCEPT_STOPWORDS = new Set([
   "vo",
   "im",
   "iv"
+]);
+const MEDICATION_VARIANT_STOPWORDS = new Set([
+  "maleato",
+  "fumarato",
+  "hemifumarato",
+  "cloridrato",
+  "hidrocloridrato",
+  "bromidrato",
+  "carbonato",
+  "citrato",
+  "fosfato",
+  "succinato",
+  "acetato",
+  "besilato",
+  "mesilato",
+  "brometo",
+  "tartrato",
+  "nitrato",
+  "lactato",
+  "pamoato",
+  "oxalato",
+  "benzoato",
+  "cloreto",
+  "sodica",
+  "sodico",
+  "sodio",
+  "potassica",
+  "potassico",
+  "potassio",
+  "calcica",
+  "calcico",
+  "calcio",
+  "magnesio",
+  "monoidratado",
+  "diidratado",
+  "triidratado",
+  "hidratado",
+  "anidro",
+  "base"
 ]);
 const THERAPEUTIC_CLASS_RELATION_RULES = [
   { allergyToken: "penicilin", classTokens: ["betalactam"] },
@@ -943,7 +985,15 @@ function isMedicationNameCompatible(firstName: string, secondName: string): bool
     return true;
   }
 
-  return hasTokenBoundaryMatch(first, second) || hasTokenBoundaryMatch(second, first);
+  if (hasTokenBoundaryMatch(first, second) || hasTokenBoundaryMatch(second, first)) {
+    return true;
+  }
+
+  if (hasEquivalentMedicationIdentity(firstName, secondName)) {
+    return true;
+  }
+
+  return hasConceptTermMatch(first, second);
 }
 
 function matchesMedicationReferenceList(
@@ -1002,7 +1052,7 @@ function splitCatalogTerms(input: string): Array<{ raw: string; normalized: stri
 }
 
 function extractConceptTokens(input: string): string[] {
-  const normalized = normalizeMedicationName(input);
+  const normalized = normalizeMedicationName(getMedicationReferenceName(input));
   if (!normalized) {
     return [];
   }
@@ -1011,10 +1061,51 @@ function extractConceptTokens(input: string): string[] {
     .split(" ")
     .map((token) => token.trim())
     .filter((token) => token.length >= 3)
-    .filter((token) => !/^\d+$/.test(token))
+    .filter((token) => !/\d/.test(token))
     .filter((token) => !CONCEPT_STOPWORDS.has(token));
 
   return Array.from(new Set(tokens));
+}
+
+function extractMedicationIdentityTokens(input: string): string[] {
+  return extractConceptTokens(input).filter((token) => !MEDICATION_VARIANT_STOPWORDS.has(token));
+}
+
+function areMedicationTokensEquivalent(firstToken: string, secondToken: string): boolean {
+  if (firstToken === secondToken) {
+    return true;
+  }
+
+  if (firstToken.length >= 5 && secondToken.length >= 5) {
+    return firstToken.startsWith(secondToken) || secondToken.startsWith(firstToken);
+  }
+
+  return false;
+}
+
+function hasEquivalentMedicationIdentity(firstName: string, secondName: string): boolean {
+  const firstTokens = extractMedicationIdentityTokens(firstName);
+  const secondTokens = extractMedicationIdentityTokens(secondName);
+  if (firstTokens.length === 0 || secondTokens.length === 0) {
+    return false;
+  }
+
+  if (firstTokens.length !== secondTokens.length) {
+    return false;
+  }
+
+  const remainingSecondTokens = [...secondTokens];
+  for (const firstToken of firstTokens) {
+    const secondTokenIndex = remainingSecondTokens.findIndex((secondToken) =>
+      areMedicationTokensEquivalent(firstToken, secondToken)
+    );
+    if (secondTokenIndex < 0) {
+      return false;
+    }
+    remainingSecondTokens.splice(secondTokenIndex, 1);
+  }
+
+  return remainingSecondTokens.length === 0;
 }
 
 function extractTherapeuticClassCodes(input: string): string[] {
@@ -1211,6 +1302,8 @@ export default function DashboardConsole({
 }: DashboardConsoleProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [isDashboardTransitionPending, startDashboardTransition] = useTransition();
+  const [dashboardTransitionLabel, setDashboardTransitionLabel] = useState("");
 
   const professionals = data?.professionals ?? [];
   const teams = data?.teams ?? [];
@@ -2113,6 +2206,47 @@ export default function DashboardConsole({
     });
   }
 
+  function isMedicationReconciled(prescriptionName: string, referenceMedicationName: string): boolean {
+    if (isMedicationNameCompatible(prescriptionName, referenceMedicationName)) {
+      return true;
+    }
+
+    const prescribedDescriptors = findMedicationDescriptorsByText(prescriptionName);
+    const referenceDescriptors = findMedicationDescriptorsByText(referenceMedicationName);
+
+    if (prescribedDescriptors.length === 0 || referenceDescriptors.length === 0) {
+      return false;
+    }
+
+    return prescribedDescriptors.some((prescribedDescriptor) =>
+      referenceDescriptors.some((referenceDescriptor) => {
+        if (prescribedDescriptor.medication.id === referenceDescriptor.medication.id) {
+          return true;
+        }
+
+        if (
+          hasEquivalentMedicationIdentity(
+            prescribedDescriptor.medication.name,
+            referenceDescriptor.medication.name
+          )
+        ) {
+          return true;
+        }
+
+        return prescribedDescriptor.activeIngredientTerms.some((prescribedIngredient) =>
+          referenceDescriptor.activeIngredientTerms.some(
+            (referenceIngredient) =>
+              hasConceptTermMatch(
+                prescribedIngredient.normalized,
+                referenceIngredient.normalized
+              ) ||
+              hasEquivalentMedicationIdentity(prescribedIngredient.raw, referenceIngredient.raw)
+          )
+        );
+      })
+    );
+  }
+
 function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized: string): boolean {
   if (!allergyNormalized || !classNormalized) {
     return false;
@@ -2635,7 +2769,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             ? `${result.examImport.records.length} resultado(s) extraído(s) e salvo(s) no paciente.`
             : "Texto extraído e salvo no paciente, sem resultados estruturados identificados."
       });
-      router.refresh();
+      refreshDashboard();
     } catch {
       setExamImportResult(null);
       setExamImportFeedback({
@@ -2900,7 +3034,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       const prescriptionDate =
         group.validationStartAt ?? group.validationEndAt ?? group.prescriptions[0]?.createdAt ?? null;
       const reconciled = group.prescriptions.some((prescription) =>
-        isMedicationNameCompatible(prescription.medicationName, medicationName)
+        isMedicationReconciled(prescription.medicationName, medicationName)
       );
       return {
         key: group.key,
@@ -2924,7 +3058,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           const prescriptionDate =
             group.validationStartAt ?? group.validationEndAt ?? group.prescriptions[0]?.createdAt ?? null;
           const reconciled = group.prescriptions.some((prescription) =>
-            isMedicationNameCompatible(prescription.medicationName, priorMedication.medicationName)
+            isMedicationReconciled(prescription.medicationName, priorMedication.medicationName)
           );
           return {
             key: group.key,
@@ -2969,11 +3103,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         }
 
         return (
-          isMedicationNameCompatible(
+          isMedicationReconciled(
             prescription.medicationName,
             selectedPrescriptionMedicationReferenceName
           ) ||
-          isMedicationNameCompatible(
+          isMedicationReconciled(
             selectedPrescriptionMedicationReferenceName,
             prescription.medicationName
           )
@@ -3042,11 +3176,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       }
 
       return (
-        isMedicationNameCompatible(
+        isMedicationReconciled(
           prescription.medicationName,
           selectedPrescriptionMedicationReferenceName
         ) ||
-        isMedicationNameCompatible(
+        isMedicationReconciled(
           selectedPrescriptionMedicationReferenceName,
           prescription.medicationName
         )
@@ -3061,6 +3195,26 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   const prescriptionSetStartAt = normalizeHospitalDateTime(prescriptionSetForm.startAt);
   const prescriptionSetEndAt = normalizeHospitalDateTime(prescriptionSetForm.endAt);
   const prescriptionSetStatus = prescriptionSetForm.status.trim() || "Validado";
+
+  useEffect(() => {
+    if (!isDashboardTransitionPending && dashboardTransitionLabel) {
+      setDashboardTransitionLabel("");
+    }
+  }, [dashboardTransitionLabel, isDashboardTransitionPending]);
+
+  function navigateDashboard(url: string, label = "Carregando pagina..."): void {
+    setDashboardTransitionLabel(label);
+    startDashboardTransition(() => {
+      router.push(url);
+    });
+  }
+
+  function refreshDashboard(label = "Atualizando painel..."): void {
+    setDashboardTransitionLabel(label);
+    startDashboardTransition(() => {
+      router.refresh();
+    });
+  }
 
   function buildDashboardUrl(options?: {
     section?: DashboardSectionId;
@@ -3116,13 +3270,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       return;
     }
 
-    router.push(
+    navigateDashboard(
       buildDashboardUrl({
         section: "inpatients",
         inpatientMode: requestedInpatientMode,
         patientId: Number(selectedPatientId),
         patientView: view
-      })
+      }),
+      "Abrindo paciente..."
     );
   }
 
@@ -3137,13 +3292,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setPatientView(targetView);
     setPatientDetailsOpen(true);
     setSelectedPrescriptionMedicationHistory(null);
-    router.push(
+    navigateDashboard(
       buildDashboardUrl({
         section: "inpatients",
         inpatientMode: nextInpatientMode,
         patientId,
         patientView: targetView
-      })
+      }),
+      "Abrindo paciente..."
     );
   }
 
@@ -3153,11 +3309,12 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setInpatientOverviewMode(requestedInpatientMode);
     setPatientDetailsOpen(false);
     setSelectedPrescriptionMedicationHistory(null);
-    router.push(
+    navigateDashboard(
       buildDashboardUrl({
         section: "inpatients",
         inpatientMode: requestedInpatientMode
-      })
+      }),
+      "Voltando para a lista..."
     );
   }
 
@@ -3399,7 +3556,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         password: "",
         institution: ""
       });
-      router.refresh();
+      refreshDashboard();
     } catch {
       setProfessionalFeedback({
         type: "error",
@@ -3430,7 +3587,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
       setTeamFeedback({ type: "success", message: "Equipe cadastrada com sucesso." });
       setTeamName("");
-      router.refresh();
+      refreshDashboard();
     } catch {
       setTeamFeedback({ type: "error", message: "Erro de conexão ao cadastrar equipe." });
     } finally {
@@ -3469,7 +3626,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       setPatientInitialAllergyForm({
         medicationId: medications[0] ? String(medications[0].id) : ""
       });
-      router.refresh();
+      refreshDashboard();
     } catch {
       setPatientFeedback({
         type: "error",
@@ -3589,7 +3746,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         bmiFormula: "quetelet",
         bsaFormula: "mosteller"
       });
-      router.refresh();
+      refreshDashboard();
     } catch {
       setAdmissionFeedback({
         type: "error",
@@ -3643,7 +3800,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         therapeuticClass: "",
         searchAliases: ""
       });
-      router.refresh();
+      refreshDashboard();
     } catch {
       setMedicationFeedback({ type: "error", message: "Erro de conexão ao cadastrar medicamento." });
     } finally {
@@ -3743,7 +3900,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         message: `Importação concluída: ${result.inserted ?? 0} inserido(s), ${result.updated ?? 0} atualizado(s), ${result.skipped ?? 0} ignorado(s).`
       });
       setMedicationBulkInput("");
-      router.refresh();
+      refreshDashboard();
     } catch {
       setMedicationFeedback({
         type: "error",
@@ -3790,7 +3947,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       setAllergyFeedback({ type: "success", message: "Alergia cadastrada com sucesso." });
       setShowAllergyComposer(false);
       setAllergyForm({ query: "", selectedValue: "" });
-      router.refresh();
+      refreshDashboard();
     } catch {
       setAllergyFeedback({ type: "error", message: "Erro de conexão ao cadastrar alergia." });
     } finally {
@@ -3826,7 +3983,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       }
 
       setAllergyFeedback({ type: "success", message: "Alergia removida com sucesso." });
-      router.refresh();
+      refreshDashboard();
     } catch {
       setAllergyFeedback({ type: "error", message: "Erro de conexão ao remover alergia." });
     } finally {
@@ -3921,7 +4078,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         expirationDate: "",
         manufacturer: ""
       }));
-      router.refresh();
+      refreshDashboard();
     } catch {
       setPriorMedicationFeedback({
         type: "error",
@@ -3975,7 +4132,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         type: "success",
         message: "Dados de validação do medicamento prévio atualizados."
       });
-      router.refresh();
+      refreshDashboard();
     } catch {
       setPriorMedicationFeedback({
         type: "error",
@@ -4029,7 +4186,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         type: "success",
         message: "Validação do medicamento atualizada."
       });
-      router.refresh();
+      refreshDashboard();
     } catch {
       setPrescriptionFeedback({
         type: "error",
@@ -4082,7 +4239,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         type: "success",
         message: "Medicamento prévio removido com sucesso."
       });
-      router.refresh();
+      refreshDashboard();
     } catch {
       setPriorMedicationFeedback({
         type: "error",
@@ -4151,7 +4308,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         administrationRoute: ""
       }));
       setPrescriptionMode("view");
-      router.refresh();
+      refreshDashboard();
     } catch {
       setPrescriptionFeedback({
         type: "error",
@@ -4224,7 +4381,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         setRawPrescriptionInput("");
         setRawPrescriptionDrafts([]);
         setPrescriptionMode("view");
-        router.refresh();
+        refreshDashboard();
       }
     } catch {
       setRawPrescriptionFeedback({
@@ -4590,7 +4747,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           (skippedCount > 0 ? ` ${skippedCount} linha(s) ignorada(s).` : "") +
           (lastErrorMessage ? ` Último erro: ${lastErrorMessage}` : "")
       });
-      router.refresh();
+      refreshDashboard();
     } catch {
       setMandatoryFeedback({
         type: "error",
@@ -4602,7 +4759,16 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   }
 
   return (
-    <section className="dashboard-panel">
+    <section className="dashboard-panel" aria-busy={isDashboardTransitionPending}>
+      {isDashboardTransitionPending ? (
+        <div className="dashboard-loading-overlay" role="status" aria-live="polite">
+          <div className="dashboard-loading-card">
+            <span className="dashboard-loading-spinner" aria-hidden="true" />
+            <p>{dashboardTransitionLabel || "Carregando painel..."}</p>
+          </div>
+        </div>
+      ) : null}
+
       <header className="dashboard-header">
         <div>
           <p className="dashboard-tag">Área segura</p>

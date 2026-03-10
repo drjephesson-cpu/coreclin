@@ -176,6 +176,43 @@ body {
   animation: reveal-card 0.6s ease-out both;
 }
 
+.dashboard-loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: grid;
+  place-items: center;
+  background: rgba(232, 239, 250, 0.68);
+  backdrop-filter: blur(3px);
+}
+
+.dashboard-loading-card {
+  min-width: 220px;
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 18px 20px;
+  border: 1px solid #c7d7eb;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 18px 44px rgba(12, 31, 63, 0.18);
+}
+
+.dashboard-loading-card p {
+  margin: 0;
+  color: #284d77;
+  font-weight: 700;
+}
+
+.dashboard-loading-spinner {
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  border: 4px solid rgba(16, 59, 115, 0.18);
+  border-top-color: var(--mint);
+  animation: dashboard-spin 0.8s linear infinite;
+}
+
 .dashboard-tag {
   margin: 0 0 6px;
   text-transform: uppercase;
@@ -815,6 +852,15 @@ body {
   }
   50% {
     transform: translateY(14px);
+  }
+}
+
+@keyframes dashboard-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
   }
 }
 
