@@ -9,6 +9,9 @@ import {
   type BsaFormulaId,
   type CouncilOption,
   type DashboardData,
+  type InpatientEntry,
+  type InpatientWorkflowState,
+  type InpatientWorkflowStoragePayload,
   type PatientExamImportRecord,
   type PatientExamResultRecord,
   type MedicalPrescriptionRecord,
@@ -101,7 +104,7 @@ export type AddPriorMedicationInput = {
   patientId: number;
   medicationId?: number;
   medicationName: string;
-  dose: number;
+  dose: number | null;
   doseUnit: string;
   frequency: string;
   shifts: string;
@@ -146,6 +149,13 @@ export type AddPatientExamImportInput = {
   importedByLogin: string;
 };
 
+export type SaveInpatientWorkflowSnapshotInput = {
+  login: string;
+  workflowByKey: Record<string, InpatientWorkflowState>;
+  trackedEntries: InpatientEntry[];
+  priorityTeamIds: number[];
+};
+
 export type UpdateMedicalPrescriptionValidationInput = {
   patientId: number;
   prescriptionId: number;
@@ -185,6 +195,26 @@ function toIso(value: unknown): string {
     }
   }
   return "";
+}
+
+function parseJsonValue<T>(value: unknown, fallback: T): T {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return fallback;
+    }
+  }
+
+  if (typeof value === "object") {
+    return value as T;
+  }
+
+  return fallback;
 }
 
 function normalizeMedicationCatalogName(name: string): string {
@@ -406,6 +436,18 @@ function mapPatientExamImport(row: DbRow): PatientExamImportRecord {
     rawText: String(row.raw_text ?? ""),
     records: normalizeExamImportRecords(row.extracted_records),
     createdAt: toIso(row.created_at)
+  };
+}
+
+function mapInpatientWorkflowSnapshot(row: DbRow): InpatientWorkflowStoragePayload {
+  const priorityTeamIds = parseJsonValue<unknown[]>(row.priority_team_ids, []).filter(
+    (teamId): teamId is number => typeof teamId === "number" && Number.isInteger(teamId)
+  );
+
+  return {
+    workflowByKey: parseJsonValue<Record<string, InpatientWorkflowState>>(row.workflow_by_key, {}),
+    trackedEntries: parseJsonValue<InpatientEntry[]>(row.tracked_entries, []),
+    priorityTeamIds
   };
 }
 
@@ -734,6 +776,14 @@ async function setupDatabase(): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS inpatient_workflow_snapshots (
+      professional_id INTEGER PRIMARY KEY REFERENCES professionals(id) ON DELETE CASCADE,
+      workflow_by_key JSONB NOT NULL DEFAULT '{}'::jsonb,
+      tracked_entries JSONB NOT NULL DEFAULT '[]'::jsonb,
+      priority_team_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE INDEX IF NOT EXISTS idx_admissions_patient_id ON admissions (patient_id);
     CREATE INDEX IF NOT EXISTS idx_admissions_date ON admissions (admission_date DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_measurements_patient_id ON patient_measurements (patient_id);
@@ -744,6 +794,7 @@ async function setupDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_prescriptions_admission_id ON medical_prescriptions (admission_id);
     CREATE INDEX IF NOT EXISTS idx_exam_imports_patient_id ON patient_exam_imports (patient_id);
     CREATE INDEX IF NOT EXISTS idx_exam_imports_created_at ON patient_exam_imports (created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_inpatient_workflow_updated_at ON inpatient_workflow_snapshots (updated_at DESC);
   `);
 
   await pool.query(`
@@ -869,6 +920,34 @@ export async function findProfessionalByLogin(login: string): Promise<Profession
   }
 
   return mapProfessional(result.rows[0] as DbRow);
+}
+
+export async function getInpatientWorkflowSnapshotByLogin(
+  login: string
+): Promise<InpatientWorkflowStoragePayload | null> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const normalizedLogin = login.trim().toLowerCase();
+
+  const result = await pool.query(
+    `
+      SELECT
+        iws.workflow_by_key,
+        iws.tracked_entries,
+        iws.priority_team_ids
+      FROM inpatient_workflow_snapshots iws
+      INNER JOIN professionals p ON p.id = iws.professional_id
+      WHERE p.login = $1
+      LIMIT 1
+    `,
+    [normalizedLogin]
+  );
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  return mapInpatientWorkflowSnapshot(result.rows[0] as DbRow);
 }
 
 export async function authenticateProfessional(
@@ -1358,6 +1437,62 @@ async function findProfessionalIdByLogin(client: PoolClient, login: string): Pro
   return toNumber((result.rows[0] as DbRow).id);
 }
 
+export async function saveInpatientWorkflowSnapshot(
+  input: SaveInpatientWorkflowSnapshotInput
+): Promise<InpatientWorkflowStoragePayload> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const professionalId = await findProfessionalIdByLogin(client, input.login);
+
+    await client.query(
+      `
+        INSERT INTO inpatient_workflow_snapshots (
+          professional_id,
+          workflow_by_key,
+          tracked_entries,
+          priority_team_ids,
+          updated_at
+        )
+        VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, NOW())
+        ON CONFLICT (professional_id) DO UPDATE
+        SET
+          workflow_by_key = EXCLUDED.workflow_by_key,
+          tracked_entries = EXCLUDED.tracked_entries,
+          priority_team_ids = EXCLUDED.priority_team_ids,
+          updated_at = NOW()
+      `,
+      [
+        professionalId,
+        JSON.stringify(input.workflowByKey),
+        JSON.stringify(input.trackedEntries),
+        JSON.stringify(input.priorityTeamIds)
+      ]
+    );
+
+    const result = await client.query(
+      `
+        SELECT workflow_by_key, tracked_entries, priority_team_ids
+        FROM inpatient_workflow_snapshots
+        WHERE professional_id = $1
+        LIMIT 1
+      `,
+      [professionalId]
+    );
+
+    await client.query("COMMIT");
+    return mapInpatientWorkflowSnapshot(result.rows[0] as DbRow);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function createPatient(input: CreatePatientInput): Promise<PatientRecord> {
   await ensureDatabaseReady();
   const pool = getPool();
@@ -1737,7 +1872,7 @@ export async function addPriorMedication(
         input.patientId,
         medicationData.medicationId,
         medicationData.medicationName,
-        input.dose,
+        input.dose !== null && Number.isFinite(input.dose) && input.dose > 0 ? input.dose : 0,
         input.doseUnit.trim(),
         input.frequency.trim(),
         input.shifts.trim(),
@@ -2575,6 +2710,7 @@ export async function getDashboardData(currentLogin: string): Promise<DashboardD
     patientAllergies,
     priorMedications,
     examImports,
+    inpatientWorkflowSnapshot,
     prescriptions
   ] = await Promise.all([
     findProfessionalByLogin(currentLogin),
@@ -2587,6 +2723,7 @@ export async function getDashboardData(currentLogin: string): Promise<DashboardD
     listPatientAllergies(),
     listPriorMedications(),
     listPatientExamImports(),
+    getInpatientWorkflowSnapshotByLogin(currentLogin),
     listMedicalPrescriptions()
   ]);
 
@@ -2601,6 +2738,7 @@ export async function getDashboardData(currentLogin: string): Promise<DashboardD
     patientAllergies,
     priorMedications,
     examImports,
+    inpatientWorkflowSnapshot,
     prescriptions
   };
 }

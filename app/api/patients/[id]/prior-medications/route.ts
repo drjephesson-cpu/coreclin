@@ -35,7 +35,12 @@ export async function POST(
       : Number(medicationIdRaw);
   const medicationName = typeof body.medicationName === "string" ? body.medicationName.trim() : "";
   const doseRaw = body.dose;
-  const dose = typeof doseRaw === "number" ? doseRaw : Number(doseRaw);
+  const dose =
+    doseRaw === undefined || doseRaw === null || doseRaw === ""
+      ? null
+      : typeof doseRaw === "number"
+        ? doseRaw
+        : Number(doseRaw);
   const doseUnit = typeof body.doseUnit === "string" ? body.doseUnit.trim() : "";
   const frequency = typeof body.frequency === "string" ? body.frequency.trim() : "";
   const shifts = typeof body.shifts === "string" ? body.shifts.trim() : "";
@@ -53,11 +58,12 @@ export async function POST(
     return NextResponse.json({ message: "Medicamento inválido." }, { status: 400 });
   }
 
-  if (!Number.isFinite(dose) || dose <= 0 || !doseUnit || !frequency || !shifts) {
-    return NextResponse.json(
-      { message: "Preencha dose, unidade, frequência e turnos." },
-      { status: 400 }
-    );
+  if (dose !== null && (!Number.isFinite(dose) || dose <= 0)) {
+    return NextResponse.json({ message: "Dose inválida." }, { status: 400 });
+  }
+
+  if (dose !== null && !doseUnit) {
+    return NextResponse.json({ message: "Informe a unidade da dose." }, { status: 400 });
   }
 
   if (!medicationId && !medicationName) {

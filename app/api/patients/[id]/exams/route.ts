@@ -2,9 +2,38 @@ import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
 import { addPatientExamImport } from "@/lib/db";
+import { extractExamImportFromPdf } from "@/lib/exam-pdf";
 import { type PatientExamResultRecord } from "@/lib/coreclin-types";
 
 export const runtime = "nodejs";
+
+function getUnknownErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) {
+      return message.trim();
+    }
+  }
+
+  return "";
+}
+
+function isUploadedPdfFile(value: FormDataEntryValue | null): value is File {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Partial<File>;
+  return typeof candidate.name === "string" && typeof candidate.arrayBuffer === "function";
+}
 
 function normalizeExamRecords(value: unknown): PatientExamResultRecord[] {
   if (!Array.isArray(value)) {
@@ -54,19 +83,60 @@ export async function POST(
     return NextResponse.json({ message: "Paciente inválido." }, { status: 400 });
   }
 
-  let payload: unknown;
-  try {
-    payload = await request.json();
-  } catch {
-    return NextResponse.json({ message: "Corpo inválido." }, { status: 400 });
-  }
+  let fileName = "";
+  let pageCount = 0;
+  let rawText = "";
+  let records: PatientExamResultRecord[] = [];
 
-  const body = payload as Record<string, unknown>;
-  const fileName = typeof body.fileName === "string" ? body.fileName.trim() : "";
-  const pageCountRaw = body.pageCount;
-  const pageCount = typeof pageCountRaw === "number" ? pageCountRaw : Number(pageCountRaw);
-  const rawText = typeof body.rawText === "string" ? body.rawText.trim() : "";
-  const records = normalizeExamRecords(body.records);
+  const contentType = request.headers.get("content-type") ?? "";
+  if (contentType.includes("multipart/form-data")) {
+    let formData: FormData;
+    try {
+      formData = await request.formData();
+    } catch {
+      return NextResponse.json({ message: "Arquivo inválido." }, { status: 400 });
+    }
+
+    const fileEntry = formData.get("file");
+    if (!isUploadedPdfFile(fileEntry)) {
+      return NextResponse.json({ message: "Selecione um PDF válido." }, { status: 400 });
+    }
+
+    if (!fileEntry.name.toLowerCase().endsWith(".pdf")) {
+      return NextResponse.json({ message: "Selecione um arquivo PDF válido." }, { status: 400 });
+    }
+
+    try {
+      const extracted = await extractExamImportFromPdf(
+        fileEntry.name,
+        new Uint8Array(await fileEntry.arrayBuffer())
+      );
+      fileName = extracted.fileName;
+      pageCount = extracted.pageCount;
+      rawText = extracted.rawText.trim();
+      records = extracted.records;
+    } catch (error) {
+      const details = getUnknownErrorMessage(error);
+      const message = details
+        ? `Não foi possível extrair os dados do PDF informado. ${details}`
+        : "Não foi possível extrair os dados do PDF informado.";
+      return NextResponse.json({ message }, { status: 400 });
+    }
+  } else {
+    let payload: unknown;
+    try {
+      payload = await request.json();
+    } catch {
+      return NextResponse.json({ message: "Corpo inválido." }, { status: 400 });
+    }
+
+    const body = payload as Record<string, unknown>;
+    fileName = typeof body.fileName === "string" ? body.fileName.trim() : "";
+    const pageCountRaw = body.pageCount;
+    pageCount = typeof pageCountRaw === "number" ? pageCountRaw : Number(pageCountRaw);
+    rawText = typeof body.rawText === "string" ? body.rawText.trim() : "";
+    records = normalizeExamRecords(body.records);
+  }
 
   if (!fileName) {
     return NextResponse.json({ message: "Nome do arquivo inválido." }, { status: 400 });

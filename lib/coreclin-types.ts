@@ -62,6 +62,39 @@ export type TeamRecord = {
   createdAt: string;
 };
 
+export type InpatientWorkflowStatus = "Pendente" | "Concluído" | "Alta";
+
+export type InpatientWorkflowState = {
+  status: InpatientWorkflowStatus;
+  assignedTeamId: number | null;
+  mandatory: boolean;
+  firstVisitCompletedAt: string | null;
+  evolutionGeneratedAt: string | null;
+  updatedAt: string;
+};
+
+export type InpatientEntrySource = "active" | "manual";
+
+export type InpatientEntry = {
+  key: string;
+  patientId: number | null;
+  patientName: string;
+  chartNumber: string;
+  reportedAgeYears: number | null;
+  admissionDate: string;
+  bed: string;
+  teamName: string | null;
+  teamId: number | null;
+  source: InpatientEntrySource;
+  createdAt: string;
+};
+
+export type InpatientWorkflowStoragePayload = {
+  workflowByKey: Record<string, InpatientWorkflowState>;
+  trackedEntries: InpatientEntry[];
+  priorityTeamIds: number[];
+};
+
 export type LatestMeasurement = {
   weightKg: number;
   heightCm: number;
@@ -215,5 +248,6 @@ export type DashboardData = {
   patientAllergies: PatientAllergyRecord[];
   priorMedications: PriorMedicationRecord[];
   examImports: PatientExamImportRecord[];
+  inpatientWorkflowSnapshot: InpatientWorkflowStoragePayload | null;
   prescriptions: MedicalPrescriptionRecord[];
 };

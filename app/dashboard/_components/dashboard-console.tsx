@@ -15,6 +15,10 @@ import {
   type BsaFormulaId,
   type CouncilOption,
   type DashboardData,
+  type InpatientEntry,
+  type InpatientWorkflowState,
+  type InpatientWorkflowStatus,
+  type InpatientWorkflowStoragePayload,
   type PatientExamImportRecord,
   type PatientExamResultRecord,
   type PatientRecord,
@@ -145,39 +149,7 @@ type DashboardSectionId = (typeof DASHBOARD_NAV_ITEMS)[number]["id"];
 type PatientViewId = (typeof PATIENT_VIEW_ITEMS)[number]["id"];
 type PrescriptionMode = "view" | "create" | "raw";
 type InpatientOverviewMode = (typeof INPATIENT_SIDEBAR_ITEMS)[number]["id"];
-type InpatientWorkflowStatus = (typeof INPATIENT_STATUS_OPTIONS)[number];
 type FeedbackType = "success" | "error";
-
-type InpatientWorkflowState = {
-  status: InpatientWorkflowStatus;
-  assignedTeamId: number | null;
-  mandatory: boolean;
-  firstVisitCompletedAt: string | null;
-  evolutionGeneratedAt: string | null;
-  updatedAt: string;
-};
-
-type InpatientEntrySource = "active" | "manual";
-
-type InpatientEntry = {
-  key: string;
-  patientId: number | null;
-  patientName: string;
-  chartNumber: string;
-  reportedAgeYears: number | null;
-  admissionDate: string;
-  bed: string;
-  teamName: string | null;
-  teamId: number | null;
-  source: InpatientEntrySource;
-  createdAt: string;
-};
-
-type InpatientWorkflowStoragePayload = {
-  workflowByKey: Record<string, InpatientWorkflowState>;
-  trackedEntries: InpatientEntry[];
-  priorityTeamIds: number[];
-};
 
 type FeedbackState = {
   type: FeedbackType;
@@ -227,9 +199,9 @@ type RawPrescriptionDraft = {
 };
 
 type SummaryMedicationCandidate = {
-  medicationId: number;
+  medicationId: number | null;
   medicationName: string;
-  dose: number;
+  dose: number | null;
   doseUnit: string;
   frequency: string;
   shifts: string;
@@ -485,7 +457,7 @@ function extractDoseFromText(input: string): { dose: number | null; doseUnit: st
 function extractFrequencyFromText(input: string): string {
   const normalizedInput = input.trim();
   if (!normalizedInput) {
-    return "Conforme resumo";
+    return "";
   }
 
   const patterns = [
@@ -504,7 +476,7 @@ function extractFrequencyFromText(input: string): string {
     }
   }
 
-  return "Conforme resumo";
+  return "";
 }
 
 function extractShiftsFromText(input: string): string {
@@ -517,7 +489,7 @@ function extractShiftsFromText(input: string): string {
     normalizedInput.includes("jantar") ? "Jantar" : ""
   ].filter((value) => value.length > 0);
 
-  return shifts.length > 0 ? shifts.join(", ") : "-";
+  return shifts.length > 0 ? shifts.join(", ") : "";
 }
 
 function normalizeMedicationName(input: string): string {
@@ -912,14 +884,10 @@ function parseMandatoryAdmissionDate(input: string): string {
 }
 
 function shouldRemainMandatory(
-  status: InpatientWorkflowStatus,
+  _status: InpatientWorkflowStatus,
   evolutionGeneratedAt: string | null
 ): boolean {
-  if (status === "Alta") {
-    return false;
-  }
-
-  return !(status === "Concluído" && evolutionGeneratedAt);
+  return !evolutionGeneratedAt;
 }
 
 function escapeRegExp(input: string): string {
@@ -1239,6 +1207,10 @@ export default function DashboardConsole({
   const requestedInpatientMode = INPATIENT_OVERVIEW_IDS.has(searchInpatientMode ?? "")
     ? (searchInpatientMode as InpatientOverviewMode)
     : "all";
+  const persistedInpatientWorkflowPayload = useMemo(
+    () => normalizeInpatientWorkflowStoragePayload(data?.inpatientWorkflowSnapshot),
+    [data?.inpatientWorkflowSnapshot]
+  );
 
   const [activeSection, setActiveSection] = useState<DashboardSectionId>(
     patientPageMode ? "inpatients" : requestedSection
@@ -1322,9 +1294,13 @@ export default function DashboardConsole({
   const [mandatoryLoading, setMandatoryLoading] = useState(false);
   const [workflowByInpatientKey, setWorkflowByInpatientKey] = useState<
     Record<string, InpatientWorkflowState>
-  >({});
-  const [trackedInpatientEntries, setTrackedInpatientEntries] = useState<InpatientEntry[]>([]);
-  const [priorityTeamIds, setPriorityTeamIds] = useState<number[]>([]);
+  >(() => persistedInpatientWorkflowPayload.workflowByKey);
+  const [trackedInpatientEntries, setTrackedInpatientEntries] = useState<InpatientEntry[]>(
+    () => persistedInpatientWorkflowPayload.trackedEntries
+  );
+  const [priorityTeamIds, setPriorityTeamIds] = useState<number[]>(
+    () => persistedInpatientWorkflowPayload.priorityTeamIds
+  );
   const [patientPageOverride, setPatientPageOverride] = useState<boolean | null>(null);
   const [patientDetailsOpen, setPatientDetailsOpen] = useState(patientPageMode);
   const [patientView, setPatientView] = useState<PatientViewId>(
@@ -1422,6 +1398,10 @@ export default function DashboardConsole({
   const [examImportFeedback, setExamImportFeedback] = useState<FeedbackState>(null);
   const [examImportResult, setExamImportResult] = useState<ExtractedExamImportResult | null>(null);
   const [selectedExamImportId, setSelectedExamImportId] = useState("");
+  const [inpatientWorkflowPersistenceReady, setInpatientWorkflowPersistenceReady] = useState(false);
+  const lastPersistedInpatientWorkflowRef = useRef(
+    JSON.stringify(persistedInpatientWorkflowPayload)
+  );
 
   useEffect(() => {
     if (patients.length === 0) {
@@ -1571,7 +1551,19 @@ export default function DashboardConsole({
   }, [inpatients, inpatientSearch]);
 
   useEffect(() => {
+    const hasServerSnapshot =
+      Object.keys(persistedInpatientWorkflowPayload.workflowByKey).length > 0 ||
+      persistedInpatientWorkflowPayload.trackedEntries.length > 0 ||
+      persistedInpatientWorkflowPayload.priorityTeamIds.length > 0;
+
+    if (hasServerSnapshot) {
+      lastPersistedInpatientWorkflowRef.current = JSON.stringify(persistedInpatientWorkflowPayload);
+      setInpatientWorkflowPersistenceReady(true);
+      return;
+    }
+
     if (typeof window === "undefined") {
+      setInpatientWorkflowPersistenceReady(true);
       return;
     }
 
@@ -1582,16 +1574,21 @@ export default function DashboardConsole({
         : null;
       const normalizedPayload = normalizeInpatientWorkflowStoragePayload(parsedPayload);
 
-      setWorkflowByInpatientKey(normalizedPayload.workflowByKey);
-      setTrackedInpatientEntries(normalizedPayload.trackedEntries);
-      setPriorityTeamIds(normalizedPayload.priorityTeamIds);
+      if (
+        Object.keys(normalizedPayload.workflowByKey).length > 0 ||
+        normalizedPayload.trackedEntries.length > 0 ||
+        normalizedPayload.priorityTeamIds.length > 0
+      ) {
+        setWorkflowByInpatientKey(normalizedPayload.workflowByKey);
+        setTrackedInpatientEntries(normalizedPayload.trackedEntries);
+        setPriorityTeamIds(normalizedPayload.priorityTeamIds);
+      }
     } catch {
-      // ignore persisted workflow errors and keep default behavior
-      setWorkflowByInpatientKey({});
-      setTrackedInpatientEntries([]);
-      setPriorityTeamIds([]);
+      // ignore local fallback errors and keep the server snapshot/default state
+    } finally {
+      setInpatientWorkflowPersistenceReady(true);
     }
-  }, [inpatientWorkflowStorageKey]);
+  }, [inpatientWorkflowStorageKey, persistedInpatientWorkflowPayload]);
 
   useEffect(() => {
     if (inpatients.length === 0) {
@@ -1690,7 +1687,7 @@ export default function DashboardConsole({
   }, [patients, trackedInpatientEntries.length]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
+    if (!inpatientWorkflowPersistenceReady || typeof window === "undefined") {
       return;
     }
 
@@ -1700,7 +1697,34 @@ export default function DashboardConsole({
       priorityTeamIds
     };
     window.localStorage.setItem(inpatientWorkflowStorageKey, JSON.stringify(payload));
-  }, [workflowByInpatientKey, trackedInpatientEntries, priorityTeamIds, inpatientWorkflowStorageKey]);
+
+    const serializedPayload = JSON.stringify(payload);
+    if (serializedPayload === lastPersistedInpatientWorkflowRef.current) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void fetch("/api/inpatients/workflow", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: serializedPayload
+      }).then((response) => {
+        if (response.ok) {
+          lastPersistedInpatientWorkflowRef.current = serializedPayload;
+        }
+      });
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    workflowByInpatientKey,
+    trackedInpatientEntries,
+    priorityTeamIds,
+    inpatientWorkflowPersistenceReady,
+    inpatientWorkflowStorageKey
+  ]);
 
   useEffect(() => {
     const selectableInpatients = [...trackedInpatientEntries, ...inpatients].filter(
@@ -1867,10 +1891,7 @@ export default function DashboardConsole({
   const dischargedOverviewRows = useMemo(
     () =>
       inpatientEntriesWithWorkflow
-        .filter(
-          ({ workflow }) =>
-            workflow.status === "Alta" || (workflow.status === "Concluído" && !workflow.mandatory)
-        )
+        .filter(({ workflow }) => workflow.status === "Alta" && !workflow.mandatory)
         .sort((first, second) => {
           const firstUpdated = new Date(first.workflow.updatedAt).getTime();
           const secondUpdated = new Date(second.workflow.updatedAt).getTime();
@@ -2304,10 +2325,14 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     );
   }
 
-  function extractMedicationLabelFromSummaryChunk(chunk: string): string {
-    const withoutPrefix = chunk.replace(/^(?:muc|prescrevo muc)\s*:\s*/i, "").trim();
-    const leadingLabel = withoutPrefix.split(/\s+[–-]\s+/)[0]?.trim() ?? withoutPrefix;
-    const withoutDose = leadingLabel
+function extractMedicationLabelFromSummaryChunk(chunk: string): string {
+  const withoutPrefix = chunk.replace(/^(?:muc|prescrevo muc)\s*:\s*/i, "").trim();
+  const withoutMarker = withoutPrefix
+    .replace(/^(?:[#*•-]+|\d+[\).\]-])\s*/g, "")
+    .replace(/^medica[cç][oõ]es?\s+de\s+uso\s+pr[eé]vio\s*:?\s*/i, "")
+    .trim();
+  const leadingLabel = withoutMarker.split(/\s+[–-]\s+/)[0]?.trim() ?? withoutMarker;
+  const withoutDose = leadingLabel
       .replace(
         /\b\d+(?:[.,]\d+)?\s*(mg|mcg|g|kg|mL|ml|UI|ui|U|cp|cps|cmp|comprimidos?|caps?|cápsulas?|gotas?)\b/gi,
         " "
@@ -2315,8 +2340,29 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
       .replace(/\s+/g, " ")
       .trim();
 
-    return withoutDose || leadingLabel;
+  return withoutDose || leadingLabel;
+}
+
+function isLikelySummaryMedicationLabel(input: string): boolean {
+  const normalized = normalizeMedicationName(input);
+  if (!normalized || normalized.length < 2) {
+    return false;
   }
+
+  const blockedLabels = new Set([
+    "muc",
+    "medicacoes de uso previo",
+    "medicacao de uso previo",
+    "uso previo",
+    "conduta",
+    "hipotese diagnostica",
+    "demais cpm",
+    "prescrevo sintomaticos",
+    "prescrevo medicacoes continuas"
+  ]);
+
+  return !blockedLabels.has(normalized);
+}
 
   function findBestCatalogMedicationFromSummaryChunk(chunk: string) {
     const searchCandidates = [extractMedicationLabelFromSummaryChunk(chunk), chunk]
@@ -2386,35 +2432,37 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     return bestMatch.descriptor.medication;
   }
 
-  function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicationCandidate[] {
-    const candidates = new Map<number, SummaryMedicationCandidate>();
-    const chunks = summaryText
-      .split("\n")
-      .flatMap((line) =>
-        line
-          .split(";")
+function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicationCandidate[] {
+  const candidates = new Map<string, SummaryMedicationCandidate>();
+  const chunks = summaryText
+    .split("\n")
+    .flatMap((line) =>
+      line
+        .split(";")
           .map((chunk) => chunk.trim())
           .filter((chunk) => chunk.length > 0)
-      );
+    );
 
-    for (const chunk of chunks) {
+  for (const chunk of chunks) {
       const medication = findBestCatalogMedicationFromSummaryChunk(chunk);
-      if (!medication || candidates.has(medication.id)) {
+      const extractedLabel = extractMedicationLabelFromSummaryChunk(chunk);
+      const medicationName = medication?.name ?? extractedLabel;
+      const normalizedMedicationName = normalizeMedicationName(medicationName);
+
+      if (!isLikelySummaryMedicationLabel(medicationName) || !normalizedMedicationName) {
+        continue;
+      }
+
+      if (candidates.has(normalizedMedicationName)) {
         continue;
       }
 
       const parsedDose = extractDoseFromText(chunk);
-      const dose = parsedDose.dose;
-      const doseUnit = parsedDose.doseUnit || medication.defaultUnit;
-      if (!dose || !doseUnit) {
-        continue;
-      }
-
-      candidates.set(medication.id, {
-        medicationId: medication.id,
-        medicationName: medication.name,
-        dose,
-        doseUnit,
+      candidates.set(normalizedMedicationName, {
+        medicationId: medication?.id ?? null,
+        medicationName,
+        dose: parsedDose.dose,
+        doseUnit: parsedDose.doseUnit,
         frequency: extractFrequencyFromText(chunk),
         shifts: extractShiftsFromText(chunk)
       });
@@ -2521,104 +2569,48 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     setExamImportLoading(true);
 
     try {
-      const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as {
-        getDocument: (source: unknown) => {
-          promise: Promise<{
-            numPages: number;
-            getPage: (pageNumber: number) => Promise<{
-              getTextContent: () => Promise<{
-                items: unknown[];
-              }>;
-            }>;
-          }>;
-        };
-      };
-      const arrayBuffer = await file.arrayBuffer();
-      const loadingTask = pdfjs.getDocument({
-        data: new Uint8Array(arrayBuffer),
-        disableWorker: true
-      } as unknown);
-      const pdfDocument = await loadingTask.promise;
-      const pageLines: Array<{ pageNumber: number; line: string }> = [];
+      const formData = new FormData();
+      formData.set("file", file);
 
-      for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
-        const page = await pdfDocument.getPage(pageNumber);
-        const textContent = await page.getTextContent();
-        const lines = buildExamPdfLines(
-          textContent.items as Array<{ str?: string; transform?: number[]; width?: number }>
-        );
+      const response = await fetch(`/api/patients/${selectedPatient.id}/exams`, {
+        method: "POST",
+        body: formData
+      });
 
-        for (const line of lines) {
-          pageLines.push({ pageNumber, line });
-        }
-      }
-
-      const rawText = pageLines.map((item) => `[Pág. ${item.pageNumber}] ${item.line}`).join("\n");
-      const records = parseExtractedExamRecords(pageLines);
-      const extractedResult: ExtractedExamImportResult = {
-        fileName: file.name,
-        pageCount: pdfDocument.numPages,
-        importedAt: new Date().toISOString(),
-        records,
-        rawText
+      const result = (await response.json()) as {
+        message?: string;
+        examImport?: PatientExamImportRecord;
       };
 
-      setExamImportResult(extractedResult);
-
-      try {
-        const response = await fetch(`/api/patients/${selectedPatient.id}/exams`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            fileName: extractedResult.fileName,
-            pageCount: extractedResult.pageCount,
-            rawText: extractedResult.rawText,
-            records: extractedResult.records
-          })
-        });
-
-        const result = (await response.json()) as {
-          message?: string;
-          examImport?: PatientExamImportRecord;
-        };
-
-        if (!response.ok) {
-          setExamImportFeedback({
-            type: "error",
-            message: result.message ?? "Os exames foram extraídos, mas não foi possível salvar no paciente."
-          });
-          return;
-        }
-
-        if (result.examImport) {
-          setExamImportResult({
-            fileName: result.examImport.fileName,
-            pageCount: result.examImport.pageCount,
-            importedAt: result.examImport.createdAt,
-            records: result.examImport.records,
-            rawText: result.examImport.rawText
-          });
-        }
-
-        setExamImportFeedback({
-          type: "success",
-          message:
-            records.length > 0
-              ? `${records.length} resultado(s) extraído(s) e salvo(s) no paciente.`
-              : "Texto extraído e salvo no paciente, sem resultados estruturados identificados."
-        });
-        router.refresh();
-      } catch {
+      if (!response.ok || !result.examImport) {
+        setExamImportResult(null);
         setExamImportFeedback({
           type: "error",
-          message: "Os exames foram extraídos, mas houve erro ao salvar no paciente."
+          message: result.message ?? "Não foi possível extrair os dados do PDF informado."
         });
+        return;
       }
+
+      setExamImportResult({
+        fileName: result.examImport.fileName,
+        pageCount: result.examImport.pageCount,
+        importedAt: result.examImport.createdAt,
+        records: result.examImport.records,
+        rawText: result.examImport.rawText
+      });
+      setExamImportFeedback({
+        type: "success",
+        message:
+          result.examImport.records.length > 0
+            ? `${result.examImport.records.length} resultado(s) extraído(s) e salvo(s) no paciente.`
+            : "Texto extraído e salvo no paciente, sem resultados estruturados identificados."
+      });
+      router.refresh();
     } catch {
       setExamImportResult(null);
       setExamImportFeedback({
         type: "error",
-        message: "Não foi possível extrair os dados do PDF informado."
+        message: "Não foi possível enviar o PDF para extração."
       });
     } finally {
       setExamImportLoading(false);
@@ -4316,40 +4308,6 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     });
   }
 
-  function handleRemoveMandatory(entry: InpatientEntry): void {
-    const confirmed = window.confirm(`Remover ${entry.patientName} da sua lista diária?`);
-    if (!confirmed) {
-      return;
-    }
-
-    setWorkflowByInpatientKey((current) => {
-      const now = new Date().toISOString();
-      const fallbackWorkflow: InpatientWorkflowState = {
-        status: "Pendente",
-        assignedTeamId: entry.teamId ?? null,
-        mandatory: true,
-        firstVisitCompletedAt: null,
-        evolutionGeneratedAt: null,
-        updatedAt: now
-      };
-      const baseWorkflow = current[entry.key] ?? fallbackWorkflow;
-
-      return {
-        ...current,
-        [entry.key]: {
-          ...baseWorkflow,
-          mandatory: false,
-          updatedAt: now
-        }
-      };
-    });
-
-    setMandatoryFeedback({
-      type: "success",
-      message: `${entry.patientName} removido da sua lista diária.`
-    });
-  }
-
   function handleInpatientTeamChange(inpatientKey: string, nextTeamValue: string): void {
     const parsedTeamId = Number(nextTeamValue);
     const nextTeamId = Number.isInteger(parsedTeamId) && parsedTeamId > 0 ? parsedTeamId : null;
@@ -5248,8 +5206,9 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                               `Leito | Nome | Idade | Prontuário | Admissão`.
                             </p>
                             <p className="dashboard-muted">
-                              Aqui aparecem apenas os pacientes adicionados por você. `Concluído` marca apenas
-                              a 1ª visita; o paciente só sai daqui após `Gerar evolução`, `Alta` ou `Remover`.
+                              Aqui aparecem apenas os pacientes adicionados por você. O paciente só sai desta
+                              lista após `Concluído` e `Gerar evolução`; depois disso, ele permanece em `Por equipe`
+                              e `Todos`.
                             </p>
 
                             <div className="dashboard-form">
@@ -5285,13 +5244,12 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                     <th>Evolução</th>
                                     <th>Origem</th>
                                     <th>Detalhes</th>
-                                    <th>Ações</th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {mandatoryOverviewRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={11}>Nenhum paciente na sua lista diária.</td>
+                                      <td colSpan={10}>Nenhum paciente na sua lista diária.</td>
                                     </tr>
                                   ) : (
                                     mandatoryOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
@@ -5352,15 +5310,6 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                             "-"
                                           )}
                                         </td>
-                                        <td>
-                                          <button
-                                            type="button"
-                                            className="dashboard-chip-remove"
-                                            onClick={() => handleRemoveMandatory(entry)}
-                                          >
-                                            Remover
-                                          </button>
-                                        </td>
                                       </tr>
                                     ))
                                   )}
@@ -5376,7 +5325,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                           <div className="dashboard-subsection-block">
                             <h3>Pacientes de alta</h3>
                             <p className="dashboard-muted">
-                              Histórico de pacientes com status Alta ou Concluído.
+                              Histórico de pacientes com status Alta após saírem da lista diária.
                             </p>
                             <div className="dashboard-table-wrap">
                               <table className="dashboard-table">
@@ -6260,10 +6209,12 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                       >
                                         <td>{row.priorMedication.medicationName}</td>
                                         <td>
-                                          {formatNumber(row.priorMedication.dose)} {row.priorMedication.doseUnit}
+                                          {row.priorMedication.dose > 0
+                                            ? `${formatNumber(row.priorMedication.dose)} ${row.priorMedication.doseUnit}`.trim()
+                                            : "-"}
                                         </td>
-                                        <td>{row.priorMedication.frequency}</td>
-                                        <td>{row.priorMedication.shifts}</td>
+                                        <td>{row.priorMedication.frequency || "-"}</td>
+                                        <td>{row.priorMedication.shifts || "-"}</td>
                                         <td>
                                           {row.latestPrescriptionDate
                                             ? formatTimestamp(row.latestPrescriptionDate)
