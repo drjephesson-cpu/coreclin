@@ -257,11 +257,59 @@ type ExtractedExamImportResult = {
   rawText: string;
 };
 
+type StockValidationFormState = {
+  quantityTablets: string;
+  lotNumber: string;
+  expirationDate: string;
+  manufacturer: string;
+};
+
 type DashboardConsoleProps = {
   currentLogin: string;
   data: DashboardData | null;
   dbError: string | null;
 };
+
+function createEmptyStockValidationFormState(): StockValidationFormState {
+  return {
+    quantityTablets: "",
+    lotNumber: "",
+    expirationDate: "",
+    manufacturer: ""
+  };
+}
+
+function parseStockValidationQuantity(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function areStockValidationFormsEqual(
+  formState: StockValidationFormState,
+  reference: {
+    quantityTablets: number | null;
+    lotNumber: string | null;
+    expirationDate: string | null;
+    manufacturer: string | null;
+  }
+): boolean {
+  return (
+    formState.quantityTablets.trim() ===
+      (reference.quantityTablets === null ? "" : String(reference.quantityTablets)) &&
+    formState.lotNumber.trim() === (reference.lotNumber ?? "") &&
+    formState.expirationDate.trim() === (reference.expirationDate ?? "") &&
+    formState.manufacturer.trim() === (reference.manufacturer ?? "")
+  );
+}
 
 function buildInpatientWorkflowStorageKey(currentLogin: string): string {
   const normalizedLogin = normalizeSearchValue(currentLogin) || "default";
@@ -1486,28 +1534,14 @@ export default function DashboardConsole({
   const [priorMedicationLoading, setPriorMedicationLoading] = useState(false);
   const [priorMedicationRemovingId, setPriorMedicationRemovingId] = useState<number | null>(null);
   const [priorMedicationUpdatingId, setPriorMedicationUpdatingId] = useState<number | null>(null);
+  const [priorMedicationBatchSaving, setPriorMedicationBatchSaving] = useState(false);
   const [priorMedicationValidationForm, setPriorMedicationValidationForm] = useState<
-    Record<
-      number,
-      {
-        quantityTablets: string;
-        lotNumber: string;
-        expirationDate: string;
-        manufacturer: string;
-      }
-    >
+    Record<number, StockValidationFormState>
   >({});
   const [medicationValidationUpdatingId, setMedicationValidationUpdatingId] = useState<number | null>(null);
+  const [medicationValidationBatchSaving, setMedicationValidationBatchSaving] = useState(false);
   const [medicationValidationForm, setMedicationValidationForm] = useState<
-    Record<
-      number,
-      {
-        quantityTablets: string;
-        lotNumber: string;
-        expirationDate: string;
-        manufacturer: string;
-      }
-    >
+    Record<number, StockValidationFormState>
   >({});
   const [prescriptionForm, setPrescriptionForm] = useState({
     admissionId: "",
@@ -2887,7 +2921,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             lotNumber: priorMedication.lotNumber ?? "",
             expirationDate: priorMedication.expirationDate ?? "",
             manufacturer: priorMedication.manufacturer ?? ""
-          }
+          } satisfies StockValidationFormState
         ])
       )
     );
@@ -2984,7 +3018,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             lotNumber: row.prescription.lotNumber ?? "",
             expirationDate: row.prescription.expirationDate ?? "",
             manufacturer: row.prescription.manufacturer ?? ""
-          }
+          } satisfies StockValidationFormState
         ])
       )
     );
@@ -3138,6 +3172,42 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         };
       }),
     [selectedPatientPriorMedications, selectedPatientPrescriptionGroups]
+  );
+
+  const priorMedicationEditableRows = useMemo(
+    () =>
+      priorMedicationRows.map((row) => {
+        const formState =
+          priorMedicationValidationForm[row.priorMedication.id] ?? createEmptyStockValidationFormState();
+        const currentQuantityTablets = parseStockValidationQuantity(formState.quantityTablets);
+
+        return {
+          ...row,
+          formState,
+          currentQuantityTablets,
+          currentDurationDays: calculateDurationDays(currentQuantityTablets, row.dailyTabletUse),
+          isDirty: !areStockValidationFormsEqual(formState, row.priorMedication)
+        };
+      }),
+    [priorMedicationRows, priorMedicationValidationForm]
+  );
+
+  const medicationValidationEditableRows = useMemo(
+    () =>
+      selectedPatientMedicationValidationRows.map((row) => {
+        const formState =
+          medicationValidationForm[row.prescription.id] ?? createEmptyStockValidationFormState();
+        const currentQuantityTablets = parseStockValidationQuantity(formState.quantityTablets);
+
+        return {
+          ...row,
+          formState,
+          currentQuantityTablets,
+          currentDurationDays: calculateDurationDays(currentQuantityTablets, row.dailyTabletUse),
+          isDirty: !areStockValidationFormsEqual(formState, row.prescription)
+        };
+      }),
+    [selectedPatientMedicationValidationRows, medicationValidationForm]
   );
 
   const selectedPrescriptionMedicationHistoryRows = useMemo(() => {
@@ -3299,6 +3369,34 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
   function toggleList(sectionId: DashboardSectionId): void {
     setListVisibility((current) => ({ ...current, [sectionId]: !current[sectionId] }));
+  }
+
+  function updatePriorMedicationValidationField(
+    priorMedicationId: number,
+    field: keyof StockValidationFormState,
+    value: string
+  ): void {
+    setPriorMedicationValidationForm((current) => ({
+      ...current,
+      [priorMedicationId]: {
+        ...(current[priorMedicationId] ?? createEmptyStockValidationFormState()),
+        [field]: value
+      }
+    }));
+  }
+
+  function updateMedicationValidationField(
+    prescriptionId: number,
+    field: keyof StockValidationFormState,
+    value: string
+  ): void {
+    setMedicationValidationForm((current) => ({
+      ...current,
+      [prescriptionId]: {
+        ...(current[prescriptionId] ?? createEmptyStockValidationFormState()),
+        [field]: value
+      }
+    }));
   }
 
   function openDashboardSection(sectionId: DashboardSectionId): void {
@@ -4151,6 +4249,41 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
   }
 
+  async function submitPriorMedicationValidationUpdate(
+    patientId: number,
+    priorMedicationId: number,
+    formState: StockValidationFormState
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    try {
+      const response = await fetch(`/api/patients/${patientId}/prior-medications`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          priorMedicationId,
+          quantityTablets: formState.quantityTablets,
+          lotNumber: formState.lotNumber,
+          expirationDate: formState.expirationDate,
+          manufacturer: formState.manufacturer
+        })
+      });
+
+      const result = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        return {
+          ok: false,
+          message: result.message ?? "Falha ao atualizar validação do medicamento prévio."
+        };
+      }
+
+      return { ok: true };
+    } catch {
+      return {
+        ok: false,
+        message: "Erro de conexão ao atualizar validação do medicamento prévio."
+      };
+    }
+  }
+
   async function handleUpdatePriorMedicationValidation(priorMedicationId: number): Promise<void> {
     if (!selectedPatient) {
       setPriorMedicationFeedback({
@@ -4169,23 +4302,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setPriorMedicationUpdatingId(priorMedicationId);
 
     try {
-      const response = await fetch(`/api/patients/${selectedPatient.id}/prior-medications`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          priorMedicationId,
-          quantityTablets: formState.quantityTablets,
-          lotNumber: formState.lotNumber,
-          expirationDate: formState.expirationDate,
-          manufacturer: formState.manufacturer
-        })
-      });
-
-      const result = (await response.json()) as { message?: string };
-      if (!response.ok) {
+      const result = await submitPriorMedicationValidationUpdate(
+        selectedPatient.id,
+        priorMedicationId,
+        formState
+      );
+      if (!result.ok) {
         setPriorMedicationFeedback({
           type: "error",
-          message: result.message ?? "Falha ao atualizar validação do medicamento prévio."
+          message: result.message
         });
         return;
       }
@@ -4195,13 +4320,101 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         message: "Dados de validação do medicamento prévio atualizados."
       });
       refreshDashboard();
-    } catch {
-      setPriorMedicationFeedback({
-        type: "error",
-        message: "Erro de conexão ao atualizar validação do medicamento prévio."
-      });
     } finally {
       setPriorMedicationUpdatingId(null);
+    }
+  }
+
+  async function handleSaveAllPriorMedicationValidation(): Promise<void> {
+    if (!selectedPatient) {
+      setPriorMedicationFeedback({
+        type: "error",
+        message: "Selecione um paciente para atualizar os medicamentos prévios."
+      });
+      return;
+    }
+
+    const changedRows = priorMedicationEditableRows.filter((row) => row.isDirty);
+    if (changedRows.length === 0) {
+      setPriorMedicationFeedback({
+        type: "success",
+        message: "Nenhuma alteração pendente nos medicamentos prévios."
+      });
+      return;
+    }
+
+    setPriorMedicationFeedback(null);
+    setPriorMedicationBatchSaving(true);
+
+    try {
+      const results = await Promise.allSettled(
+        changedRows.map((row) =>
+          submitPriorMedicationValidationUpdate(
+            selectedPatient.id,
+            row.priorMedication.id,
+            row.formState
+          )
+        )
+      );
+
+      const failedMessages = results.flatMap((result, index) => {
+        if (result.status === "fulfilled") {
+          return result.value.ok ? [] : [`${changedRows[index].priorMedication.medicationName}: ${result.value.message}`];
+        }
+
+        return [`${changedRows[index].priorMedication.medicationName}: erro inesperado ao salvar.`];
+      });
+
+      if (failedMessages.length > 0) {
+        setPriorMedicationFeedback({
+          type: "error",
+          message: failedMessages[0] ?? "Falha ao salvar os medicamentos prévios."
+        });
+        return;
+      }
+
+      setPriorMedicationFeedback({
+        type: "success",
+        message: `${changedRows.length} medicamento(s) prévio(s) atualizado(s).`
+      });
+      refreshDashboard();
+    } finally {
+      setPriorMedicationBatchSaving(false);
+    }
+  }
+
+  async function submitMedicationValidationUpdate(
+    patientId: number,
+    prescriptionId: number,
+    formState: StockValidationFormState
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    try {
+      const response = await fetch(`/api/patients/${patientId}/prescriptions`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prescriptionId,
+          quantityTablets: formState.quantityTablets,
+          lotNumber: formState.lotNumber,
+          expirationDate: formState.expirationDate,
+          manufacturer: formState.manufacturer
+        })
+      });
+
+      const result = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        return {
+          ok: false,
+          message: result.message ?? "Falha ao atualizar validação do medicamento."
+        };
+      }
+
+      return { ok: true };
+    } catch {
+      return {
+        ok: false,
+        message: "Erro de conexão ao atualizar validação do medicamento."
+      };
     }
   }
 
@@ -4223,23 +4436,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setMedicationValidationUpdatingId(prescriptionId);
 
     try {
-      const response = await fetch(`/api/patients/${selectedPatient.id}/prescriptions`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prescriptionId,
-          quantityTablets: formState.quantityTablets,
-          lotNumber: formState.lotNumber,
-          expirationDate: formState.expirationDate,
-          manufacturer: formState.manufacturer
-        })
-      });
-
-      const result = (await response.json()) as { message?: string };
-      if (!response.ok) {
+      const result = await submitMedicationValidationUpdate(
+        selectedPatient.id,
+        prescriptionId,
+        formState
+      );
+      if (!result.ok) {
         setPrescriptionFeedback({
           type: "error",
-          message: result.message ?? "Falha ao atualizar validação do medicamento."
+          message: result.message
         });
         return;
       }
@@ -4249,13 +4454,64 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         message: "Validação do medicamento atualizada."
       });
       refreshDashboard();
-    } catch {
-      setPrescriptionFeedback({
-        type: "error",
-        message: "Erro de conexão ao atualizar validação do medicamento."
-      });
     } finally {
       setMedicationValidationUpdatingId(null);
+    }
+  }
+
+  async function handleSaveAllMedicationValidation(): Promise<void> {
+    if (!selectedPatient) {
+      setPrescriptionFeedback({
+        type: "error",
+        message: "Selecione um paciente para atualizar a validação dos medicamentos."
+      });
+      return;
+    }
+
+    const changedRows = medicationValidationEditableRows.filter((row) => row.isDirty);
+    if (changedRows.length === 0) {
+      setPrescriptionFeedback({
+        type: "success",
+        message: "Nenhuma alteração pendente na validação de medicamentos."
+      });
+      return;
+    }
+
+    setPrescriptionFeedback(null);
+    setMedicationValidationBatchSaving(true);
+
+    try {
+      const results = await Promise.allSettled(
+        changedRows.map((row) =>
+          submitMedicationValidationUpdate(selectedPatient.id, row.prescription.id, row.formState)
+        )
+      );
+
+      const failedMessages = results.flatMap((result, index) => {
+        if (result.status === "fulfilled") {
+          return result.value.ok
+            ? []
+            : [`${changedRows[index].displayMedicationName}: ${result.value.message}`];
+        }
+
+        return [`${changedRows[index].displayMedicationName}: erro inesperado ao salvar.`];
+      });
+
+      if (failedMessages.length > 0) {
+        setPrescriptionFeedback({
+          type: "error",
+          message: failedMessages[0] ?? "Falha ao salvar a validação dos medicamentos."
+        });
+        return;
+      }
+
+      setPrescriptionFeedback({
+        type: "success",
+        message: `${changedRows.length} medicamento(s) validado(s) atualizado(s).`
+      });
+      refreshDashboard();
+    } finally {
+      setMedicationValidationBatchSaving(false);
     }
   }
 
@@ -6437,18 +6693,29 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 aria-label="Reconciliado em todas as prescrições"
                               />
 
-                              {priorMedicationFeedback ? (
-                                <p
-                                  className={`dashboard-feedback dashboard-feedback-${priorMedicationFeedback.type}`}
-                                >
-                                  {priorMedicationFeedback.message}
-                                </p>
-                              ) : null}
+                            {priorMedicationFeedback ? (
+                              <p
+                                className={`dashboard-feedback dashboard-feedback-${priorMedicationFeedback.type}`}
+                              >
+                                {priorMedicationFeedback.message}
+                              </p>
+                            ) : null}
 
-                              <button type="submit" disabled={priorMedicationLoading}>
-                                {priorMedicationLoading ? "Salvando..." : "Salvar medicamento prévio"}
+                            <div className="dashboard-inline-actions">
+                              <button
+                                type="button"
+                                className="dashboard-mini-button"
+                                onClick={handleSaveAllPriorMedicationValidation}
+                                disabled={priorMedicationBatchSaving || priorMedicationEditableRows.length === 0}
+                              >
+                                {priorMedicationBatchSaving ? "Salvando todos..." : "Salvar todos"}
                               </button>
-                            </form>
+                            </div>
+
+                            <button type="submit" disabled={priorMedicationLoading}>
+                              {priorMedicationLoading ? "Salvando..." : "Salvar medicamento prévio"}
+                            </button>
+                          </form>
 
                             <div className="dashboard-table-wrap">
                               <table className="dashboard-table">
@@ -6458,6 +6725,12 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     <th>Dose</th>
                                     <th>Frequência</th>
                                     <th>Qtd. por horário</th>
+                                    <th>Qtd. comp.</th>
+                                    <th>Lote</th>
+                                    <th>Validade</th>
+                                    <th>Laboratório/Marca</th>
+                                    <th>Consumo/dia</th>
+                                    <th>Duração</th>
                                     <th>Data da prescrição</th>
                                     <th>Reconciliado</th>
                                     <th>Reconciliado em todas</th>
@@ -6467,12 +6740,12 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {priorMedicationRows.length === 0 ? (
+                                  {priorMedicationEditableRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={10}>Nenhum medicamento prévio cadastrado.</td>
+                                      <td colSpan={16}>Nenhum medicamento prévio cadastrado.</td>
                                     </tr>
                                   ) : (
-                                    priorMedicationRows.map((row) => (
+                                    priorMedicationEditableRows.map((row) => (
                                       <tr
                                         key={row.priorMedication.id}
                                         className={row.latestReconciled ? "" : "dashboard-row-missing"}
@@ -6485,6 +6758,63 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         </td>
                                         <td>{row.priorMedication.frequency || "-"}</td>
                                         <td>{row.priorMedication.shifts || "-"}</td>
+                                        <td>
+                                          <input
+                                            type="number"
+                                            min="0"
+                                            value={row.formState.quantityTablets}
+                                            onChange={(event) =>
+                                              updatePriorMedicationValidationField(
+                                                row.priorMedication.id,
+                                                "quantityTablets",
+                                                event.target.value
+                                              )
+                                            }
+                                          />
+                                        </td>
+                                        <td>
+                                          <input
+                                            value={row.formState.lotNumber}
+                                            onChange={(event) =>
+                                              updatePriorMedicationValidationField(
+                                                row.priorMedication.id,
+                                                "lotNumber",
+                                                event.target.value
+                                              )
+                                            }
+                                          />
+                                        </td>
+                                        <td>
+                                          <input
+                                            type="date"
+                                            value={row.formState.expirationDate}
+                                            onChange={(event) =>
+                                              updatePriorMedicationValidationField(
+                                                row.priorMedication.id,
+                                                "expirationDate",
+                                                event.target.value
+                                              )
+                                            }
+                                          />
+                                        </td>
+                                        <td>
+                                          <input
+                                            value={row.formState.manufacturer}
+                                            onChange={(event) =>
+                                              updatePriorMedicationValidationField(
+                                                row.priorMedication.id,
+                                                "manufacturer",
+                                                event.target.value
+                                              )
+                                            }
+                                          />
+                                        </td>
+                                        <td>
+                                          {row.dailyTabletUse !== null
+                                            ? `${formatNumber(row.dailyTabletUse)} comp/dia`
+                                            : "-"}
+                                        </td>
+                                        <td>{formatDurationDays(row.currentDurationDays)}</td>
                                         <td>
                                           {row.latestPrescriptionDate
                                             ? formatTimestamp(row.latestPrescriptionDate)
@@ -6520,6 +6850,21 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         </td>
                                         <td>{formatTimestamp(row.priorMedication.createdAt)}</td>
                                         <td>
+                                          <button
+                                            type="button"
+                                            className="dashboard-mini-button dashboard-mini-button-inline"
+                                            onClick={() =>
+                                              handleUpdatePriorMedicationValidation(row.priorMedication.id)
+                                            }
+                                            disabled={
+                                              priorMedicationUpdatingId === row.priorMedication.id ||
+                                              priorMedicationBatchSaving
+                                            }
+                                          >
+                                            {priorMedicationUpdatingId === row.priorMedication.id
+                                              ? "Salvando..."
+                                              : "Salvar"}
+                                          </button>
                                           <button
                                             type="button"
                                             className="dashboard-chip-remove"
@@ -6559,6 +6904,20 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               </p>
                             ) : null}
 
+                            <div className="dashboard-inline-actions">
+                              <button
+                                type="button"
+                                className="dashboard-mini-button"
+                                onClick={handleSaveAllMedicationValidation}
+                                disabled={
+                                  medicationValidationBatchSaving ||
+                                  medicationValidationEditableRows.length === 0
+                                }
+                              >
+                                {medicationValidationBatchSaving ? "Salvando todos..." : "Salvar todos"}
+                              </button>
+                            </div>
+
                             <div className="dashboard-table-wrap">
                               <table className="dashboard-table">
                                 <thead>
@@ -6578,14 +6937,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {selectedPatientMedicationValidationRows.length === 0 ? (
+                                  {medicationValidationEditableRows.length === 0 ? (
                                     <tr>
                                       <td colSpan={12}>
                                         Nenhum medicamento não cadastrado encontrado na prescrição.
                                       </td>
                                     </tr>
                                   ) : (
-                                    selectedPatientMedicationValidationRows.map((row) => (
+                                    medicationValidationEditableRows.map((row) => (
                                       <tr key={row.prescription.id}>
                                         <td>{row.displayMedicationName}</td>
                                         <td>
@@ -6597,84 +6956,50 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                           <input
                                             type="number"
                                             min="0"
-                                            value={
-                                              medicationValidationForm[row.prescription.id]?.quantityTablets ?? ""
-                                            }
+                                            value={row.formState.quantityTablets}
                                             onChange={(event) =>
-                                              setMedicationValidationForm((current) => ({
-                                                ...current,
-                                                [row.prescription.id]: {
-                                                  ...(current[row.prescription.id] ?? {
-                                                    quantityTablets: "",
-                                                    lotNumber: "",
-                                                    expirationDate: "",
-                                                    manufacturer: ""
-                                                  }),
-                                                  quantityTablets: event.target.value
-                                                }
-                                              }))
+                                              updateMedicationValidationField(
+                                                row.prescription.id,
+                                                "quantityTablets",
+                                                event.target.value
+                                              )
                                             }
                                           />
                                         </td>
                                         <td>
                                           <input
-                                            value={medicationValidationForm[row.prescription.id]?.lotNumber ?? ""}
+                                            value={row.formState.lotNumber}
                                             onChange={(event) =>
-                                              setMedicationValidationForm((current) => ({
-                                                ...current,
-                                                [row.prescription.id]: {
-                                                  ...(current[row.prescription.id] ?? {
-                                                    quantityTablets: "",
-                                                    lotNumber: "",
-                                                    expirationDate: "",
-                                                    manufacturer: ""
-                                                  }),
-                                                  lotNumber: event.target.value
-                                                }
-                                              }))
+                                              updateMedicationValidationField(
+                                                row.prescription.id,
+                                                "lotNumber",
+                                                event.target.value
+                                              )
                                             }
                                           />
                                         </td>
                                         <td>
                                           <input
                                             type="date"
-                                            value={
-                                              medicationValidationForm[row.prescription.id]?.expirationDate ?? ""
-                                            }
+                                            value={row.formState.expirationDate}
                                             onChange={(event) =>
-                                              setMedicationValidationForm((current) => ({
-                                                ...current,
-                                                [row.prescription.id]: {
-                                                  ...(current[row.prescription.id] ?? {
-                                                    quantityTablets: "",
-                                                    lotNumber: "",
-                                                    expirationDate: "",
-                                                    manufacturer: ""
-                                                  }),
-                                                  expirationDate: event.target.value
-                                                }
-                                              }))
+                                              updateMedicationValidationField(
+                                                row.prescription.id,
+                                                "expirationDate",
+                                                event.target.value
+                                              )
                                             }
                                           />
                                         </td>
                                         <td>
                                           <input
-                                            value={
-                                              medicationValidationForm[row.prescription.id]?.manufacturer ?? ""
-                                            }
+                                            value={row.formState.manufacturer}
                                             onChange={(event) =>
-                                              setMedicationValidationForm((current) => ({
-                                                ...current,
-                                                [row.prescription.id]: {
-                                                  ...(current[row.prescription.id] ?? {
-                                                    quantityTablets: "",
-                                                    lotNumber: "",
-                                                    expirationDate: "",
-                                                    manufacturer: ""
-                                                  }),
-                                                  manufacturer: event.target.value
-                                                }
-                                              }))
+                                              updateMedicationValidationField(
+                                                row.prescription.id,
+                                                "manufacturer",
+                                                event.target.value
+                                              )
                                             }
                                           />
                                         </td>
@@ -6683,7 +7008,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                             ? `${formatNumber(row.dailyTabletUse)} comp/dia`
                                             : "-"}
                                         </td>
-                                        <td>{formatDurationDays(row.durationDays)}</td>
+                                        <td>{formatDurationDays(row.currentDurationDays)}</td>
                                         <td>
                                           {row.prescription.validationStartAt
                                             ? formatTimestamp(row.prescription.validationStartAt)
@@ -6695,7 +7020,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                             onClick={() =>
                                               handleUpdateMedicationValidation(row.prescription.id)
                                             }
-                                            disabled={medicationValidationUpdatingId === row.prescription.id}
+                                            disabled={
+                                              medicationValidationUpdatingId === row.prescription.id ||
+                                              medicationValidationBatchSaving
+                                            }
                                           >
                                             {medicationValidationUpdatingId === row.prescription.id
                                               ? "Salvando..."
