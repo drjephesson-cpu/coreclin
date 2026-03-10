@@ -168,36 +168,35 @@ export async function PUT(
 
   const body = payload as Record<string, unknown>;
   const priorMedicationId = Number(body.priorMedicationId);
-  const quantityRaw = body.quantityTablets;
-  const quantityTablets =
-    quantityRaw === undefined || quantityRaw === null || quantityRaw === ""
+  const doseRaw = body.dose;
+  const dose =
+    doseRaw === undefined || doseRaw === null || doseRaw === ""
       ? null
-      : Number(quantityRaw);
-  const lotNumber = typeof body.lotNumber === "string" ? body.lotNumber.trim() : "";
-  const expirationDate =
-    typeof body.expirationDate === "string" ? body.expirationDate.trim() : "";
-  const manufacturer = typeof body.manufacturer === "string" ? body.manufacturer.trim() : "";
+      : Number(doseRaw);
+  const doseUnit = typeof body.doseUnit === "string" ? body.doseUnit.trim() : "";
+  const frequency = typeof body.frequency === "string" ? body.frequency.trim() : "";
+  const shifts = typeof body.shifts === "string" ? body.shifts.trim() : "";
 
   if (!Number.isInteger(priorMedicationId) || priorMedicationId <= 0) {
     return NextResponse.json({ message: "Medicamento prévio inválido." }, { status: 400 });
   }
 
-  if (quantityTablets !== null && (!Number.isInteger(quantityTablets) || quantityTablets < 0)) {
-    return NextResponse.json({ message: "Quantidade inválida." }, { status: 400 });
+  if (dose !== null && (!Number.isFinite(dose) || dose <= 0)) {
+    return NextResponse.json({ message: "Dose inválida." }, { status: 400 });
   }
 
-  if (expirationDate && Number.isNaN(new Date(expirationDate).getTime())) {
-    return NextResponse.json({ message: "Validade inválida." }, { status: 400 });
+  if (dose !== null && !doseUnit) {
+    return NextResponse.json({ message: "Informe a unidade da dose." }, { status: 400 });
   }
 
   try {
     const priorMedication = await updatePriorMedication({
       patientId,
       priorMedicationId,
-      quantityTablets,
-      lotNumber,
-      expirationDate,
-      manufacturer
+      dose,
+      doseUnit,
+      frequency,
+      shifts
     });
 
     return NextResponse.json({ ok: true, priorMedication });

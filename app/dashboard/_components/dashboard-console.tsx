@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { FormEvent, Fragment, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import LogoutButton from "@/app/_components/logout-button";
@@ -9,7 +9,10 @@ import {
   type AdmissionRecord,
   BSA_FORMULA_OPTIONS,
   BMI_FORMULA_OPTIONS,
+  INTERVIEW_INFORMATION_QUALITY_OPTIONS,
+  INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS,
   COUNCIL_OPTIONS,
+  MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS,
   PROFESSION_OPTIONS,
   type BmiFormulaId,
   type BsaFormulaId,
@@ -18,10 +21,15 @@ import {
   type InpatientEntry,
   type InpatientWorkflowState,
   type InpatientWorkflowStatus,
+  type InterviewInformationQuality,
+  type InterviewInformationSourceType,
+  type MedicalPrescriptionRecord,
+  type MedicalPrescriptionInterventionResponse,
   type InpatientWorkflowStoragePayload,
   type PatientExamImportRecord,
   type PatientExamResultRecord,
   type PatientRecord,
+  type PriorMedicationRecord,
   type ProfessionOption
 } from "@/lib/coreclin-types";
 import {
@@ -84,6 +92,7 @@ const INPATIENT_SIDEBAR_ITEMS = [
 const PATIENT_VIEW_ITEMS = [
   { id: "allergies", label: "Alergias" },
   { id: "admission-info", label: "Informações da internação" },
+  { id: "interview", label: "Entrevista" },
   { id: "exams", label: "Exames" },
   { id: "prior-use", label: "Medicamentos de uso prévio" },
   { id: "medication-validation", label: "Validação de medicamentos" },
@@ -106,6 +115,11 @@ const PRIOR_MEDICATION_FREQUENCY_OPTIONS = [
 
 const INPATIENT_STATUS_OPTIONS = ["Pendente", "Concluído", "Alta"] as const;
 const INPATIENT_WORKFLOW_STORAGE_KEY = "coreclin.inpatient-workflow.v1";
+const INTERVIEW_INFORMATION_QUALITY_LABELS: Record<InterviewInformationQuality, string> = {
+  baixa: "Baixa",
+  media: "Média",
+  alta: "Alta"
+};
 const CONCEPT_STOPWORDS = new Set([
   "de",
   "da",
@@ -264,6 +278,18 @@ type StockValidationFormState = {
   manufacturer: string;
 };
 
+type PriorMedicationReconciliationFormState = {
+  dose: string;
+  frequency: string;
+  shifts: string;
+};
+
+type PrescriptionInterventionFormState = {
+  interventionNotes: string;
+  interventionRequestedToPrescriber: "" | "sim" | "nao";
+  interventionResponse: "" | MedicalPrescriptionInterventionResponse;
+};
+
 type DashboardConsoleProps = {
   currentLogin: string;
   data: DashboardData | null;
@@ -277,6 +303,138 @@ function createEmptyStockValidationFormState(): StockValidationFormState {
     expirationDate: "",
     manufacturer: ""
   };
+}
+
+function createEmptyAdmissionFormState() {
+  return {
+    admissionId: "",
+    admissionDate: "",
+    bed: "",
+    admissionReason: "",
+    admissionSummary: "",
+    admissionImportExcerpt: "",
+    interviewInformationQuality: "",
+    interviewInformationSourceType: "",
+    interviewInformationSourceName: "",
+    interviewInformationSourceRelationship: "",
+    interviewInterventionMotive: "",
+    interviewSubjective: "",
+    interviewRelevantSymptoms: "",
+    interviewPendingIssues: "",
+    interviewPlan: "",
+    teamId: "",
+    weightKg: "",
+    heightCm: "",
+    bmiFormula: "quetelet" as BmiFormulaId,
+    bsaFormula: "mosteller" as BsaFormulaId
+  };
+}
+
+function createPriorMedicationReconciliationFormState(
+  priorMedication?: Pick<PriorMedicationRecord, "dose" | "doseUnit" | "frequency" | "shifts">
+): PriorMedicationReconciliationFormState {
+  const formattedDose =
+    priorMedication && priorMedication.dose > 0
+      ? `${formatNumber(priorMedication.dose)} ${priorMedication.doseUnit}`.trim()
+      : "";
+
+  return {
+    dose: formattedDose,
+    frequency: priorMedication?.frequency ?? "",
+    shifts: priorMedication?.shifts ?? ""
+  };
+}
+
+function arePriorMedicationReconciliationFormsEqual(
+  formState: PriorMedicationReconciliationFormState,
+  reference: Pick<PriorMedicationRecord, "dose" | "doseUnit" | "frequency" | "shifts">
+): boolean {
+  const formattedReferenceDose =
+    reference.dose > 0 ? `${formatNumber(reference.dose)} ${reference.doseUnit}`.trim() : "";
+
+  return (
+    formState.dose.trim() === formattedReferenceDose &&
+    formState.frequency.trim() === (reference.frequency ?? "") &&
+    formState.shifts.trim() === (reference.shifts ?? "")
+  );
+}
+
+function createPrescriptionInterventionFormState(
+  prescription?: Pick<
+    MedicalPrescriptionRecord,
+    "interventionNotes" | "interventionRequestedToPrescriber" | "interventionResponse"
+  >
+): PrescriptionInterventionFormState {
+  return {
+    interventionNotes: prescription?.interventionNotes ?? "",
+    interventionRequestedToPrescriber:
+      prescription?.interventionRequestedToPrescriber === true
+        ? "sim"
+        : prescription?.interventionRequestedToPrescriber === false
+          ? "nao"
+          : "",
+    interventionResponse: prescription?.interventionResponse ?? ""
+  };
+}
+
+function hasPrescriptionIntervention(
+  prescription: Pick<
+    MedicalPrescriptionRecord,
+    "interventionNotes" | "interventionRequestedToPrescriber" | "interventionResponse"
+  >
+): boolean {
+  return Boolean(
+    prescription.interventionNotes?.trim() ||
+      prescription.interventionRequestedToPrescriber !== null ||
+      prescription.interventionResponse
+  );
+}
+
+function formatPrescriptionInterventionSummary(
+  prescription: Pick<
+    MedicalPrescriptionRecord,
+    "interventionNotes" | "interventionRequestedToPrescriber" | "interventionResponse"
+  >
+): string {
+  if (!hasPrescriptionIntervention(prescription)) {
+    return "-";
+  }
+
+  const parts = [];
+  if (prescription.interventionNotes?.trim()) {
+    parts.push(prescription.interventionNotes.trim());
+  }
+
+  if (prescription.interventionRequestedToPrescriber !== null) {
+    parts.push(
+      `Solicitado ao prescritor: ${
+        prescription.interventionRequestedToPrescriber ? "Sim" : "Não"
+      }`
+    );
+  }
+
+  if (prescription.interventionResponse) {
+    parts.push(`Resposta: ${prescription.interventionResponse}`);
+  }
+
+  return parts.join(" | ");
+}
+
+function formatInterviewInformationQualityLabel(
+  quality: InterviewInformationQuality | null | undefined
+): string {
+  return quality ? INTERVIEW_INFORMATION_QUALITY_LABELS[quality] : "";
+}
+
+function splitTextIntoBulletLines(input: string | null | undefined): string[] {
+  if (!input) {
+    return [];
+  }
+
+  return input
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[\s\-#*]+/, "").trim())
+    .filter((line) => line.length > 0);
 }
 
 function parseStockValidationQuantity(value: string): number | null {
@@ -880,7 +1038,8 @@ function parseExtractedExamRecords(
       result,
       unit,
       referenceRange,
-      pageNumber
+      pageNumber,
+      examDate: null
     });
   }
 
@@ -968,6 +1127,269 @@ function formatAdmissionDateValue(input: string | null | undefined): string {
 
 function formatAdmissionDate(input: string | null | undefined): string {
   return formatAdmissionDateValue(input) || "-";
+}
+
+function scoreExamDateCandidateLine(line: string): number {
+  const normalizedLine = normalizeSearchValue(line);
+  if (!normalizedLine) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  if (
+    normalizedLine.includes("nascimento") ||
+    normalizedLine.includes("idade") ||
+    normalizedLine.includes("internacao") ||
+    normalizedLine.includes("admissao")
+  ) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  let score = 1;
+  const weightedTokens = [
+    ["coleta", 8],
+    ["coletado", 8],
+    ["colhido", 8],
+    ["liberado", 7],
+    ["resultado", 6],
+    ["emissao", 5],
+    ["emitido", 5],
+    ["solicitacao", 4],
+    ["solicitado", 4],
+    ["recebimento", 4],
+    ["material", 3],
+    ["laudo", 3],
+    ["data", 2],
+    ["exame", 2]
+  ] as const;
+
+  for (const [token, tokenScore] of weightedTokens) {
+    if (normalizedLine.includes(token)) {
+      score += tokenScore;
+    }
+  }
+
+  if (/\b\d{1,2}:\d{2}\b/.test(normalizedLine)) {
+    score += 1;
+  }
+
+  return score;
+}
+
+function extractExamPageLines(rawText: string): Array<{ pageNumber: number; line: string }> {
+  return rawText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .flatMap((line) => {
+      const match = line.match(/^\[P(?:á|a)g\.\s*(\d+)\]\s*(.+)$/i);
+      if (!match) {
+        return [];
+      }
+
+      const pageNumber = Number(match[1]);
+      const content = match[2]?.trim() ?? "";
+      if (!Number.isInteger(pageNumber) || pageNumber <= 0 || !content) {
+        return [];
+      }
+
+      return [{ pageNumber, line: content }];
+    });
+}
+
+function inferExamDatesByPageFromRawText(rawText: string): Map<number, string | null> {
+  const pageLines = extractExamPageLines(rawText);
+  const linesByPage = new Map<number, string[]>();
+
+  for (const { pageNumber, line } of pageLines) {
+    const currentLines = linesByPage.get(pageNumber) ?? [];
+    currentLines.push(line);
+    linesByPage.set(pageNumber, currentLines);
+  }
+
+  const pageDates = new Map<number, string | null>();
+  const datePattern = /\b(\d{1,2}[/. -]\d{1,2}[/. -]\d{2,4}|\d{4}-\d{2}-\d{2})\b/g;
+
+  for (const [pageNumber, lines] of linesByPage.entries()) {
+    let bestCandidate: { examDate: string; score: number; lineIndex: number } | null = null;
+
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex] ?? "";
+      const score = scoreExamDateCandidateLine(line);
+      if (!Number.isFinite(score)) {
+        continue;
+      }
+
+      const matches = line.match(datePattern);
+      if (!matches || matches.length === 0) {
+        continue;
+      }
+
+      for (const match of matches) {
+        const normalizedDate = normalizeAdmissionDateValue(match);
+        if (!normalizedDate) {
+          continue;
+        }
+
+        if (
+          !bestCandidate ||
+          score > bestCandidate.score ||
+          (score === bestCandidate.score && lineIndex < bestCandidate.lineIndex)
+        ) {
+          bestCandidate = { examDate: normalizedDate, score, lineIndex };
+        }
+      }
+    }
+
+    pageDates.set(pageNumber, bestCandidate?.examDate ?? null);
+  }
+
+  return pageDates;
+}
+
+function resolveExamRecordsWithDates(
+  records: PatientExamResultRecord[],
+  rawText?: string
+): PatientExamResultRecord[] {
+  if (!rawText || records.every((record) => Boolean(record.examDate))) {
+    return records;
+  }
+
+  const pageDates = inferExamDatesByPageFromRawText(rawText);
+  return records.map((record) => ({
+    ...record,
+    examDate: record.examDate ?? pageDates.get(record.pageNumber) ?? null
+  }));
+}
+
+function formatExamDateLabel(input: string | null | undefined): string {
+  return formatAdmissionDateValue(input) || "Data nao identificada no PDF";
+}
+
+function getExamDateSortTime(input: string | null | undefined): number {
+  const normalized = normalizeAdmissionDateValue(input ?? "");
+  if (!normalized) {
+    return -1;
+  }
+
+  const [year, month, day] = normalized.split("-");
+  const parsed = new Date(Number(year), Number(month) - 1, Number(day), 12, 0, 0, 0);
+  return Number.isNaN(parsed.getTime()) ? -1 : parsed.getTime();
+}
+
+function groupExamRecordsByDate(
+  records: PatientExamResultRecord[]
+): Array<{
+  key: string;
+  label: string;
+  sortTime: number;
+  records: PatientExamResultRecord[];
+}> {
+  const groups = new Map<
+    string,
+    {
+      key: string;
+      label: string;
+      sortTime: number;
+      records: PatientExamResultRecord[];
+    }
+  >();
+
+  for (const record of records) {
+    const normalizedDate = normalizeAdmissionDateValue(record.examDate ?? "");
+    const key = normalizedDate ?? "sem-data";
+    const existingGroup = groups.get(key);
+
+    if (existingGroup) {
+      existingGroup.records.push(record);
+      continue;
+    }
+
+    groups.set(key, {
+      key,
+      label: formatExamDateLabel(normalizedDate),
+      sortTime: getExamDateSortTime(normalizedDate),
+      records: [record]
+    });
+  }
+
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      records: [...group.records].sort((first, second) => {
+        const examNameComparison = first.examName.localeCompare(second.examName, "pt-BR");
+        if (examNameComparison !== 0) {
+          return examNameComparison;
+        }
+
+        if (first.pageNumber !== second.pageNumber) {
+          return first.pageNumber - second.pageNumber;
+        }
+
+        return first.result.localeCompare(second.result, "pt-BR");
+      })
+    }))
+    .sort((first, second) => {
+      if (first.sortTime !== second.sortTime) {
+        return second.sortTime - first.sortTime;
+      }
+
+      return first.label.localeCompare(second.label, "pt-BR");
+    });
+}
+
+function ExamResultsPanel({
+  records,
+  rawText,
+  emptyMessage
+}: {
+  records: PatientExamResultRecord[];
+  rawText?: string;
+  emptyMessage: string;
+}) {
+  if (records.length === 0) {
+    return <p className="dashboard-muted">{emptyMessage}</p>;
+  }
+
+  const groupedRecords = groupExamRecordsByDate(resolveExamRecordsWithDates(records, rawText));
+
+  return (
+    <div className="dashboard-exam-panel">
+      {groupedRecords.map((group) => (
+        <section key={group.key} className="dashboard-exam-group">
+          <div className="dashboard-exam-group-header">
+            <div>
+              <h4>{group.label}</h4>
+              <p>{`${group.records.length} resultado${group.records.length === 1 ? "" : "s"} identificado${group.records.length === 1 ? "" : "s"}`}</p>
+            </div>
+          </div>
+
+          <div className="dashboard-table-wrap">
+            <table className="dashboard-table">
+              <thead>
+                <tr>
+                  <th>Exame</th>
+                  <th>Resultado</th>
+                  <th>Unidade</th>
+                  <th>Referência</th>
+                  <th>Página</th>
+                </tr>
+              </thead>
+              <tbody>
+                {group.records.map((record) => (
+                  <tr key={record.key}>
+                    <td>{record.examName}</td>
+                    <td>{record.result}</td>
+                    <td>{record.unit || "-"}</td>
+                    <td>{record.referenceRange || "-"}</td>
+                    <td>{record.pageNumber}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ))}
+    </div>
+  );
 }
 
 function normalizeDateOnlyKey(input: string | null | undefined): string {
@@ -1374,6 +1796,7 @@ export default function DashboardConsole({
   const professionals = data?.professionals ?? [];
   const teams = data?.teams ?? [];
   const patients = data?.patients ?? [];
+  const inpatientOverviewEntries = data?.inpatientOverviewEntries ?? [];
   const recentAdmissions = data?.recentAdmissions ?? [];
   const medications = data?.medications ?? [];
   const patientAllergies = data?.patientAllergies ?? [];
@@ -1441,21 +1864,10 @@ export default function DashboardConsole({
     medicationId: medications[0] ? String(medications[0].id) : ""
   });
 
-  const [admissionForm, setAdmissionForm] = useState({
-    admissionId: "",
-    admissionDate: "",
-    bed: "",
-    admissionReason: "",
-    admissionSummary: "",
-    admissionImportExcerpt: "",
-    teamId: "",
-    weightKg: "",
-    heightCm: "",
-    bmiFormula: "quetelet" as BmiFormulaId,
-    bsaFormula: "mosteller" as BsaFormulaId
-  });
+  const [admissionForm, setAdmissionForm] = useState(createEmptyAdmissionFormState);
   const [admissionFeedback, setAdmissionFeedback] = useState<FeedbackState>(null);
   const [admissionLoading, setAdmissionLoading] = useState(false);
+  const [interviewFeedback, setInterviewFeedback] = useState<FeedbackState>(null);
 
   const [medicationForm, setMedicationForm] = useState({
     name: "",
@@ -1535,14 +1947,23 @@ export default function DashboardConsole({
   const [priorMedicationRemovingId, setPriorMedicationRemovingId] = useState<number | null>(null);
   const [priorMedicationUpdatingId, setPriorMedicationUpdatingId] = useState<number | null>(null);
   const [priorMedicationBatchSaving, setPriorMedicationBatchSaving] = useState(false);
-  const [priorMedicationValidationForm, setPriorMedicationValidationForm] = useState<
-    Record<number, StockValidationFormState>
+  const [priorMedicationReconciliationForm, setPriorMedicationReconciliationForm] = useState<
+    Record<number, PriorMedicationReconciliationFormState>
   >({});
   const [medicationValidationUpdatingId, setMedicationValidationUpdatingId] = useState<number | null>(null);
   const [medicationValidationBatchSaving, setMedicationValidationBatchSaving] = useState(false);
   const [medicationValidationForm, setMedicationValidationForm] = useState<
     Record<number, StockValidationFormState>
   >({});
+  const [prescriptionInterventionForm, setPrescriptionInterventionForm] = useState<
+    Record<number, PrescriptionInterventionFormState>
+  >({});
+  const [prescriptionInterventionOpenId, setPrescriptionInterventionOpenId] = useState<number | null>(
+    null
+  );
+  const [prescriptionInterventionSavingId, setPrescriptionInterventionSavingId] = useState<number | null>(
+    null
+  );
   const [prescriptionForm, setPrescriptionForm] = useState({
     admissionId: "",
     medicationId: medications[0] ? String(medications[0].id) : "",
@@ -1687,6 +2108,10 @@ export default function DashboardConsole({
   );
 
   const inpatients = useMemo<InpatientEntry[]>(() => {
+    if (inpatientOverviewEntries.length > 0) {
+      return inpatientOverviewEntries;
+    }
+
     const uniquePatients = new Map<number, InpatientEntry>();
 
     for (const admission of recentAdmissions) {
@@ -1708,7 +2133,7 @@ export default function DashboardConsole({
     }
 
     return Array.from(uniquePatients.values());
-  }, [patients, recentAdmissions]);
+  }, [inpatientOverviewEntries, patients, recentAdmissions]);
 
   const filteredInpatients = useMemo(() => {
     const searchTerm = normalizeSearchValue(inpatientSearch);
@@ -2083,6 +2508,11 @@ export default function DashboardConsole({
     [recentAdmissions, selectedPatient]
   );
 
+  const selectedCurrentAdmission = useMemo(
+    () => selectedPatientAdmissions[0] ?? selectedPatient?.latestAdmission ?? null,
+    [selectedPatient, selectedPatientAdmissions]
+  );
+
   const selectedPatientAllergies = useMemo(
     () =>
       patientAllergies.filter(
@@ -2101,6 +2531,7 @@ export default function DashboardConsole({
     setAdmissionSummarySelection("");
     setAllergyForm({ query: "", selectedValue: "" });
     setAllergyFeedback(null);
+    setInterviewFeedback(null);
     setExamImportFeedback(null);
     setExamImportResult(null);
     if (examPdfInputRef.current) {
@@ -2117,6 +2548,7 @@ export default function DashboardConsole({
     const latestMeasurement = selectedPatient.latestMeasurement;
 
     setAdmissionForm({
+      ...createEmptyAdmissionFormState(),
       admissionId: latestAdmission ? String(latestAdmission.id) : "",
       admissionDate: formatAdmissionDateValue(
         latestAdmission?.admissionDate ?? selectedInpatientEntry?.admissionDate ?? ""
@@ -2128,6 +2560,16 @@ export default function DashboardConsole({
           : "",
       admissionSummary: latestAdmission?.admissionSummary ?? "",
       admissionImportExcerpt: latestAdmission?.admissionImportExcerpt ?? "",
+      interviewInformationQuality: latestAdmission?.interviewInformationQuality ?? "",
+      interviewInformationSourceType: latestAdmission?.interviewInformationSourceType ?? "",
+      interviewInformationSourceName: latestAdmission?.interviewInformationSourceName ?? "",
+      interviewInformationSourceRelationship:
+        latestAdmission?.interviewInformationSourceRelationship ?? "",
+      interviewInterventionMotive: latestAdmission?.interviewInterventionMotive ?? "",
+      interviewSubjective: latestAdmission?.interviewSubjective ?? "",
+      interviewRelevantSymptoms: latestAdmission?.interviewRelevantSymptoms ?? "",
+      interviewPendingIssues: latestAdmission?.interviewPendingIssues ?? "",
+      interviewPlan: latestAdmission?.interviewPlan ?? "",
       teamId:
         latestAdmission?.teamId !== null && latestAdmission?.teamId !== undefined
           ? String(latestAdmission.teamId)
@@ -2911,17 +3353,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   );
 
   useEffect(() => {
-    setPriorMedicationValidationForm(
+    setPriorMedicationReconciliationForm(
       Object.fromEntries(
         selectedPatientPriorMedications.map((priorMedication) => [
           priorMedication.id,
-          {
-            quantityTablets:
-              priorMedication.quantityTablets === null ? "" : String(priorMedication.quantityTablets),
-            lotNumber: priorMedication.lotNumber ?? "",
-            expirationDate: priorMedication.expirationDate ?? "",
-            manufacturer: priorMedication.manufacturer ?? ""
-          } satisfies StockValidationFormState
+          createPriorMedicationReconciliationFormState(priorMedication)
         ])
       )
     );
@@ -3023,6 +3459,18 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       )
     );
   }, [selectedPatientMedicationValidationRows]);
+
+  useEffect(() => {
+    setPrescriptionInterventionForm(
+      Object.fromEntries(
+        selectedPatientPrescriptions.map((prescription) => [
+          prescription.id,
+          createPrescriptionInterventionFormState(prescription)
+        ])
+      )
+    );
+    setPrescriptionInterventionOpenId(null);
+  }, [selectedPatientPrescriptions]);
 
   const prescriptionMedicationNameForAlert = useMemo(() => {
     if (prescriptionForm.medicationId) {
@@ -3155,20 +3603,12 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         });
 
         const latest = history[0] ?? null;
-        const dailyTabletUse = calculateDailyTabletUse({
-          dose: priorMedication.dose,
-          doseUnit: priorMedication.doseUnit,
-          frequency: priorMedication.frequency,
-          shifts: priorMedication.shifts
-        });
         return {
           priorMedication,
           latestPrescriptionDate: latest?.prescriptionDate ?? null,
           latestReconciled: latest?.reconciled ?? null,
           reconciledInAllPrescriptions: history.length > 0 ? history.every((item) => item.reconciled) : null,
-          history,
-          dailyTabletUse,
-          durationDays: calculateDurationDays(priorMedication.quantityTablets, dailyTabletUse)
+          history
         };
       }),
     [selectedPatientPriorMedications, selectedPatientPrescriptionGroups]
@@ -3178,18 +3618,16 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     () =>
       priorMedicationRows.map((row) => {
         const formState =
-          priorMedicationValidationForm[row.priorMedication.id] ?? createEmptyStockValidationFormState();
-        const currentQuantityTablets = parseStockValidationQuantity(formState.quantityTablets);
+          priorMedicationReconciliationForm[row.priorMedication.id] ??
+          createPriorMedicationReconciliationFormState(row.priorMedication);
 
         return {
           ...row,
           formState,
-          currentQuantityTablets,
-          currentDurationDays: calculateDurationDays(currentQuantityTablets, row.dailyTabletUse),
-          isDirty: !areStockValidationFormsEqual(formState, row.priorMedication)
+          isDirty: !arePriorMedicationReconciliationFormsEqual(formState, row.priorMedication)
         };
       }),
-    [priorMedicationRows, priorMedicationValidationForm]
+    [priorMedicationRows, priorMedicationReconciliationForm]
   );
 
   const medicationValidationEditableRows = useMemo(
@@ -3209,6 +3647,221 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       }),
     [selectedPatientMedicationValidationRows, medicationValidationForm]
   );
+
+  const interviewEvolutionText = useMemo(() => {
+    if (!selectedPatient) {
+      return "";
+    }
+
+    const patientAge = selectedPatientAgePreview ?? selectedPatient.ageYears;
+    const interviewInformationQuality = INTERVIEW_INFORMATION_QUALITY_OPTIONS.includes(
+      admissionForm.interviewInformationQuality as InterviewInformationQuality
+    )
+      ? (admissionForm.interviewInformationQuality as InterviewInformationQuality)
+      : null;
+    const interviewInformationSourceType = INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS.includes(
+      admissionForm.interviewInformationSourceType as InterviewInformationSourceType
+    )
+      ? (admissionForm.interviewInformationSourceType as InterviewInformationSourceType)
+      : null;
+
+    const sections: string[] = [
+      `${selectedPatient.fullName.toUpperCase()} - ${selectedPatient.chartNumber}${
+        patientAge !== null ? ` - Idade: ${patientAge} anos` : ""
+      }`
+    ];
+
+    const pushSection = (title: string, lines: string[]) => {
+      const sanitizedLines = lines.map((line) => line.trim()).filter((line) => line.length > 0);
+      if (sanitizedLines.length === 0) {
+        return;
+      }
+
+      sections.push("", title, ...sanitizedLines.map((line) => `- ${line}`));
+    };
+
+    pushSection(
+      "#MOTIVO DA INTERVENÇÃO",
+      splitTextIntoBulletLines(admissionForm.interviewInterventionMotive)
+    );
+
+    const patientDataLines: string[] = [];
+    patientDataLines.push(
+      selectedPatientAllergies.length === 0
+        ? "ALERGIAS - Paciente NÃO possui ou DESCONHECE alergias/reações adversas"
+        : `ALERGIAS - ${selectedPatientAllergies.map((allergy) => allergy.allergyName).join("; ")}`
+    );
+
+    const weightKg = Number(admissionForm.weightKg);
+    const heightCm = Number(admissionForm.heightCm);
+    const bmiValue =
+      admissionPreview?.bmi ?? (selectedCurrentAdmission?.bmi !== null ? selectedCurrentAdmission?.bmi : null);
+    const bodySurfaceAreaValue =
+      admissionPreview?.bodySurfaceArea ??
+      (selectedCurrentAdmission?.bodySurfaceArea !== null
+        ? selectedCurrentAdmission?.bodySurfaceArea
+        : null);
+    const anthropometricParts = [
+      Number.isFinite(weightKg) && weightKg > 0 ? `PESO ${formatNumber(weightKg)} kg` : "",
+      Number.isFinite(heightCm) && heightCm > 0 ? `ALTURA ${formatNumber(heightCm)} cm` : "",
+      bmiValue !== null && bmiValue !== undefined ? `IMC ${formatNumber(bmiValue)}` : "",
+      bodySurfaceAreaValue !== null && bodySurfaceAreaValue !== undefined
+        ? `ÁREA DE SUPERFÍCIE ${formatNumber(bodySurfaceAreaValue)}`
+        : ""
+    ].filter((item) => item.length > 0);
+    if (anthropometricParts.length > 0) {
+      patientDataLines.push(anthropometricParts.join(" | "));
+    }
+    pushSection("#DADOS DO PACIENTE", patientDataLines);
+
+    const examSummaryLines = selectedSavedExamImport
+      ? groupExamRecordsByDate(
+          resolveExamRecordsWithDates(
+            selectedSavedExamImport.records,
+            selectedSavedExamImport.rawText
+          )
+        ).map((group) =>
+          `${group.label}: ${group.records
+            .map((record) =>
+              [
+                record.examName,
+                record.result,
+                record.unit || "",
+                record.referenceRange ? `(VR ${record.referenceRange})` : ""
+              ]
+                .filter((part) => part.length > 0)
+                .join(" ")
+            )
+            .join("; ")}`
+        )
+      : [];
+    pushSection("#EXAMES", examSummaryLines);
+
+    const qualityLabel = formatInterviewInformationQualityLabel(interviewInformationQuality);
+    const hasInformantDetails =
+      admissionForm.interviewInformationSourceName.trim().length > 0 ||
+      admissionForm.interviewInformationSourceRelationship.trim().length > 0;
+    const informationSourceSummary =
+      interviewInformationSourceType === "patient"
+        ? `Próprio paciente fornece as informações${
+            qualityLabel ? ` com ${qualityLabel.toUpperCase()} CONFIABILIDADE` : ""
+          }`
+        : interviewInformationSourceType === "informant" || hasInformantDetails
+          ? [
+              [
+                admissionForm.interviewInformationSourceName.trim(),
+                admissionForm.interviewInformationSourceRelationship.trim()
+                  ? `(${admissionForm.interviewInformationSourceRelationship.trim()})`
+                  : ""
+              ]
+                .filter((part) => part.length > 0)
+                .join(" ")
+                .trim() || "Informante",
+              "fornece as informações",
+              qualityLabel ? `com ${qualityLabel.toUpperCase()} CONFIABILIDADE` : ""
+            ]
+              .filter((part) => part.length > 0)
+              .join(" ")
+          : qualityLabel
+            ? `Informações com ${qualityLabel.toUpperCase()} CONFIABILIDADE`
+            : "";
+    pushSection("#FONTE INFORMAÇÃO", informationSourceSummary ? [informationSourceSummary] : []);
+
+    pushSection(
+      "#MEDICAMENTO DE USO CONTÍNUO E RECONCILIAÇÃO",
+      priorMedicationEditableRows.map((row) => {
+        const scheduleParts = [
+          row.formState.dose.trim(),
+          row.formState.frequency.trim(),
+          row.formState.shifts.trim()
+        ].filter((part) => part.length > 0);
+        const scheduleText = scheduleParts.length > 0 ? ` (${scheduleParts.join(" | ")})` : "";
+        const reconciledText =
+          row.latestReconciled === null ? "Não avaliado" : row.latestReconciled ? "Sim" : "Não";
+        return `${row.priorMedication.medicationName}${scheduleText} | Reconciliado: ${reconciledText}`;
+      })
+    );
+
+    pushSection(
+      "#VALIDAÇÃO DE MEDICAMENTOS",
+      medicationValidationEditableRows.map((row) => {
+        const details = [
+          row.currentQuantityTablets !== null ? `${row.currentQuantityTablets} comp` : "",
+          row.formState.lotNumber.trim() ? `Lote ${row.formState.lotNumber.trim()}` : "",
+          row.formState.expirationDate
+            ? `Validade ${formatAdmissionDateValue(row.formState.expirationDate)}`
+            : "",
+          row.formState.manufacturer.trim()
+            ? `Marca/Laboratório ${row.formState.manufacturer.trim()}`
+            : "",
+          row.currentDurationDays !== null
+            ? `Duração estimada ${formatDurationDays(row.currentDurationDays)}`
+            : ""
+        ].filter((part) => part.length > 0);
+        return details.length > 0
+          ? `${row.displayMedicationName} | ${details.join(" | ")}`
+          : row.displayMedicationName;
+      })
+    );
+
+    const subjectiveLines = [
+      ...splitTextIntoBulletLines(admissionForm.interviewSubjective),
+      ...splitTextIntoBulletLines(admissionForm.interviewRelevantSymptoms).map(
+        (line) => `Sintomas relevantes: ${line}`
+      )
+    ];
+    pushSection("#SUBJETIVO", subjectiveLines);
+
+    pushSection(
+      "#INTERVENÇÕES",
+      selectedPatientPrescriptions
+        .filter((prescription) => hasPrescriptionIntervention(prescription))
+        .map(
+          (prescription) =>
+            `${getPrescriptionMedicationDisplayName(
+              prescription.medicationName,
+              prescription.externalValidationCandidate
+            )} | ${formatPrescriptionInterventionSummary(prescription)}`
+        )
+    );
+
+    pushSection(
+      "#PLANO E CONDUTA FARMACÊUTICA",
+      splitTextIntoBulletLines(admissionForm.interviewPlan)
+    );
+
+    pushSection("#PENDÊNCIAS", splitTextIntoBulletLines(admissionForm.interviewPendingIssues));
+
+    const professionalSignature = currentProfessional
+      ? `${currentProfessional.fullName} - ${currentProfessional.councilType}/${currentProfessional.stateUf} ${currentProfessional.councilNumber}`
+      : currentLogin;
+
+    sections.push("", professionalSignature);
+    return sections.join("\n").trim();
+  }, [
+    admissionForm.heightCm,
+    admissionForm.interviewInformationQuality,
+    admissionForm.interviewInformationSourceName,
+    admissionForm.interviewInformationSourceRelationship,
+    admissionForm.interviewInformationSourceType,
+    admissionForm.interviewInterventionMotive,
+    admissionForm.interviewPendingIssues,
+    admissionForm.interviewPlan,
+    admissionForm.interviewRelevantSymptoms,
+    admissionForm.interviewSubjective,
+    admissionForm.weightKg,
+    admissionPreview,
+    currentLogin,
+    currentProfessional,
+    medicationValidationEditableRows,
+    priorMedicationEditableRows,
+    selectedCurrentAdmission,
+    selectedPatient,
+    selectedPatientAgePreview,
+    selectedPatientAllergies,
+    selectedPatientPrescriptions,
+    selectedSavedExamImport
+  ]);
 
   const selectedPrescriptionMedicationHistoryRows = useMemo(() => {
     if (!selectedPrescriptionMedicationHistory) {
@@ -3371,15 +4024,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setListVisibility((current) => ({ ...current, [sectionId]: !current[sectionId] }));
   }
 
-  function updatePriorMedicationValidationField(
+  function updatePriorMedicationReconciliationField(
     priorMedicationId: number,
-    field: keyof StockValidationFormState,
+    field: keyof PriorMedicationReconciliationFormState,
     value: string
   ): void {
-    setPriorMedicationValidationForm((current) => ({
+    setPriorMedicationReconciliationForm((current) => ({
       ...current,
       [priorMedicationId]: {
-        ...(current[priorMedicationId] ?? createEmptyStockValidationFormState()),
+        ...(current[priorMedicationId] ?? createPriorMedicationReconciliationFormState()),
         [field]: value
       }
     }));
@@ -3797,14 +4450,30 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
   }
 
-  async function handleAdmissionSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
+  async function persistAdmissionForm(options?: {
+    analyzeSummary?: boolean;
+    requireExistingAdmission?: boolean;
+    missingAdmissionMessage?: string;
+    successMessage?: string;
+    connectionErrorMessage?: string;
+  }): Promise<void> {
     setAdmissionFeedback(null);
+    setInterviewFeedback(null);
 
     if (!selectedPatient) {
       setAdmissionFeedback({
         type: "error",
         message: "Selecione um paciente internado para cadastrar a internação."
+      });
+      return;
+    }
+
+    if (options?.requireExistingAdmission && !admissionForm.admissionId.trim()) {
+      setAdmissionFeedback({
+        type: "error",
+        message:
+          options.missingAdmissionMessage ??
+          "Salve primeiro as informações da internação para registrar a entrevista."
       });
       return;
     }
@@ -3878,42 +4547,74 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         return;
       }
 
-      const summaryAutofill = await autoPopulateFromAdmissionSummary(
-        selectedPatient.id,
-        admissionForm.admissionImportExcerpt
-      );
-      const autofillDetails =
-        summaryAutofill.addedPriorMedications > 0
-          ? `${summaryAutofill.addedPriorMedications} medicamento(s) prévio(s) identificado(s)`
-          : "";
+      let autofillDetails = "";
+      if (options?.analyzeSummary !== false) {
+        const summaryAutofill = await autoPopulateFromAdmissionSummary(
+          selectedPatient.id,
+          admissionForm.admissionImportExcerpt
+        );
+        autofillDetails =
+          summaryAutofill.addedPriorMedications > 0
+            ? `${summaryAutofill.addedPriorMedications} medicamento(s) prévio(s) identificado(s)`
+            : "";
+      }
 
       setAdmissionFeedback({
         type: "success",
         message: `${
-          shouldUpdateAdmission ? "Internação atualizada com sucesso." : "Internação cadastrada com sucesso."
+          options?.successMessage ??
+          (shouldUpdateAdmission ? "Internação atualizada com sucesso." : "Internação cadastrada com sucesso.")
         }${autofillDetails ? ` Trecho de MUC analisado: ${autofillDetails}.` : ""}`
       });
-      setAdmissionForm({
-        admissionId: "",
-        admissionDate: "",
-        bed: "",
-        admissionReason: "",
-        admissionSummary: "",
-        admissionImportExcerpt: "",
-        teamId: "",
-        weightKg: "",
-        heightCm: "",
-        bmiFormula: "quetelet",
-        bsaFormula: "mosteller"
-      });
+      setAdmissionForm(createEmptyAdmissionFormState());
       refreshDashboard();
     } catch {
       setAdmissionFeedback({
         type: "error",
-        message: "Erro de conexão ao salvar internação."
+        message: options?.connectionErrorMessage ?? "Erro de conexão ao salvar internação."
       });
     } finally {
       setAdmissionLoading(false);
+    }
+  }
+
+  async function handleAdmissionSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    await persistAdmissionForm({ analyzeSummary: true });
+  }
+
+  async function handleInterviewSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    await persistAdmissionForm({
+      analyzeSummary: false,
+      requireExistingAdmission: true,
+      successMessage: "Entrevista salva com sucesso.",
+      connectionErrorMessage: "Erro de conexão ao salvar entrevista."
+    });
+  }
+
+  async function handleCopyInterviewEvolution(): Promise<void> {
+    setInterviewFeedback(null);
+
+    if (!interviewEvolutionText.trim()) {
+      setInterviewFeedback({
+        type: "error",
+        message: "Preencha algum dado da entrevista para gerar a evolução."
+      });
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(interviewEvolutionText);
+      setInterviewFeedback({
+        type: "success",
+        message: "Padrão de evolução copiado."
+      });
+    } catch {
+      setInterviewFeedback({
+        type: "error",
+        message: "Não foi possível copiar a evolução."
+      });
     }
   }
 
@@ -4249,21 +4950,35 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
   }
 
-  async function submitPriorMedicationValidationUpdate(
+  async function submitPriorMedicationReconciliationUpdate(
     patientId: number,
     priorMedicationId: number,
-    formState: StockValidationFormState
+    formState: PriorMedicationReconciliationFormState,
+    referenceMedication: PriorMedicationRecord
   ): Promise<{ ok: true } | { ok: false; message: string }> {
+    const trimmedDose = formState.dose.trim();
+    const parsedDose = parseDosePart(trimmedDose);
+
+    if (trimmedDose && parsedDose.dose === null) {
+      return {
+        ok: false,
+        message: "Dose inválida. Use o padrão 100 mg ou deixe em branco."
+      };
+    }
+
     try {
       const response = await fetch(`/api/patients/${patientId}/prior-medications`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           priorMedicationId,
-          quantityTablets: formState.quantityTablets,
-          lotNumber: formState.lotNumber,
-          expirationDate: formState.expirationDate,
-          manufacturer: formState.manufacturer
+          dose: parsedDose.dose,
+          doseUnit:
+            parsedDose.dose !== null
+              ? parsedDose.doseUnit || referenceMedication.doseUnit
+              : "",
+          frequency: formState.frequency,
+          shifts: formState.shifts
         })
       });
 
@@ -4271,7 +4986,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       if (!response.ok) {
         return {
           ok: false,
-          message: result.message ?? "Falha ao atualizar validação do medicamento prévio."
+          message: result.message ?? "Falha ao atualizar reconciliação do medicamento prévio."
         };
       }
 
@@ -4279,12 +4994,12 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     } catch {
       return {
         ok: false,
-        message: "Erro de conexão ao atualizar validação do medicamento prévio."
+        message: "Erro de conexão ao atualizar reconciliação do medicamento prévio."
       };
     }
   }
 
-  async function handleUpdatePriorMedicationValidation(priorMedicationId: number): Promise<void> {
+  async function handleUpdatePriorMedicationReconciliation(priorMedicationId: number): Promise<void> {
     if (!selectedPatient) {
       setPriorMedicationFeedback({
         type: "error",
@@ -4293,8 +5008,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       return;
     }
 
-    const formState = priorMedicationValidationForm[priorMedicationId];
-    if (!formState) {
+    const row = priorMedicationEditableRows.find((currentRow) => currentRow.priorMedication.id === priorMedicationId);
+    if (!row) {
       return;
     }
 
@@ -4302,10 +5017,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setPriorMedicationUpdatingId(priorMedicationId);
 
     try {
-      const result = await submitPriorMedicationValidationUpdate(
+      const result = await submitPriorMedicationReconciliationUpdate(
         selectedPatient.id,
         priorMedicationId,
-        formState
+        row.formState,
+        row.priorMedication
       );
       if (!result.ok) {
         setPriorMedicationFeedback({
@@ -4317,7 +5033,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
       setPriorMedicationFeedback({
         type: "success",
-        message: "Dados de validação do medicamento prévio atualizados."
+        message: "Reconciliação do medicamento prévio atualizada."
       });
       refreshDashboard();
     } finally {
@@ -4325,7 +5041,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
   }
 
-  async function handleSaveAllPriorMedicationValidation(): Promise<void> {
+  async function handleSaveAllPriorMedicationReconciliation(): Promise<void> {
     if (!selectedPatient) {
       setPriorMedicationFeedback({
         type: "error",
@@ -4349,10 +5065,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     try {
       const results = await Promise.allSettled(
         changedRows.map((row) =>
-          submitPriorMedicationValidationUpdate(
+          submitPriorMedicationReconciliationUpdate(
             selectedPatient.id,
             row.priorMedication.id,
-            row.formState
+            row.formState,
+            row.priorMedication
           )
         )
       );
@@ -4415,6 +5132,99 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         ok: false,
         message: "Erro de conexão ao atualizar validação do medicamento."
       };
+    }
+  }
+
+  function updatePrescriptionInterventionField(
+    prescriptionId: number,
+    field: keyof PrescriptionInterventionFormState,
+    value: PrescriptionInterventionFormState[keyof PrescriptionInterventionFormState]
+  ): void {
+    setPrescriptionInterventionForm((current) => ({
+      ...current,
+      [prescriptionId]: {
+        ...(current[prescriptionId] ?? createPrescriptionInterventionFormState()),
+        [field]: value
+      }
+    }));
+  }
+
+  async function submitPrescriptionInterventionUpdate(
+    patientId: number,
+    prescriptionId: number,
+    formState: PrescriptionInterventionFormState
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    try {
+      const response = await fetch(`/api/patients/${patientId}/prescriptions`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prescriptionId,
+          interventionNotes: formState.interventionNotes,
+          interventionRequestedToPrescriber:
+            formState.interventionRequestedToPrescriber === ""
+              ? null
+              : formState.interventionRequestedToPrescriber === "sim",
+          interventionResponse: formState.interventionResponse || null
+        })
+      });
+
+      const result = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        return {
+          ok: false,
+          message: result.message ?? "Falha ao salvar a intervenção."
+        };
+      }
+
+      return { ok: true };
+    } catch {
+      return {
+        ok: false,
+        message: "Erro de conexão ao salvar a intervenção."
+      };
+    }
+  }
+
+  async function handleSavePrescriptionIntervention(prescriptionId: number): Promise<void> {
+    if (!selectedPatient) {
+      setPrescriptionFeedback({
+        type: "error",
+        message: "Selecione um paciente para registrar a intervenção."
+      });
+      return;
+    }
+
+    const formState = prescriptionInterventionForm[prescriptionId];
+    if (!formState) {
+      return;
+    }
+
+    setPrescriptionFeedback(null);
+    setPrescriptionInterventionSavingId(prescriptionId);
+
+    try {
+      const result = await submitPrescriptionInterventionUpdate(
+        selectedPatient.id,
+        prescriptionId,
+        formState
+      );
+
+      if (!result.ok) {
+        setPrescriptionFeedback({
+          type: "error",
+          message: result.message
+        });
+        return;
+      }
+
+      setPrescriptionFeedback({
+        type: "success",
+        message: "Intervenção registrada na prescrição."
+      });
+      refreshDashboard();
+    } finally {
+      setPrescriptionInterventionSavingId(null);
     }
   }
 
@@ -4894,9 +5704,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       }
 
       const knownAdmissionKeys = new Set(
-        recentAdmissions.map(
-          (admission) =>
-            `${admission.patientId}:${admission.admissionDate}:${normalizeSearchValue(admission.bed)}`
+        inpatients.flatMap((entry) =>
+          entry.patientId !== null
+            ? [`${entry.patientId}:${entry.admissionDate}:${normalizeSearchValue(entry.bed)}`]
+            : []
         )
       );
 
@@ -6132,6 +6943,101 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 required
                               />
 
+                              <select
+                                value={admissionForm.teamId}
+                                onChange={(event) =>
+                                  setAdmissionForm((current) => ({ ...current, teamId: event.target.value }))
+                                }
+                                required
+                              >
+                                <option value="">Selecione a equipe</option>
+                                {teams.map((team) => (
+                                  <option key={team.id} value={team.id}>
+                                    {team.name}
+                                  </option>
+                                ))}
+                              </select>
+
+                              <div className="dashboard-two-columns">
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  placeholder="Peso (kg)"
+                                  value={admissionForm.weightKg}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({ ...current, weightKg: event.target.value }))
+                                  }
+                                />
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  placeholder="Altura (cm)"
+                                  value={admissionForm.heightCm}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({ ...current, heightCm: event.target.value }))
+                                  }
+                                />
+                              </div>
+
+                              <div className="dashboard-two-columns">
+                                <select
+                                  value={admissionForm.bmiFormula}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({
+                                      ...current,
+                                      bmiFormula: event.target.value as BmiFormulaId
+                                    }))
+                                  }
+                                >
+                                  {BMI_FORMULA_OPTIONS.map((formula) => (
+                                    <option key={formula.id} value={formula.id}>
+                                      IMC: {formula.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={admissionForm.bsaFormula}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({
+                                      ...current,
+                                      bsaFormula: event.target.value as BsaFormulaId
+                                    }))
+                                  }
+                                >
+                                  {BSA_FORMULA_OPTIONS.map((formula) => (
+                                    <option key={formula.id} value={formula.id}>
+                                      SC: {formula.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div className="dashboard-calculation-box">
+                                <h3>Cálculo automático</h3>
+                                <p>
+                                  {selectedBmiFormula?.label}: <span>{selectedBmiFormula?.equation ?? "-"}</span>
+                                </p>
+                                <p>
+                                  {selectedBsaFormula?.label}: <span>{selectedBsaFormula?.equation ?? "-"}</span>
+                                </p>
+                                <div className="dashboard-two-columns">
+                                  <input
+                                    value={admissionPreview ? formatNumber(admissionPreview.bmi) : "IMC calculado"}
+                                    disabled
+                                  />
+                                  <input
+                                    value={
+                                      admissionPreview
+                                        ? formatNumber(admissionPreview.bodySurfaceArea)
+                                        : "Superfície corporal calculada"
+                                    }
+                                    disabled
+                                  />
+                                </div>
+                              </div>
+
                               <div className="dashboard-inline-actions">
                                 <button
                                   type="button"
@@ -6243,101 +7149,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 </div>
                               ) : null}
 
-                              <select
-                                value={admissionForm.teamId}
-                                onChange={(event) =>
-                                  setAdmissionForm((current) => ({ ...current, teamId: event.target.value }))
-                                }
-                                required
-                              >
-                                <option value="">Selecione a equipe</option>
-                                {teams.map((team) => (
-                                  <option key={team.id} value={team.id}>
-                                    {team.name}
-                                  </option>
-                                ))}
-                              </select>
-
-                              <div className="dashboard-two-columns">
-                                <input
-                                  type="number"
-                                  step="0.01"
-                                  min="0"
-                                  placeholder="Peso (kg)"
-                                  value={admissionForm.weightKg}
-                                  onChange={(event) =>
-                                    setAdmissionForm((current) => ({ ...current, weightKg: event.target.value }))
-                                  }
-                                />
-                                <input
-                                  type="number"
-                                  step="0.01"
-                                  min="0"
-                                  placeholder="Altura (cm)"
-                                  value={admissionForm.heightCm}
-                                  onChange={(event) =>
-                                    setAdmissionForm((current) => ({ ...current, heightCm: event.target.value }))
-                                  }
-                                />
-                              </div>
-
-                              <div className="dashboard-two-columns">
-                                <select
-                                  value={admissionForm.bmiFormula}
-                                  onChange={(event) =>
-                                    setAdmissionForm((current) => ({
-                                      ...current,
-                                      bmiFormula: event.target.value as BmiFormulaId
-                                    }))
-                                  }
-                                >
-                                  {BMI_FORMULA_OPTIONS.map((formula) => (
-                                    <option key={formula.id} value={formula.id}>
-                                      IMC: {formula.label}
-                                    </option>
-                                  ))}
-                                </select>
-                                <select
-                                  value={admissionForm.bsaFormula}
-                                  onChange={(event) =>
-                                    setAdmissionForm((current) => ({
-                                      ...current,
-                                      bsaFormula: event.target.value as BsaFormulaId
-                                    }))
-                                  }
-                                >
-                                  {BSA_FORMULA_OPTIONS.map((formula) => (
-                                    <option key={formula.id} value={formula.id}>
-                                      SC: {formula.label}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-
-                              <div className="dashboard-calculation-box">
-                                <h3>Cálculo automático</h3>
-                                <p>
-                                  {selectedBmiFormula?.label}: <span>{selectedBmiFormula?.equation ?? "-"}</span>
-                                </p>
-                                <p>
-                                  {selectedBsaFormula?.label}: <span>{selectedBsaFormula?.equation ?? "-"}</span>
-                                </p>
-                                <div className="dashboard-two-columns">
-                                  <input
-                                    value={admissionPreview ? formatNumber(admissionPreview.bmi) : "IMC calculado"}
-                                    disabled
-                                  />
-                                  <input
-                                    value={
-                                      admissionPreview
-                                        ? formatNumber(admissionPreview.bodySurfaceArea)
-                                        : "Superfície corporal calculada"
-                                    }
-                                    disabled
-                                  />
-                                </div>
-                              </div>
-
                               {admissionFeedback ? (
                                 <p className={`dashboard-feedback dashboard-feedback-${admissionFeedback.type}`}>
                                   {admissionFeedback.message}
@@ -6400,6 +7211,189 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                           </div>
                         ) : null}
 
+                        {patientView === "interview" ? (
+                          <div className="dashboard-subsection-block">
+                            <h3>Entrevista</h3>
+                            <p className="dashboard-muted">
+                              Registre a fonte da informação e gere uma evolução padronizada só com os dados
+                              disponíveis desta internação.
+                            </p>
+
+                            <form className="dashboard-form" onSubmit={handleInterviewSubmit}>
+                              <input
+                                value={`${selectedPatient.fullName} (${selectedPatient.chartNumber})`}
+                                disabled
+                                aria-label="Paciente selecionado"
+                              />
+
+                              <div className="dashboard-two-columns">
+                                <select
+                                  value={admissionForm.interviewInformationQuality}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({
+                                      ...current,
+                                      interviewInformationQuality: event.target.value
+                                    }))
+                                  }
+                                >
+                                  <option value="">Qualidade das informações</option>
+                                  {INTERVIEW_INFORMATION_QUALITY_OPTIONS.map((option) => (
+                                    <option key={option} value={option}>
+                                      {INTERVIEW_INFORMATION_QUALITY_LABELS[option]}
+                                    </option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={admissionForm.interviewInformationSourceType}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({
+                                      ...current,
+                                      interviewInformationSourceType: event.target.value
+                                    }))
+                                  }
+                                >
+                                  <option value="">Quem forneceu as informações?</option>
+                                  <option value="patient">Próprio paciente</option>
+                                  <option value="informant">Cuidador/familiar/outro</option>
+                                </select>
+                              </div>
+
+                              {admissionForm.interviewInformationSourceType === "informant" ? (
+                                <div className="dashboard-two-columns">
+                                  <input
+                                    placeholder="Nome de quem forneceu as informações"
+                                    value={admissionForm.interviewInformationSourceName}
+                                    onChange={(event) =>
+                                      setAdmissionForm((current) => ({
+                                        ...current,
+                                        interviewInformationSourceName: event.target.value
+                                      }))
+                                    }
+                                  />
+                                  <input
+                                    placeholder="Parentesco ou vínculo"
+                                    value={admissionForm.interviewInformationSourceRelationship}
+                                    onChange={(event) =>
+                                      setAdmissionForm((current) => ({
+                                        ...current,
+                                        interviewInformationSourceRelationship: event.target.value
+                                      }))
+                                    }
+                                  />
+                                </div>
+                              ) : null}
+
+                              <textarea
+                                placeholder="Motivo da intervenção"
+                                value={admissionForm.interviewInterventionMotive}
+                                onChange={(event) =>
+                                  setAdmissionForm((current) => ({
+                                    ...current,
+                                    interviewInterventionMotive: event.target.value
+                                  }))
+                                }
+                                rows={3}
+                              />
+
+                              <textarea
+                                placeholder="Subjetivo"
+                                value={admissionForm.interviewSubjective}
+                                onChange={(event) =>
+                                  setAdmissionForm((current) => ({
+                                    ...current,
+                                    interviewSubjective: event.target.value
+                                  }))
+                                }
+                                rows={5}
+                              />
+
+                              <textarea
+                                placeholder="Sintomas relevantes"
+                                value={admissionForm.interviewRelevantSymptoms}
+                                onChange={(event) =>
+                                  setAdmissionForm((current) => ({
+                                    ...current,
+                                    interviewRelevantSymptoms: event.target.value
+                                  }))
+                                }
+                                rows={3}
+                              />
+
+                              <div className="dashboard-two-columns">
+                                <textarea
+                                  placeholder="Plano farmacêutico e conduta"
+                                  value={admissionForm.interviewPlan}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({
+                                      ...current,
+                                      interviewPlan: event.target.value
+                                    }))
+                                  }
+                                  rows={5}
+                                />
+                                <textarea
+                                  placeholder="Pendências"
+                                  value={admissionForm.interviewPendingIssues}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({
+                                      ...current,
+                                      interviewPendingIssues: event.target.value
+                                    }))
+                                  }
+                                  rows={5}
+                                />
+                              </div>
+
+                              {!admissionForm.admissionId.trim() ? (
+                                <p className="dashboard-muted">
+                                  Salve primeiro as informações da internação para persistir a entrevista.
+                                </p>
+                              ) : null}
+
+                              {admissionFeedback ? (
+                                <p className={`dashboard-feedback dashboard-feedback-${admissionFeedback.type}`}>
+                                  {admissionFeedback.message}
+                                </p>
+                              ) : null}
+
+                              {interviewFeedback ? (
+                                <p className={`dashboard-feedback dashboard-feedback-${interviewFeedback.type}`}>
+                                  {interviewFeedback.message}
+                                </p>
+                              ) : null}
+
+                              <div className="dashboard-inline-actions">
+                                <button
+                                  type="submit"
+                                  disabled={admissionLoading || !admissionForm.admissionId.trim()}
+                                >
+                                  {admissionLoading ? "Salvando..." : "Salvar entrevista"}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="dashboard-mini-button"
+                                  onClick={() => void handleCopyInterviewEvolution()}
+                                >
+                                  Copiar evolução
+                                </button>
+                              </div>
+                            </form>
+
+                            <div className="dashboard-calculation-box">
+                              <h3>Padrão de evolução</h3>
+                              <p className="dashboard-muted">
+                                Só entram no texto os blocos que já tiverem informação preenchida.
+                              </p>
+                              <textarea
+                                className="dashboard-evolution-preview"
+                                value={interviewEvolutionText}
+                                readOnly
+                                rows={22}
+                              />
+                            </div>
+                          </div>
+                        ) : null}
+
                         {patientView === "exams" ? (
                           <div className="dashboard-subsection-block">
                             <h3>Exames</h3>
@@ -6432,46 +7426,34 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               <>
                                 <div className="dashboard-calculation-box">
                                   <h3>Última importação processada</h3>
-                                  <div className="dashboard-two-columns">
-                                    <input value={`Arquivo: ${examImportResult.fileName}`} disabled />
-                                    <input value={`Páginas: ${examImportResult.pageCount}`} disabled />
+                                  <div className="dashboard-exam-summary-grid">
+                                    <div className="dashboard-exam-summary-card">
+                                      <span>Arquivo</span>
+                                      <strong>{examImportResult.fileName}</strong>
+                                    </div>
+                                    <div className="dashboard-exam-summary-card">
+                                      <span>Páginas processadas</span>
+                                      <strong>{examImportResult.pageCount}</strong>
+                                    </div>
+                                    <div className="dashboard-exam-summary-card">
+                                      <span>Extraído em</span>
+                                      <strong>{formatTimestamp(examImportResult.importedAt)}</strong>
+                                    </div>
+                                    <div className="dashboard-exam-summary-card">
+                                      <span>Resultados identificados</span>
+                                      <strong>{examImportResult.records.length}</strong>
+                                    </div>
                                   </div>
-                                  <input
-                                    value={`Extraído em: ${formatTimestamp(examImportResult.importedAt)}`}
-                                    disabled
-                                  />
-                                  <input
-                                    value={`Resultados identificados: ${examImportResult.records.length}`}
-                                    disabled
-                                  />
                                 </div>
 
-                                {examImportResult.records.length > 0 ? (
-                                  <div className="dashboard-table-wrap">
-                                    <table className="dashboard-table">
-                                      <thead>
-                                        <tr>
-                                          <th>Exame</th>
-                                          <th>Resultado</th>
-                                          <th>Unidade</th>
-                                          <th>Referência</th>
-                                          <th>Página</th>
-                                        </tr>
-                                      </thead>
-                                      <tbody>
-                                        {examImportResult.records.map((record) => (
-                                          <tr key={record.key}>
-                                            <td>{record.examName}</td>
-                                            <td>{record.result}</td>
-                                            <td>{record.unit || "-"}</td>
-                                            <td>{record.referenceRange || "-"}</td>
-                                            <td>{record.pageNumber}</td>
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
-                                  </div>
-                                ) : null}
+                                <div className="dashboard-calculation-box">
+                                  <h3>Painel dos exames extraídos</h3>
+                                  <ExamResultsPanel
+                                    records={examImportResult.records}
+                                    rawText={examImportResult.rawText}
+                                    emptyMessage="Nenhum resultado estruturado foi identificado nesta importação."
+                                  />
+                                </div>
 
                                 <div className="dashboard-calculation-box">
                                   <h3>Texto extraído</h3>
@@ -6498,57 +7480,42 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
                                   {selectedSavedExamImport ? (
                                     <>
-                                      <div className="dashboard-two-columns">
-                                        <input value={`Arquivo: ${selectedSavedExamImport.fileName}`} disabled />
-                                        <input value={`Páginas: ${selectedSavedExamImport.pageCount}`} disabled />
-                                      </div>
-                                      <div className="dashboard-two-columns">
-                                        <input
-                                          value={`Importado em: ${formatTimestamp(selectedSavedExamImport.createdAt)}`}
-                                          disabled
-                                        />
-                                        <input
-                                          value={`Importado por: ${selectedSavedExamImport.importedByProfessionalName}`}
-                                          disabled
-                                        />
-                                      </div>
-                                      <input
-                                        value={`Resultados identificados: ${selectedSavedExamImport.records.length}`}
-                                        disabled
-                                      />
-
-                                      {selectedSavedExamImport.records.length > 0 ? (
-                                        <div className="dashboard-table-wrap">
-                                          <table className="dashboard-table">
-                                            <thead>
-                                              <tr>
-                                                <th>Exame</th>
-                                                <th>Resultado</th>
-                                                <th>Unidade</th>
-                                                <th>Referência</th>
-                                                <th>Página</th>
-                                              </tr>
-                                            </thead>
-                                            <tbody>
-                                              {selectedSavedExamImport.records.map((record) => (
-                                                <tr key={record.key}>
-                                                  <td>{record.examName}</td>
-                                                  <td>{record.result}</td>
-                                                  <td>{record.unit || "-"}</td>
-                                                  <td>{record.referenceRange || "-"}</td>
-                                                  <td>{record.pageNumber}</td>
-                                                </tr>
-                                              ))}
-                                            </tbody>
-                                          </table>
+                                      <div className="dashboard-exam-summary-grid">
+                                        <div className="dashboard-exam-summary-card">
+                                          <span>Arquivo</span>
+                                          <strong>{selectedSavedExamImport.fileName}</strong>
                                         </div>
-                                      ) : (
-                                        <p className="dashboard-muted">
-                                          Essa importação não gerou resultados estruturados, mas o texto foi salvo.
-                                        </p>
-                                      )}
+                                        <div className="dashboard-exam-summary-card">
+                                          <span>Páginas processadas</span>
+                                          <strong>{selectedSavedExamImport.pageCount}</strong>
+                                        </div>
+                                        <div className="dashboard-exam-summary-card">
+                                          <span>Importado em</span>
+                                          <strong>{formatTimestamp(selectedSavedExamImport.createdAt)}</strong>
+                                        </div>
+                                        <div className="dashboard-exam-summary-card">
+                                          <span>Importado por</span>
+                                          <strong>{selectedSavedExamImport.importedByProfessionalName}</strong>
+                                        </div>
+                                        <div className="dashboard-exam-summary-card">
+                                          <span>Resultados identificados</span>
+                                          <strong>{selectedSavedExamImport.records.length}</strong>
+                                        </div>
+                                      </div>
 
-                                      <textarea value={selectedSavedExamImport.rawText} readOnly rows={18} />
+                                      <div className="dashboard-calculation-box">
+                                        <h3>Painel dos exames salvos</h3>
+                                        <ExamResultsPanel
+                                          records={selectedSavedExamImport.records}
+                                          rawText={selectedSavedExamImport.rawText}
+                                          emptyMessage="Essa importação não gerou resultados estruturados, mas o texto foi salvo."
+                                        />
+                                      </div>
+
+                                      <div className="dashboard-calculation-box">
+                                        <h3>Texto extraído</h3>
+                                        <textarea value={selectedSavedExamImport.rawText} readOnly rows={18} />
+                                      </div>
                                     </>
                                   ) : null}
                                 </>
@@ -6705,7 +7672,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               <button
                                 type="button"
                                 className="dashboard-mini-button"
-                                onClick={handleSaveAllPriorMedicationValidation}
+                                onClick={handleSaveAllPriorMedicationReconciliation}
                                 disabled={priorMedicationBatchSaving || priorMedicationEditableRows.length === 0}
                               >
                                 {priorMedicationBatchSaving ? "Salvando todos..." : "Salvar todos"}
@@ -6725,12 +7692,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     <th>Dose</th>
                                     <th>Frequência</th>
                                     <th>Qtd. por horário</th>
-                                    <th>Qtd. comp.</th>
-                                    <th>Lote</th>
-                                    <th>Validade</th>
-                                    <th>Laboratório/Marca</th>
-                                    <th>Consumo/dia</th>
-                                    <th>Duração</th>
                                     <th>Data da prescrição</th>
                                     <th>Reconciliado</th>
                                     <th>Reconciliado em todas</th>
@@ -6742,7 +7703,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 <tbody>
                                   {priorMedicationEditableRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={16}>Nenhum medicamento prévio cadastrado.</td>
+                                      <td colSpan={10}>Nenhum medicamento prévio cadastrado.</td>
                                     </tr>
                                   ) : (
                                     priorMedicationEditableRows.map((row) => (
@@ -6752,21 +7713,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                       >
                                         <td>{row.priorMedication.medicationName}</td>
                                         <td>
-                                          {row.priorMedication.dose > 0
-                                            ? `${formatNumber(row.priorMedication.dose)} ${row.priorMedication.doseUnit}`.trim()
-                                            : "-"}
-                                        </td>
-                                        <td>{row.priorMedication.frequency || "-"}</td>
-                                        <td>{row.priorMedication.shifts || "-"}</td>
-                                        <td>
                                           <input
-                                            type="number"
-                                            min="0"
-                                            value={row.formState.quantityTablets}
+                                            placeholder="Dose (ex.: 100 mg)"
+                                            value={row.formState.dose}
                                             onChange={(event) =>
-                                              updatePriorMedicationValidationField(
+                                              updatePriorMedicationReconciliationField(
                                                 row.priorMedication.id,
-                                                "quantityTablets",
+                                                "dose",
                                                 event.target.value
                                               )
                                             }
@@ -6774,11 +7727,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         </td>
                                         <td>
                                           <input
-                                            value={row.formState.lotNumber}
+                                            value={row.formState.frequency}
                                             onChange={(event) =>
-                                              updatePriorMedicationValidationField(
+                                              updatePriorMedicationReconciliationField(
                                                 row.priorMedication.id,
-                                                "lotNumber",
+                                                "frequency",
                                                 event.target.value
                                               )
                                             }
@@ -6786,35 +7739,16 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         </td>
                                         <td>
                                           <input
-                                            type="date"
-                                            value={row.formState.expirationDate}
+                                            value={row.formState.shifts}
                                             onChange={(event) =>
-                                              updatePriorMedicationValidationField(
+                                              updatePriorMedicationReconciliationField(
                                                 row.priorMedication.id,
-                                                "expirationDate",
+                                                "shifts",
                                                 event.target.value
                                               )
                                             }
                                           />
                                         </td>
-                                        <td>
-                                          <input
-                                            value={row.formState.manufacturer}
-                                            onChange={(event) =>
-                                              updatePriorMedicationValidationField(
-                                                row.priorMedication.id,
-                                                "manufacturer",
-                                                event.target.value
-                                              )
-                                            }
-                                          />
-                                        </td>
-                                        <td>
-                                          {row.dailyTabletUse !== null
-                                            ? `${formatNumber(row.dailyTabletUse)} comp/dia`
-                                            : "-"}
-                                        </td>
-                                        <td>{formatDurationDays(row.currentDurationDays)}</td>
                                         <td>
                                           {row.latestPrescriptionDate
                                             ? formatTimestamp(row.latestPrescriptionDate)
@@ -6854,7 +7788,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                             type="button"
                                             className="dashboard-mini-button dashboard-mini-button-inline"
                                             onClick={() =>
-                                              handleUpdatePriorMedicationValidation(row.priorMedication.id)
+                                              handleUpdatePriorMedicationReconciliation(row.priorMedication.id)
                                             }
                                             disabled={
                                               priorMedicationUpdatingId === row.priorMedication.id ||
@@ -7480,7 +8414,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                               <th>Frequência</th>
                                               <th>Obs.</th>
                                               <th>Flag</th>
+                                              <th>Intervenção</th>
                                               <th>Registro</th>
+                                              <th>Ações</th>
                                             </tr>
                                           </thead>
                                           <tbody>
@@ -7491,54 +8427,166 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                               const prescriptionSafetyFlags = resolveMedicationSafetyFlags(
                                                 getMedicationReferenceName(prescription.medicationName)
                                               );
+                                              const interventionFormState =
+                                                prescriptionInterventionForm[prescription.id] ??
+                                                createPrescriptionInterventionFormState(prescription);
+                                              const isInterventionOpen =
+                                                prescriptionInterventionOpenId === prescription.id;
 
                                               return (
-                                                <tr key={prescription.id}>
-                                                  <td>
-                                                    <button
-                                                      type="button"
-                                                      className="dashboard-link-button"
-                                                      onClick={() =>
-                                                        setSelectedPrescriptionMedicationHistory((current) => {
-                                                          const sameSelection =
-                                                            current !== null &&
-                                                            ((current.medicationId !== null &&
-                                                              prescription.medicationId !== null &&
-                                                              current.medicationId ===
-                                                                prescription.medicationId) ||
-                                                              current.medicationName ===
-                                                                prescription.medicationName);
+                                                <Fragment key={prescription.id}>
+                                                  <tr>
+                                                    <td>
+                                                      <button
+                                                        type="button"
+                                                        className="dashboard-link-button"
+                                                        onClick={() =>
+                                                          setSelectedPrescriptionMedicationHistory((current) => {
+                                                            const sameSelection =
+                                                              current !== null &&
+                                                              ((current.medicationId !== null &&
+                                                                prescription.medicationId !== null &&
+                                                                current.medicationId ===
+                                                                  prescription.medicationId) ||
+                                                                current.medicationName ===
+                                                                  prescription.medicationName);
 
-                                                          return sameSelection
-                                                            ? null
-                                                            : {
-                                                                medicationId: prescription.medicationId,
-                                                                medicationName: prescription.medicationName,
-                                                                externalValidationCandidate:
-                                                                  prescription.externalValidationCandidate
-                                                              };
-                                                        })
-                                                      }
-                                                    >
-                                                      {getPrescriptionMedicationDisplayName(
-                                                        prescription.medicationName,
-                                                        prescription.externalValidationCandidate
+                                                            return sameSelection
+                                                              ? null
+                                                              : {
+                                                                  medicationId: prescription.medicationId,
+                                                                  medicationName: prescription.medicationName,
+                                                                  externalValidationCandidate:
+                                                                    prescription.externalValidationCandidate
+                                                                };
+                                                          })
+                                                        }
+                                                      >
+                                                        {getPrescriptionMedicationDisplayName(
+                                                          prescription.medicationName,
+                                                          prescription.externalValidationCandidate
+                                                        )}
+                                                      </button>
+                                                    </td>
+                                                    <td>{formatNumber(prescription.dose)}</td>
+                                                    <td>{prescription.doseUnit}</td>
+                                                    <td>{prescription.administrationRoute ?? "-"}</td>
+                                                    <td>{prescription.frequency}</td>
+                                                    <td>{prescription.notes ?? "-"}</td>
+                                                    <td>
+                                                      {renderMedicationFlags(
+                                                        prescriptionConflict,
+                                                        prescriptionSafetyFlags
                                                       )}
-                                                    </button>
-                                                  </td>
-                                                  <td>{formatNumber(prescription.dose)}</td>
-                                                  <td>{prescription.doseUnit}</td>
-                                                  <td>{prescription.administrationRoute ?? "-"}</td>
-                                                  <td>{prescription.frequency}</td>
-                                                  <td>{prescription.notes ?? "-"}</td>
-                                                  <td>
-                                                    {renderMedicationFlags(
-                                                      prescriptionConflict,
-                                                      prescriptionSafetyFlags
-                                                    )}
-                                                  </td>
-                                                  <td>{formatTimestamp(prescription.createdAt)}</td>
-                                                </tr>
+                                                    </td>
+                                                    <td>
+                                                      {hasPrescriptionIntervention(prescription) ? (
+                                                        <span className="dashboard-table-summary">
+                                                          {formatPrescriptionInterventionSummary(prescription)}
+                                                        </span>
+                                                      ) : (
+                                                        "-"
+                                                      )}
+                                                    </td>
+                                                    <td>{formatTimestamp(prescription.createdAt)}</td>
+                                                    <td>
+                                                      <button
+                                                        type="button"
+                                                        className="dashboard-mini-button"
+                                                        onClick={() =>
+                                                          setPrescriptionInterventionOpenId((current) =>
+                                                            current === prescription.id ? null : prescription.id
+                                                          )
+                                                        }
+                                                      >
+                                                        {hasPrescriptionIntervention(prescription)
+                                                          ? isInterventionOpen
+                                                            ? "Fechar"
+                                                            : "Editar intervenção"
+                                                          : isInterventionOpen
+                                                            ? "Fechar"
+                                                            : "Intervir"}
+                                                      </button>
+                                                    </td>
+                                                  </tr>
+                                                  {isInterventionOpen ? (
+                                                    <tr>
+                                                      <td colSpan={10}>
+                                                        <div className="dashboard-inline-editor">
+                                                          <h4>Intervenção farmacêutica</h4>
+                                                          <textarea
+                                                            placeholder="Escreva a intervenção para este medicamento"
+                                                            value={interventionFormState.interventionNotes}
+                                                            onChange={(event) =>
+                                                              updatePrescriptionInterventionField(
+                                                                prescription.id,
+                                                                "interventionNotes",
+                                                                event.target.value
+                                                              )
+                                                            }
+                                                            rows={4}
+                                                          />
+                                                          <div className="dashboard-two-columns">
+                                                            <select
+                                                              value={
+                                                                interventionFormState.interventionRequestedToPrescriber
+                                                              }
+                                                              onChange={(event) =>
+                                                                updatePrescriptionInterventionField(
+                                                                  prescription.id,
+                                                                  "interventionRequestedToPrescriber",
+                                                                  event.target.value as
+                                                                    PrescriptionInterventionFormState["interventionRequestedToPrescriber"]
+                                                                )
+                                                              }
+                                                            >
+                                                              <option value="">
+                                                                Solicitado ao prescritor?
+                                                              </option>
+                                                              <option value="sim">Sim</option>
+                                                              <option value="nao">Não</option>
+                                                            </select>
+                                                            <select
+                                                              value={interventionFormState.interventionResponse}
+                                                              onChange={(event) =>
+                                                                updatePrescriptionInterventionField(
+                                                                  prescription.id,
+                                                                  "interventionResponse",
+                                                                  event.target.value as
+                                                                    PrescriptionInterventionFormState["interventionResponse"]
+                                                                )
+                                                              }
+                                                            >
+                                                              <option value="">Resposta</option>
+                                                              {MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS.map(
+                                                                (option) => (
+                                                                  <option key={option} value={option}>
+                                                                    {option}
+                                                                  </option>
+                                                                )
+                                                              )}
+                                                            </select>
+                                                          </div>
+                                                          <div className="dashboard-inline-actions">
+                                                            <button
+                                                              type="button"
+                                                              onClick={() =>
+                                                                handleSavePrescriptionIntervention(prescription.id)
+                                                              }
+                                                              disabled={
+                                                                prescriptionInterventionSavingId === prescription.id
+                                                              }
+                                                            >
+                                                              {prescriptionInterventionSavingId === prescription.id
+                                                                ? "Salvando..."
+                                                                : "Salvar intervenção"}
+                                                            </button>
+                                                          </div>
+                                                        </div>
+                                                      </td>
+                                                    </tr>
+                                                  ) : null}
+                                                </Fragment>
                                               );
                                             })}
                                           </tbody>
@@ -7603,6 +8651,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                           <th>Via</th>
                                           <th>Frequência</th>
                                           <th>Obs.</th>
+                                          <th>Intervenção</th>
                                           <th>Registro</th>
                                         </tr>
                                       </thead>
@@ -7630,6 +8679,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                             <td>{prescription.administrationRoute ?? "-"}</td>
                                             <td>{prescription.frequency}</td>
                                             <td>{prescription.notes ?? "-"}</td>
+                                            <td>
+                                              {hasPrescriptionIntervention(prescription) ? (
+                                                <span className="dashboard-table-summary">
+                                                  {formatPrescriptionInterventionSummary(prescription)}
+                                                </span>
+                                              ) : (
+                                                "-"
+                                              )}
+                                            </td>
                                             <td>{formatTimestamp(prescription.createdAt)}</td>
                                           </tr>
                                         ))}

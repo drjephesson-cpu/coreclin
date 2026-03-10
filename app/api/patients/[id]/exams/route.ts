@@ -52,6 +52,10 @@ function normalizeExamRecords(value: unknown): PatientExamResultRecord[] {
       unit: typeof item.unit === "string" ? item.unit.trim() : "",
       referenceRange:
         typeof item.referenceRange === "string" ? item.referenceRange.trim() : "",
+      examDate:
+        typeof item.examDate === "string" && item.examDate.trim().length > 0
+          ? item.examDate.trim()
+          : null,
       pageNumber:
         typeof item.pageNumber === "number"
           ? item.pageNumber

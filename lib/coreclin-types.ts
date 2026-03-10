@@ -39,10 +39,24 @@ export const BSA_FORMULA_OPTIONS = [
   }
 ] as const;
 
+export const MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS = [
+  "Aceito",
+  "Recusado",
+  "Pendente"
+] as const;
+export const INTERVIEW_INFORMATION_QUALITY_OPTIONS = ["baixa", "media", "alta"] as const;
+export const INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS = ["patient", "informant"] as const;
+
 export type ProfessionOption = (typeof PROFESSION_OPTIONS)[number];
 export type CouncilOption = (typeof COUNCIL_OPTIONS)[number];
 export type BmiFormulaId = (typeof BMI_FORMULA_OPTIONS)[number]["id"];
 export type BsaFormulaId = (typeof BSA_FORMULA_OPTIONS)[number]["id"];
+export type MedicalPrescriptionInterventionResponse =
+  (typeof MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS)[number];
+export type InterviewInformationQuality =
+  (typeof INTERVIEW_INFORMATION_QUALITY_OPTIONS)[number];
+export type InterviewInformationSourceType =
+  (typeof INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS)[number];
 
 export type ProfessionalRecord = {
   id: number;
@@ -128,6 +142,15 @@ export type AdmissionRecord = {
   admissionReason: string;
   admissionSummary: string | null;
   admissionImportExcerpt: string | null;
+  interviewInformationQuality: InterviewInformationQuality | null;
+  interviewInformationSourceType: InterviewInformationSourceType | null;
+  interviewInformationSourceName: string | null;
+  interviewInformationSourceRelationship: string | null;
+  interviewInterventionMotive: string | null;
+  interviewSubjective: string | null;
+  interviewRelevantSymptoms: string | null;
+  interviewPendingIssues: string | null;
+  interviewPlan: string | null;
   teamId: number | null;
   teamName: string | null;
   responsibleProfessionalId: number;
@@ -196,6 +219,7 @@ export type PatientExamResultRecord = {
   unit: string;
   referenceRange: string;
   pageNumber: number;
+  examDate: string | null;
 };
 
 export type PatientExamImportRecord = {
@@ -234,6 +258,9 @@ export type MedicalPrescriptionRecord = {
   lotNumber: string | null;
   expirationDate: string | null;
   manufacturer: string | null;
+  interventionNotes: string | null;
+  interventionRequestedToPrescriber: boolean | null;
+  interventionResponse: MedicalPrescriptionInterventionResponse | null;
   createdAt: string;
 };
 
@@ -242,6 +269,7 @@ export type DashboardData = {
   professionals: ProfessionalRecord[];
   teams: TeamRecord[];
   patients: PatientRecord[];
+  inpatientOverviewEntries: InpatientEntry[];
   recentAdmissions: AdmissionRecord[];
   medications: MedicationRecord[];
   patientAllergies: PatientAllergyRecord[];

@@ -2,8 +2,16 @@ import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
 import { addMedicalPrescription, updateMedicalPrescriptionValidation } from "@/lib/db";
+import {
+  MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS,
+  type MedicalPrescriptionInterventionResponse
+} from "@/lib/coreclin-types";
 
 export const runtime = "nodejs";
+
+function hasOwnProperty(target: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(target, key);
+}
 
 function normalizeDateTimeInput(value: unknown): string | undefined {
   if (typeof value !== "string") {
@@ -181,35 +189,103 @@ export async function PUT(
   const body = payload as Record<string, unknown>;
   const prescriptionId = Number(body.prescriptionId);
   const quantityRaw = body.quantityTablets;
+  const hasQuantityTablets = hasOwnProperty(body, "quantityTablets");
   const quantityTablets =
-    quantityRaw === undefined || quantityRaw === null || quantityRaw === ""
+    !hasQuantityTablets || quantityRaw === undefined || quantityRaw === null || quantityRaw === ""
       ? null
       : Number(quantityRaw);
+  const hasLotNumber = hasOwnProperty(body, "lotNumber");
   const lotNumber = typeof body.lotNumber === "string" ? body.lotNumber.trim() : "";
+  const hasExpirationDate = hasOwnProperty(body, "expirationDate");
   const expirationDate =
     typeof body.expirationDate === "string" ? body.expirationDate.trim() : "";
+  const hasManufacturer = hasOwnProperty(body, "manufacturer");
   const manufacturer = typeof body.manufacturer === "string" ? body.manufacturer.trim() : "";
+  const hasInterventionNotes = hasOwnProperty(body, "interventionNotes");
+  const interventionNotes =
+    typeof body.interventionNotes === "string" ? body.interventionNotes.trim() : "";
+  const hasInterventionRequestedToPrescriber = hasOwnProperty(
+    body,
+    "interventionRequestedToPrescriber"
+  );
+  const interventionRequestedToPrescriberRaw = body.interventionRequestedToPrescriber;
+  const interventionRequestedToPrescriber =
+    interventionRequestedToPrescriberRaw === null ||
+    interventionRequestedToPrescriberRaw === "" ||
+    interventionRequestedToPrescriberRaw === undefined
+      ? null
+      : interventionRequestedToPrescriberRaw === true ||
+          interventionRequestedToPrescriberRaw === "true" ||
+          interventionRequestedToPrescriberRaw === "sim"
+        ? true
+        : interventionRequestedToPrescriberRaw === false ||
+            interventionRequestedToPrescriberRaw === "false" ||
+            interventionRequestedToPrescriberRaw === "nao" ||
+            interventionRequestedToPrescriberRaw === "não"
+          ? false
+          : "invalid";
+  const hasInterventionResponse = hasOwnProperty(body, "interventionResponse");
+  const interventionResponseRaw =
+    typeof body.interventionResponse === "string" ? body.interventionResponse.trim() : "";
+  const interventionResponse =
+    !interventionResponseRaw
+      ? null
+      : MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS.includes(
+            interventionResponseRaw as MedicalPrescriptionInterventionResponse
+          )
+        ? (interventionResponseRaw as MedicalPrescriptionInterventionResponse)
+        : "invalid";
 
   if (!Number.isInteger(prescriptionId) || prescriptionId <= 0) {
     return NextResponse.json({ message: "Prescrição inválida." }, { status: 400 });
   }
 
-  if (quantityTablets !== null && (!Number.isInteger(quantityTablets) || quantityTablets < 0)) {
+  if (
+    hasQuantityTablets &&
+    quantityTablets !== null &&
+    (!Number.isInteger(quantityTablets) || quantityTablets < 0)
+  ) {
     return NextResponse.json({ message: "Quantidade inválida." }, { status: 400 });
   }
 
-  if (expirationDate && Number.isNaN(new Date(expirationDate).getTime())) {
+  if (hasExpirationDate && expirationDate && Number.isNaN(new Date(expirationDate).getTime())) {
     return NextResponse.json({ message: "Validade inválida." }, { status: 400 });
   }
+
+  if (
+    hasInterventionRequestedToPrescriber &&
+    interventionRequestedToPrescriber === "invalid"
+  ) {
+    return NextResponse.json(
+      { message: "Informe se a intervenção foi solicitada ao prescritor." },
+      { status: 400 }
+    );
+  }
+
+  if (hasInterventionResponse && interventionResponse === "invalid") {
+    return NextResponse.json({ message: "Resposta da intervenção inválida." }, { status: 400 });
+  }
+
+  const safeInterventionRequestedToPrescriber =
+    interventionRequestedToPrescriber === "invalid"
+      ? null
+      : interventionRequestedToPrescriber;
+  const safeInterventionResponse =
+    interventionResponse === "invalid" ? null : interventionResponse;
 
   try {
     const prescription = await updateMedicalPrescriptionValidation({
       patientId,
       prescriptionId,
-      quantityTablets,
-      lotNumber,
-      expirationDate,
-      manufacturer
+      ...(hasQuantityTablets ? { quantityTablets } : {}),
+      ...(hasLotNumber ? { lotNumber } : {}),
+      ...(hasExpirationDate ? { expirationDate } : {}),
+      ...(hasManufacturer ? { manufacturer } : {}),
+      ...(hasInterventionNotes ? { interventionNotes } : {}),
+      ...(hasInterventionRequestedToPrescriber
+        ? { interventionRequestedToPrescriber: safeInterventionRequestedToPrescriber }
+        : {}),
+      ...(hasInterventionResponse ? { interventionResponse: safeInterventionResponse } : {})
     });
 
     return NextResponse.json({ ok: true, prescription });

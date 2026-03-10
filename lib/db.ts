@@ -2,7 +2,10 @@ import { Pool, PoolClient } from "pg";
 
 import { calculateClinicalIndexes } from "@/lib/clinical";
 import {
+  MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS,
   COUNCIL_OPTIONS,
+  INTERVIEW_INFORMATION_QUALITY_OPTIONS,
+  INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS,
   PROFESSION_OPTIONS,
   type AdmissionRecord,
   type BmiFormulaId,
@@ -12,9 +15,12 @@ import {
   type InpatientEntry,
   type InpatientWorkflowState,
   type InpatientWorkflowStoragePayload,
+  type InterviewInformationQuality,
+  type InterviewInformationSourceType,
   type PatientExamImportRecord,
   type PatientExamResultRecord,
   type MedicalPrescriptionRecord,
+  type MedicalPrescriptionInterventionResponse,
   type MedicationRecord,
   type MeasurementHistoryRecord,
   type PatientRecord,
@@ -54,6 +60,15 @@ export type CreateAdmissionInput = {
   admissionReason?: string | null;
   admissionSummary?: string | null;
   admissionImportExcerpt?: string | null;
+  interviewInformationQuality?: InterviewInformationQuality | null;
+  interviewInformationSourceType?: InterviewInformationSourceType | null;
+  interviewInformationSourceName?: string | null;
+  interviewInformationSourceRelationship?: string | null;
+  interviewInterventionMotive?: string | null;
+  interviewSubjective?: string | null;
+  interviewRelevantSymptoms?: string | null;
+  interviewPendingIssues?: string | null;
+  interviewPlan?: string | null;
   teamId?: number | null;
   weightKg?: number | null;
   heightCm?: number | null;
@@ -69,6 +84,15 @@ export type UpdateAdmissionInput = {
   admissionReason?: string | null;
   admissionSummary?: string | null;
   admissionImportExcerpt?: string | null;
+  interviewInformationQuality?: InterviewInformationQuality | null;
+  interviewInformationSourceType?: InterviewInformationSourceType | null;
+  interviewInformationSourceName?: string | null;
+  interviewInformationSourceRelationship?: string | null;
+  interviewInterventionMotive?: string | null;
+  interviewSubjective?: string | null;
+  interviewRelevantSymptoms?: string | null;
+  interviewPendingIssues?: string | null;
+  interviewPlan?: string | null;
   teamId?: number | null;
   weightKg?: number | null;
   heightCm?: number | null;
@@ -117,10 +141,10 @@ export type AddPriorMedicationInput = {
 export type UpdatePriorMedicationInput = {
   patientId: number;
   priorMedicationId: number;
-  quantityTablets?: number | null;
-  lotNumber?: string | null;
-  expirationDate?: string | null;
-  manufacturer?: string | null;
+  dose: number | null;
+  doseUnit: string;
+  frequency: string;
+  shifts: string;
 };
 
 export type AddMedicalPrescriptionInput = {
@@ -163,6 +187,9 @@ export type UpdateMedicalPrescriptionValidationInput = {
   lotNumber?: string | null;
   expirationDate?: string | null;
   manufacturer?: string | null;
+  interventionNotes?: string | null;
+  interventionRequestedToPrescriber?: boolean | null;
+  interventionResponse?: MedicalPrescriptionInterventionResponse | null;
 };
 
 type GlobalDbState = typeof globalThis & {
@@ -297,6 +324,15 @@ function mapTeam(row: DbRow): TeamRecord {
 }
 
 function mapAdmission(row: DbRow): AdmissionRecord {
+  const interviewInformationQualityRaw =
+    row.interview_information_quality === null
+      ? null
+      : String(row.interview_information_quality ?? "").trim().toLowerCase();
+  const interviewInformationSourceTypeRaw =
+    row.interview_information_source_type === null
+      ? null
+      : String(row.interview_information_source_type ?? "").trim().toLowerCase();
+
   return {
     id: toNumber(row.id),
     patientId: toNumber(row.patient_id),
@@ -308,6 +344,39 @@ function mapAdmission(row: DbRow): AdmissionRecord {
     admissionSummary: row.admission_summary === null ? null : String(row.admission_summary ?? ""),
     admissionImportExcerpt:
       row.admission_import_excerpt === null ? null : String(row.admission_import_excerpt ?? ""),
+    interviewInformationQuality: INTERVIEW_INFORMATION_QUALITY_OPTIONS.includes(
+      interviewInformationQualityRaw as InterviewInformationQuality
+    )
+      ? (interviewInformationQualityRaw as InterviewInformationQuality)
+      : null,
+    interviewInformationSourceType: INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS.includes(
+      interviewInformationSourceTypeRaw as InterviewInformationSourceType
+    )
+      ? (interviewInformationSourceTypeRaw as InterviewInformationSourceType)
+      : null,
+    interviewInformationSourceName:
+      row.interview_information_source_name === null
+        ? null
+        : String(row.interview_information_source_name ?? ""),
+    interviewInformationSourceRelationship:
+      row.interview_information_source_relationship === null
+        ? null
+        : String(row.interview_information_source_relationship ?? ""),
+    interviewInterventionMotive:
+      row.interview_intervention_motive === null
+        ? null
+        : String(row.interview_intervention_motive ?? ""),
+    interviewSubjective:
+      row.interview_subjective === null ? null : String(row.interview_subjective ?? ""),
+    interviewRelevantSymptoms:
+      row.interview_relevant_symptoms === null
+        ? null
+        : String(row.interview_relevant_symptoms ?? ""),
+    interviewPendingIssues:
+      row.interview_pending_issues === null
+        ? null
+        : String(row.interview_pending_issues ?? ""),
+    interviewPlan: row.interview_plan === null ? null : String(row.interview_plan ?? ""),
     teamId: row.team_id === null ? null : toNumber(row.team_id),
     teamName: row.team_name === null ? null : String(row.team_name),
     responsibleProfessionalId: toNumber(row.responsible_professional_id),
@@ -408,6 +477,10 @@ function normalizeExamImportRecords(value: unknown): PatientExamResultRecord[] {
       unit: typeof item.unit === "string" ? item.unit.trim() : "",
       referenceRange:
         typeof item.referenceRange === "string" ? item.referenceRange.trim() : "",
+      examDate:
+        typeof item.examDate === "string" && item.examDate.trim().length > 0
+          ? item.examDate.trim()
+          : null,
       pageNumber:
         typeof item.pageNumber === "number"
           ? item.pageNumber
@@ -452,6 +525,14 @@ function mapInpatientWorkflowSnapshot(row: DbRow): InpatientWorkflowStoragePaylo
 }
 
 function mapMedicalPrescription(row: DbRow): MedicalPrescriptionRecord {
+  const interventionResponseRaw =
+    row.intervention_response === null ? null : String(row.intervention_response ?? "").trim();
+  const interventionResponse = MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS.includes(
+    interventionResponseRaw as MedicalPrescriptionInterventionResponse
+  )
+    ? (interventionResponseRaw as MedicalPrescriptionInterventionResponse)
+    : null;
+
   return {
     id: toNumber(row.id),
     patientId: toNumber(row.patient_id),
@@ -477,6 +558,31 @@ function mapMedicalPrescription(row: DbRow): MedicalPrescriptionRecord {
     lotNumber: row.lot_number === null ? null : String(row.lot_number ?? ""),
     expirationDate: row.expiration_date === null ? null : String(row.expiration_date),
     manufacturer: row.manufacturer === null ? null : String(row.manufacturer ?? ""),
+    interventionNotes:
+      row.intervention_notes === null ? null : String(row.intervention_notes ?? ""),
+    interventionRequestedToPrescriber:
+      row.intervention_requested_to_prescriber === null
+        ? null
+        : Boolean(row.intervention_requested_to_prescriber),
+    interventionResponse,
+    createdAt: toIso(row.created_at)
+  };
+}
+
+function mapInpatientOverviewEntry(row: DbRow): InpatientEntry {
+  const patientId = toNumber(row.patient_id);
+
+  return {
+    key: `patient-${patientId}`,
+    patientId,
+    patientName: String(row.patient_name ?? ""),
+    chartNumber: String(row.chart_number ?? ""),
+    reportedAgeYears: row.reported_age_years === null ? null : toNumber(row.reported_age_years),
+    admissionDate: String(row.admission_date ?? ""),
+    bed: String(row.bed ?? ""),
+    teamName: row.team_name === null ? null : String(row.team_name),
+    teamId: row.team_id === null ? null : toNumber(row.team_id),
+    source: "active",
     createdAt: toIso(row.created_at)
   };
 }
@@ -484,6 +590,18 @@ function mapMedicalPrescription(row: DbRow): MedicalPrescriptionRecord {
 function mapPatient(row: DbRow): PatientRecord {
   const hasLatestAdmission = row.latest_admission_id !== null;
   const hasLatestMeasurement = row.weight_kg !== null && row.height_cm !== null;
+  const latestInterviewInformationQualityRaw =
+    row.latest_admission_interview_information_quality === null
+      ? null
+      : String(row.latest_admission_interview_information_quality ?? "")
+          .trim()
+          .toLowerCase();
+  const latestInterviewInformationSourceTypeRaw =
+    row.latest_admission_interview_information_source_type === null
+      ? null
+      : String(row.latest_admission_interview_information_source_type ?? "")
+          .trim()
+          .toLowerCase();
 
   return {
     id: toNumber(row.id),
@@ -509,6 +627,44 @@ function mapPatient(row: DbRow): PatientRecord {
             row.latest_admission_import_excerpt === null
               ? null
               : String(row.latest_admission_import_excerpt ?? ""),
+          interviewInformationQuality: INTERVIEW_INFORMATION_QUALITY_OPTIONS.includes(
+            latestInterviewInformationQualityRaw as InterviewInformationQuality
+          )
+            ? (latestInterviewInformationQualityRaw as InterviewInformationQuality)
+            : null,
+          interviewInformationSourceType: INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS.includes(
+            latestInterviewInformationSourceTypeRaw as InterviewInformationSourceType
+          )
+            ? (latestInterviewInformationSourceTypeRaw as InterviewInformationSourceType)
+            : null,
+          interviewInformationSourceName:
+            row.latest_admission_interview_information_source_name === null
+              ? null
+              : String(row.latest_admission_interview_information_source_name ?? ""),
+          interviewInformationSourceRelationship:
+            row.latest_admission_interview_information_source_relationship === null
+              ? null
+              : String(row.latest_admission_interview_information_source_relationship ?? ""),
+          interviewInterventionMotive:
+            row.latest_admission_interview_intervention_motive === null
+              ? null
+              : String(row.latest_admission_interview_intervention_motive ?? ""),
+          interviewSubjective:
+            row.latest_admission_interview_subjective === null
+              ? null
+              : String(row.latest_admission_interview_subjective ?? ""),
+          interviewRelevantSymptoms:
+            row.latest_admission_interview_relevant_symptoms === null
+              ? null
+              : String(row.latest_admission_interview_relevant_symptoms ?? ""),
+          interviewPendingIssues:
+            row.latest_admission_interview_pending_issues === null
+              ? null
+              : String(row.latest_admission_interview_pending_issues ?? ""),
+          interviewPlan:
+            row.latest_admission_interview_plan === null
+              ? null
+              : String(row.latest_admission_interview_plan ?? ""),
           teamId: row.latest_admission_team_id === null ? null : toNumber(row.latest_admission_team_id),
           teamName: row.latest_admission_team_name === null ? null : String(row.latest_admission_team_name),
           responsibleProfessionalId: toNumber(row.latest_admission_responsible_professional_id),
@@ -690,6 +846,15 @@ async function setupDatabase(): Promise<void> {
       admission_reason TEXT NOT NULL,
       admission_summary TEXT,
       admission_import_excerpt TEXT,
+      interview_information_quality TEXT,
+      interview_information_source_type TEXT,
+      interview_information_source_name TEXT,
+      interview_information_source_relationship TEXT,
+      interview_intervention_motive TEXT,
+      interview_subjective TEXT,
+      interview_relevant_symptoms TEXT,
+      interview_pending_issues TEXT,
+      interview_plan TEXT,
       team_id INTEGER REFERENCES teams(id),
       responsible_professional_id INTEGER NOT NULL REFERENCES professionals(id),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -762,6 +927,9 @@ async function setupDatabase(): Promise<void> {
       lot_number TEXT,
       expiration_date DATE,
       manufacturer TEXT,
+      intervention_notes TEXT,
+      intervention_requested_to_prescriber BOOLEAN,
+      intervention_response TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -786,6 +954,7 @@ async function setupDatabase(): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_admissions_patient_id ON admissions (patient_id);
     CREATE INDEX IF NOT EXISTS idx_admissions_date ON admissions (admission_date DESC, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_admissions_patient_latest ON admissions (patient_id, admission_date DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_measurements_patient_id ON patient_measurements (patient_id);
     CREATE INDEX IF NOT EXISTS idx_measurements_recorded_at ON patient_measurements (recorded_at DESC);
     CREATE INDEX IF NOT EXISTS idx_allergies_patient_id ON patient_allergies (patient_id);
@@ -815,6 +984,42 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE admissions
     ADD COLUMN IF NOT EXISTS admission_import_excerpt TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS interview_information_quality TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS interview_information_source_type TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS interview_information_source_name TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS interview_information_source_relationship TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS interview_intervention_motive TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS interview_subjective TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS interview_relevant_symptoms TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS interview_pending_issues TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS interview_plan TEXT;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS intervention_notes TEXT;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS intervention_requested_to_prescriber BOOLEAN;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS intervention_response TEXT;
   `);
 
   await pool.query(`
@@ -1592,10 +1797,19 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
           admission_reason,
           admission_summary,
           admission_import_excerpt,
+          interview_information_quality,
+          interview_information_source_type,
+          interview_information_source_name,
+          interview_information_source_relationship,
+          interview_intervention_motive,
+          interview_subjective,
+          interview_relevant_symptoms,
+          interview_pending_issues,
+          interview_plan,
           team_id,
           responsible_professional_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
         RETURNING id
       `,
       [
@@ -1605,6 +1819,15 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
         input.admissionReason?.trim() || "Pendente de preenchimento",
         input.admissionSummary?.trim() || null,
         input.admissionImportExcerpt?.trim() || null,
+        input.interviewInformationQuality?.trim() || null,
+        input.interviewInformationSourceType?.trim() || null,
+        input.interviewInformationSourceName?.trim() || null,
+        input.interviewInformationSourceRelationship?.trim() || null,
+        input.interviewInterventionMotive?.trim() || null,
+        input.interviewSubjective?.trim() || null,
+        input.interviewRelevantSymptoms?.trim() || null,
+        input.interviewPendingIssues?.trim() || null,
+        input.interviewPlan?.trim() || null,
         input.teamId ?? null,
         responsibleProfessionalId
       ]
@@ -1676,7 +1899,16 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
           admission_reason = $4,
           admission_summary = $5,
           admission_import_excerpt = $6,
-          team_id = $7
+          interview_information_quality = $7,
+          interview_information_source_type = $8,
+          interview_information_source_name = $9,
+          interview_information_source_relationship = $10,
+          interview_intervention_motive = $11,
+          interview_subjective = $12,
+          interview_relevant_symptoms = $13,
+          interview_pending_issues = $14,
+          interview_plan = $15,
+          team_id = $16
         WHERE id = $1
         RETURNING id, patient_id
       `,
@@ -1687,6 +1919,15 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
         input.admissionReason?.trim() || "Pendente de preenchimento",
         input.admissionSummary?.trim() || null,
         input.admissionImportExcerpt?.trim() || null,
+        input.interviewInformationQuality?.trim() || null,
+        input.interviewInformationSourceType?.trim() || null,
+        input.interviewInformationSourceName?.trim() || null,
+        input.interviewInformationSourceRelationship?.trim() || null,
+        input.interviewInterventionMotive?.trim() || null,
+        input.interviewSubjective?.trim() || null,
+        input.interviewRelevantSymptoms?.trim() || null,
+        input.interviewPendingIssues?.trim() || null,
+        input.interviewPlan?.trim() || null,
         input.teamId ?? null
       ]
     );
@@ -1969,18 +2210,18 @@ export async function updatePriorMedication(
       `
         UPDATE patient_prior_medications
         SET
-          quantity_tablets = $1,
-          lot_number = $2,
-          expiration_date = $3,
-          manufacturer = $4
+          dose = $1,
+          dose_unit = $2,
+          frequency = $3,
+          shifts = $4
         WHERE id = $5 AND patient_id = $6
         RETURNING id
       `,
       [
-        input.quantityTablets ?? null,
-        input.lotNumber?.trim() ? input.lotNumber.trim() : null,
-        input.expirationDate?.trim() ? input.expirationDate.trim() : null,
-        input.manufacturer?.trim() ? input.manufacturer.trim() : null,
+        input.dose !== null && Number.isFinite(input.dose) && input.dose > 0 ? input.dose : 0,
+        input.doseUnit.trim(),
+        input.frequency.trim(),
+        input.shifts.trim(),
         input.priorMedicationId,
         input.patientId
       ]
@@ -2162,9 +2403,15 @@ export async function addMedicalPrescription(
           quantity_tablets,
           lot_number,
           expiration_date,
-          manufacturer
+          manufacturer,
+          intervention_notes,
+          intervention_requested_to_prescriber,
+          intervention_response
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULL, NULL, NULL, NULL)
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+          NULL, NULL, NULL, NULL, NULL, NULL, NULL
+        )
         RETURNING id
       `,
       [
@@ -2211,6 +2458,9 @@ export async function addMedicalPrescription(
           mp.lot_number,
           mp.expiration_date::text AS expiration_date,
           mp.manufacturer,
+          mp.intervention_notes,
+          mp.intervention_requested_to_prescriber,
+          mp.intervention_response,
           mp.created_at
         FROM medical_prescriptions mp
         INNER JOIN patients p ON p.id = mp.patient_id
@@ -2246,25 +2496,64 @@ export async function updateMedicalPrescriptionValidation(
     await client.query("BEGIN");
     await ensurePatientExists(client, input.patientId);
 
+    const assignments: string[] = [];
+    const values: unknown[] = [];
+
+    if ("quantityTablets" in input) {
+      assignments.push(`quantity_tablets = $${values.push(input.quantityTablets ?? null)}`);
+    }
+
+    if ("lotNumber" in input) {
+      assignments.push(`lot_number = $${values.push(input.lotNumber?.trim() ? input.lotNumber.trim() : null)}`);
+    }
+
+    if ("expirationDate" in input) {
+      assignments.push(
+        `expiration_date = $${values.push(input.expirationDate?.trim() ? input.expirationDate.trim() : null)}`
+      );
+    }
+
+    if ("manufacturer" in input) {
+      assignments.push(
+        `manufacturer = $${values.push(input.manufacturer?.trim() ? input.manufacturer.trim() : null)}`
+      );
+    }
+
+    if ("interventionNotes" in input) {
+      assignments.push(
+        `intervention_notes = $${values.push(
+          input.interventionNotes?.trim() ? input.interventionNotes.trim() : null
+        )}`
+      );
+    }
+
+    if ("interventionRequestedToPrescriber" in input) {
+      assignments.push(
+        `intervention_requested_to_prescriber = $${values.push(
+          input.interventionRequestedToPrescriber ?? null
+        )}`
+      );
+    }
+
+    if ("interventionResponse" in input) {
+      assignments.push(
+        `intervention_response = $${values.push(input.interventionResponse ?? null)}`
+      );
+    }
+
+    if (assignments.length === 0) {
+      throw new Error("Nenhuma alteração informada para a prescrição.");
+    }
+
     const updated = await client.query(
       `
         UPDATE medical_prescriptions
         SET
-          quantity_tablets = $1,
-          lot_number = $2,
-          expiration_date = $3,
-          manufacturer = $4
-        WHERE id = $5 AND patient_id = $6
+          ${assignments.join(", ")}
+        WHERE id = $${values.length + 1} AND patient_id = $${values.length + 2}
         RETURNING id
       `,
-      [
-        input.quantityTablets ?? null,
-        input.lotNumber?.trim() ? input.lotNumber.trim() : null,
-        input.expirationDate?.trim() ? input.expirationDate.trim() : null,
-        input.manufacturer?.trim() ? input.manufacturer.trim() : null,
-        input.prescriptionId,
-        input.patientId
-      ]
+      [...values, input.prescriptionId, input.patientId]
     );
 
     if (updated.rowCount === 0) {
@@ -2296,6 +2585,9 @@ export async function updateMedicalPrescriptionValidation(
           mp.lot_number,
           mp.expiration_date::text AS expiration_date,
           mp.manufacturer,
+          mp.intervention_notes,
+          mp.intervention_requested_to_prescriber,
+          mp.intervention_response,
           mp.created_at
         FROM medical_prescriptions mp
         INNER JOIN patients p ON p.id = mp.patient_id
@@ -2375,31 +2667,34 @@ export async function addPatientMeasurement(
   });
 }
 
-export async function listPatients(patientId?: number | null): Promise<PatientRecord[]> {
+export async function listPatients(
+  patientId?: number | null,
+  options?: {
+    includeLatestDetails?: boolean;
+  }
+): Promise<PatientRecord[]> {
   await ensureDatabaseReady();
   const pool = getPool();
   const shouldFilterByPatientId = Number.isInteger(patientId) && Number(patientId) > 0;
+  const includeLatestDetails = options?.includeLatestDetails ?? true;
 
-  const result = await pool.query(
-    `
-    SELECT
-      p.id,
-      p.full_name,
-      p.chart_number,
-      p.birth_date::text AS birth_date,
-      CASE
-        WHEN p.birth_date IS NULL THEN NULL
-        ELSE DATE_PART('year', AGE(CURRENT_DATE, p.birth_date))::int
-      END AS age_years,
-      p.responsible_professional_id,
-      rp.full_name AS responsible_professional_name,
-      rp.login AS responsible_professional_login,
+  const latestAdmissionSelect = includeLatestDetails
+    ? `
       la.id AS latest_admission_id,
       la.admission_date::text AS latest_admission_date,
       la.bed AS latest_admission_bed,
       la.admission_reason AS latest_admission_reason,
       la.admission_summary AS latest_admission_summary,
       la.admission_import_excerpt AS latest_admission_import_excerpt,
+      la.interview_information_quality AS latest_admission_interview_information_quality,
+      la.interview_information_source_type AS latest_admission_interview_information_source_type,
+      la.interview_information_source_name AS latest_admission_interview_information_source_name,
+      la.interview_information_source_relationship AS latest_admission_interview_information_source_relationship,
+      la.interview_intervention_motive AS latest_admission_interview_intervention_motive,
+      la.interview_subjective AS latest_admission_interview_subjective,
+      la.interview_relevant_symptoms AS latest_admission_interview_relevant_symptoms,
+      la.interview_pending_issues AS latest_admission_interview_pending_issues,
+      la.interview_plan AS latest_admission_interview_plan,
       la.team_id AS latest_admission_team_id,
       t.name AS latest_admission_team_name,
       la.responsible_professional_id AS latest_admission_responsible_professional_id,
@@ -2412,8 +2707,39 @@ export async function listPatients(patientId?: number | null): Promise<PatientRe
       latest_m.body_surface_area::float8 AS body_surface_area,
       latest_m.bsa_formula,
       latest_m.recorded_at
-    FROM patients p
-    INNER JOIN professionals rp ON rp.id = p.responsible_professional_id
+    `
+    : `
+      NULL::integer AS latest_admission_id,
+      NULL::text AS latest_admission_date,
+      NULL::text AS latest_admission_bed,
+      NULL::text AS latest_admission_reason,
+      NULL::text AS latest_admission_summary,
+      NULL::text AS latest_admission_import_excerpt,
+      NULL::text AS latest_admission_interview_information_quality,
+      NULL::text AS latest_admission_interview_information_source_type,
+      NULL::text AS latest_admission_interview_information_source_name,
+      NULL::text AS latest_admission_interview_information_source_relationship,
+      NULL::text AS latest_admission_interview_intervention_motive,
+      NULL::text AS latest_admission_interview_subjective,
+      NULL::text AS latest_admission_interview_relevant_symptoms,
+      NULL::text AS latest_admission_interview_pending_issues,
+      NULL::text AS latest_admission_interview_plan,
+      NULL::integer AS latest_admission_team_id,
+      NULL::text AS latest_admission_team_name,
+      NULL::integer AS latest_admission_responsible_professional_id,
+      NULL::text AS latest_admission_responsible_professional_name,
+      NULL::timestamptz AS latest_admission_created_at,
+      NULL::float8 AS weight_kg,
+      NULL::float8 AS height_cm,
+      NULL::float8 AS bmi,
+      NULL::text AS bmi_formula,
+      NULL::float8 AS body_surface_area,
+      NULL::text AS bsa_formula,
+      NULL::timestamptz AS recorded_at
+    `;
+
+  const latestAdmissionJoin = includeLatestDetails
+    ? `
     LEFT JOIN LATERAL (
       SELECT
         a.id,
@@ -2422,6 +2748,15 @@ export async function listPatients(patientId?: number | null): Promise<PatientRe
         a.admission_reason,
         a.admission_summary,
         a.admission_import_excerpt,
+        a.interview_information_quality,
+        a.interview_information_source_type,
+        a.interview_information_source_name,
+        a.interview_information_source_relationship,
+        a.interview_intervention_motive,
+        a.interview_subjective,
+        a.interview_relevant_symptoms,
+        a.interview_pending_issues,
+        a.interview_plan,
         a.team_id,
         a.responsible_professional_id,
         a.created_at
@@ -2446,6 +2781,27 @@ export async function listPatients(patientId?: number | null): Promise<PatientRe
       ORDER BY m.recorded_at DESC, m.id DESC
       LIMIT 1
     ) latest_m ON TRUE
+    `
+    : "";
+
+  const result = await pool.query(
+    `
+    SELECT
+      p.id,
+      p.full_name,
+      p.chart_number,
+      p.birth_date::text AS birth_date,
+      CASE
+        WHEN p.birth_date IS NULL THEN NULL
+        ELSE DATE_PART('year', AGE(CURRENT_DATE, p.birth_date))::int
+      END AS age_years,
+      p.responsible_professional_id,
+      rp.full_name AS responsible_professional_name,
+      rp.login AS responsible_professional_login,
+      ${latestAdmissionSelect}
+    FROM patients p
+    INNER JOIN professionals rp ON rp.id = p.responsible_professional_id
+    ${latestAdmissionJoin}
     ${shouldFilterByPatientId ? "WHERE p.id = $1" : ""}
     ORDER BY p.created_at DESC, p.id DESC
   `,
@@ -2453,6 +2809,45 @@ export async function listPatients(patientId?: number | null): Promise<PatientRe
   );
 
   return result.rows.map((row) => mapPatient(row as DbRow));
+}
+
+export async function listInpatientOverviewEntries(): Promise<InpatientEntry[]> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+
+  const result = await pool.query(
+    `
+      SELECT
+        latest_admission.patient_id,
+        p.full_name AS patient_name,
+        p.chart_number,
+        CASE
+          WHEN p.birth_date IS NULL THEN NULL
+          ELSE DATE_PART('year', AGE(CURRENT_DATE, p.birth_date))::int
+        END AS reported_age_years,
+        latest_admission.admission_date::text AS admission_date,
+        latest_admission.bed,
+        latest_admission.team_id,
+        t.name AS team_name,
+        latest_admission.created_at
+      FROM (
+        SELECT DISTINCT ON (a.patient_id)
+          a.patient_id,
+          a.admission_date,
+          a.bed,
+          a.team_id,
+          a.created_at,
+          a.id
+        FROM admissions a
+        ORDER BY a.patient_id, a.admission_date DESC, a.created_at DESC, a.id DESC
+      ) latest_admission
+      INNER JOIN patients p ON p.id = latest_admission.patient_id
+      LEFT JOIN teams t ON t.id = latest_admission.team_id
+      ORDER BY latest_admission.admission_date DESC, latest_admission.created_at DESC, latest_admission.patient_id DESC
+    `
+  );
+
+  return result.rows.map((row) => mapInpatientOverviewEntry(row as DbRow));
 }
 
 export async function listRecentAdmissions(
@@ -2476,6 +2871,15 @@ export async function listRecentAdmissions(
         a.admission_reason,
         a.admission_summary,
         a.admission_import_excerpt,
+        a.interview_information_quality,
+        a.interview_information_source_type,
+        a.interview_information_source_name,
+        a.interview_information_source_relationship,
+        a.interview_intervention_motive,
+        a.interview_subjective,
+        a.interview_relevant_symptoms,
+        a.interview_pending_issues,
+        a.interview_plan,
         a.team_id,
         t.name AS team_name,
         a.responsible_professional_id,
@@ -2530,6 +2934,15 @@ async function getAdmissionById(admissionId: number): Promise<AdmissionRecord | 
         a.admission_reason,
         a.admission_summary,
         a.admission_import_excerpt,
+        a.interview_information_quality,
+        a.interview_information_source_type,
+        a.interview_information_source_name,
+        a.interview_information_source_relationship,
+        a.interview_intervention_motive,
+        a.interview_subjective,
+        a.interview_relevant_symptoms,
+        a.interview_pending_issues,
+        a.interview_plan,
         a.team_id,
         t.name AS team_name,
         a.responsible_professional_id,
@@ -2715,6 +3128,9 @@ export async function listMedicalPrescriptions(
       mp.lot_number,
       mp.expiration_date::text AS expiration_date,
       mp.manufacturer,
+      mp.intervention_notes,
+      mp.intervention_requested_to_prescriber,
+      mp.intervention_response,
       mp.created_at
     FROM medical_prescriptions mp
     INNER JOIN patients p ON p.id = mp.patient_id
@@ -2744,9 +3160,17 @@ function normalizeDashboardSection(
 
 function normalizeDashboardPatientView(
   patientView?: string | null
-): "allergies" | "admission-info" | "exams" | "prior-use" | "medication-validation" | "prescriptions" {
+):
+  | "allergies"
+  | "admission-info"
+  | "interview"
+  | "exams"
+  | "prior-use"
+  | "medication-validation"
+  | "prescriptions" {
   switch (patientView) {
     case "allergies":
+    case "interview":
     case "exams":
     case "prior-use":
     case "medication-validation":
@@ -2794,29 +3218,35 @@ export async function getDashboardData(
     (section === "inpatients" &&
       ((!isPatientDetailsPage && inpatientMode !== "all") ||
         (isPatientDetailsPage && patientView === "admission-info")));
-  const shouldLoadPatients = section === "patient" || section === "inpatients";
-  const shouldLoadRecentAdmissions = section === "inpatients";
+  const shouldLoadPatients =
+    section === "patient" || isPatientDetailsPage || (section === "inpatients" && inpatientMode === "mandatory");
+  const shouldLoadInpatientOverviewEntries = section === "inpatients" && !isPatientDetailsPage;
+  const shouldLoadRecentAdmissions = isPatientDetailsPage;
   const shouldLoadMedications =
     section === "patient" ||
     section === "medication" ||
     (isPatientDetailsPage &&
-      ["allergies", "admission-info", "prior-use", "prescriptions"].includes(patientView));
+      ["allergies", "admission-info", "interview", "prior-use", "prescriptions"].includes(
+        patientView
+      ));
   const shouldLoadPatientAllergies =
-    isPatientDetailsPage && ["allergies", "prescriptions"].includes(patientView);
+    isPatientDetailsPage && ["allergies", "interview", "prescriptions"].includes(patientView);
   const shouldLoadPriorMedications =
-    isPatientDetailsPage && ["admission-info", "prior-use", "prescriptions"].includes(patientView);
-  const shouldLoadExamImports = isPatientDetailsPage && patientView === "exams";
+    isPatientDetailsPage &&
+    ["admission-info", "interview", "prior-use", "prescriptions"].includes(patientView);
+  const shouldLoadExamImports = isPatientDetailsPage && ["exams", "interview"].includes(patientView);
   const shouldLoadWorkflow =
     section === "inpatients" && !isPatientDetailsPage && inpatientMode !== "all";
   const shouldLoadPrescriptions =
     isPatientDetailsPage &&
-    ["prior-use", "medication-validation", "prescriptions"].includes(patientView);
+    ["interview", "prior-use", "medication-validation", "prescriptions"].includes(patientView);
 
   const [
     currentProfessional,
     professionals,
     teams,
     patients,
+    inpatientOverviewEntries,
     recentAdmissions,
     medications,
     patientAllergies,
@@ -2829,8 +3259,11 @@ export async function getDashboardData(
     shouldLoadProfessionals ? listProfessionals() : Promise.resolve([]),
     shouldLoadTeams ? listTeams() : Promise.resolve([]),
     shouldLoadPatients
-      ? listPatients(isPatientDetailsPage ? selectedPatientId : null)
+      ? listPatients(isPatientDetailsPage ? selectedPatientId : null, {
+          includeLatestDetails: section === "patient" || isPatientDetailsPage
+        })
       : Promise.resolve([]),
+    shouldLoadInpatientOverviewEntries ? listInpatientOverviewEntries() : Promise.resolve([]),
     shouldLoadRecentAdmissions
       ? listRecentAdmissions(isPatientDetailsPage ? 200 : 80, isPatientDetailsPage ? selectedPatientId : null)
       : Promise.resolve([]),
@@ -2847,6 +3280,7 @@ export async function getDashboardData(
     professionals,
     teams,
     patients,
+    inpatientOverviewEntries,
     recentAdmissions,
     medications,
     patientAllergies,

@@ -517,8 +517,142 @@ function buildExamPdfLines(
     .filter((line) => line.length > 0);
 }
 
-function parseExtractedExamRecords(
+function buildIsoExamDate(year: number, month: number, day: number): string | null {
+  const parsed = new Date(year, month - 1, day, 12, 0, 0, 0);
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function normalizeExamDateValue(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})(?:\b|T|$)/);
+  if (isoMatch) {
+    return buildIsoExamDate(Number(isoMatch[1]), Number(isoMatch[2]), Number(isoMatch[3]));
+  }
+
+  const brMatch = trimmed.match(/^(\d{1,2})[/. -](\d{1,2})[/. -](\d{2,4})(?:\b|\s|$)/);
+  if (!brMatch) {
+    return null;
+  }
+
+  const day = Number(brMatch[1]);
+  const month = Number(brMatch[2]);
+  const year = Number(brMatch[3].length === 2 ? `20${brMatch[3]}` : brMatch[3]);
+  return buildIsoExamDate(year, month, day);
+}
+
+function scoreExamDateCandidateLine(line: string): number {
+  const normalizedLine = normalizeExamSearchValue(line);
+  if (!normalizedLine) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  if (
+    normalizedLine.includes("nascimento") ||
+    normalizedLine.includes("idade") ||
+    normalizedLine.includes("internacao") ||
+    normalizedLine.includes("admissao")
+  ) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  let score = 1;
+
+  const weightedTokens = [
+    ["coleta", 8],
+    ["coletado", 8],
+    ["colhido", 8],
+    ["liberado", 7],
+    ["resultado", 6],
+    ["emissao", 5],
+    ["emitido", 5],
+    ["solicitacao", 4],
+    ["solicitado", 4],
+    ["recebimento", 4],
+    ["material", 3],
+    ["laudo", 3],
+    ["data", 2],
+    ["exame", 2]
+  ] as const;
+
+  for (const [token, tokenScore] of weightedTokens) {
+    if (normalizedLine.includes(token)) {
+      score += tokenScore;
+    }
+  }
+
+  if (/\b\d{1,2}:\d{2}\b/.test(normalizedLine)) {
+    score += 1;
+  }
+
+  return score;
+}
+
+function inferExamDatesByPage(
   pageLines: Array<{ pageNumber: number; line: string }>
+): Map<number, string | null> {
+  const linesByPage = new Map<number, string[]>();
+  for (const { pageNumber, line } of pageLines) {
+    const currentLines = linesByPage.get(pageNumber) ?? [];
+    currentLines.push(line);
+    linesByPage.set(pageNumber, currentLines);
+  }
+
+  const pageDates = new Map<number, string | null>();
+  const datePattern = /\b(\d{1,2}[/. -]\d{1,2}[/. -]\d{2,4}|\d{4}-\d{2}-\d{2})\b/g;
+
+  for (const [pageNumber, lines] of linesByPage.entries()) {
+    let bestCandidate: { examDate: string; score: number; lineIndex: number } | null = null;
+
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex] ?? "";
+      const score = scoreExamDateCandidateLine(line);
+      if (!Number.isFinite(score)) {
+        continue;
+      }
+
+      const matches = line.match(datePattern);
+      if (!matches || matches.length === 0) {
+        continue;
+      }
+
+      for (const match of matches) {
+        const examDate = normalizeExamDateValue(match);
+        if (!examDate) {
+          continue;
+        }
+
+        if (
+          !bestCandidate ||
+          score > bestCandidate.score ||
+          (score === bestCandidate.score && lineIndex < bestCandidate.lineIndex)
+        ) {
+          bestCandidate = { examDate, score, lineIndex };
+        }
+      }
+    }
+
+    pageDates.set(pageNumber, bestCandidate?.examDate ?? null);
+  }
+
+  return pageDates;
+}
+
+function parseExtractedExamRecords(
+  pageLines: Array<{ pageNumber: number; line: string }>,
+  pageDates: Map<number, string | null>
 ): PatientExamResultRecord[] {
   const records: PatientExamResultRecord[] = [];
 
@@ -562,7 +696,8 @@ function parseExtractedExamRecords(
       result,
       unit,
       referenceRange,
-      pageNumber
+      pageNumber,
+      examDate: pageDates.get(pageNumber) ?? null
     });
   }
 
@@ -633,10 +768,12 @@ export async function extractExamImportFromPdf(
     );
   }
 
+  const pageDates = inferExamDatesByPage(pageLines);
+
   return {
     fileName,
     pageCount: pdfDocument.numPages,
-    records: parseExtractedExamRecords(pageLines),
+    records: parseExtractedExamRecords(pageLines, pageDates),
     rawText: pageLines.map((item) => `[Pág. ${item.pageNumber}] ${item.line}`).join("\n")
   };
 }

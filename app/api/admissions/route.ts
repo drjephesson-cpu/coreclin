@@ -5,7 +5,11 @@ import {
   BSA_FORMULA_OPTIONS,
   BMI_FORMULA_OPTIONS,
   type BmiFormulaId,
-  type BsaFormulaId
+  INTERVIEW_INFORMATION_QUALITY_OPTIONS,
+  INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS,
+  type BsaFormulaId,
+  type InterviewInformationQuality,
+  type InterviewInformationSourceType
 } from "@/lib/coreclin-types";
 import { createAdmission, updateAdmission } from "@/lib/db";
 
@@ -17,6 +21,14 @@ function isBmiFormulaId(value: string): value is BmiFormulaId {
 
 function isBsaFormulaId(value: string): value is BsaFormulaId {
   return BSA_FORMULA_OPTIONS.some((formula) => formula.id === value);
+}
+
+function isInterviewInformationQuality(value: string): value is InterviewInformationQuality {
+  return INTERVIEW_INFORMATION_QUALITY_OPTIONS.some((option) => option === value);
+}
+
+function isInterviewInformationSourceType(value: string): value is InterviewInformationSourceType {
+  return INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS.some((option) => option === value);
 }
 
 async function parseAdmissionRequest(request: Request): Promise<
@@ -47,6 +59,10 @@ async function parseAdmissionRequest(request: Request): Promise<
 function parseOptionalPositiveNumber(value: unknown): number | null {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseOptionalTrimmedString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function buildIsoAdmissionDate(year: number, month: number, day: number): string | null {
@@ -105,6 +121,23 @@ export async function POST(request: Request): Promise<NextResponse> {
   const heightCmRaw = body.heightCm;
   const bmiFormulaRaw = typeof body.bmiFormula === "string" ? body.bmiFormula : "";
   const bsaFormulaRaw = typeof body.bsaFormula === "string" ? body.bsaFormula : "";
+  const interviewInformationQualityRaw =
+    typeof body.interviewInformationQuality === "string"
+      ? body.interviewInformationQuality.trim().toLowerCase()
+      : "";
+  const interviewInformationSourceTypeRaw =
+    typeof body.interviewInformationSourceType === "string"
+      ? body.interviewInformationSourceType.trim().toLowerCase()
+      : "";
+  const interviewInformationSourceName = parseOptionalTrimmedString(body.interviewInformationSourceName);
+  const interviewInformationSourceRelationship = parseOptionalTrimmedString(
+    body.interviewInformationSourceRelationship
+  );
+  const interviewInterventionMotive = parseOptionalTrimmedString(body.interviewInterventionMotive);
+  const interviewSubjective = parseOptionalTrimmedString(body.interviewSubjective);
+  const interviewRelevantSymptoms = parseOptionalTrimmedString(body.interviewRelevantSymptoms);
+  const interviewPendingIssues = parseOptionalTrimmedString(body.interviewPendingIssues);
+  const interviewPlan = parseOptionalTrimmedString(body.interviewPlan);
 
   const patientId = typeof patientIdRaw === "number" ? patientIdRaw : Number(patientIdRaw);
   const teamId = parseOptionalPositiveNumber(teamIdRaw);
@@ -138,8 +171,25 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ message: "Calculadora de superfície corporal inválida." }, { status: 400 });
   }
 
+  if (interviewInformationQualityRaw && !isInterviewInformationQuality(interviewInformationQualityRaw)) {
+    return NextResponse.json({ message: "Qualidade das informações inválida." }, { status: 400 });
+  }
+
+  if (
+    interviewInformationSourceTypeRaw &&
+    !isInterviewInformationSourceType(interviewInformationSourceTypeRaw)
+  ) {
+    return NextResponse.json({ message: "Fonte da informação inválida." }, { status: 400 });
+  }
+
   const bmiFormula = hasMeasurements ? (bmiFormulaRaw as BmiFormulaId) : undefined;
   const bsaFormula = hasMeasurements ? (bsaFormulaRaw as BsaFormulaId) : undefined;
+  const interviewInformationQuality = interviewInformationQualityRaw
+    ? (interviewInformationQualityRaw as InterviewInformationQuality)
+    : undefined;
+  const interviewInformationSourceType = interviewInformationSourceTypeRaw
+    ? (interviewInformationSourceTypeRaw as InterviewInformationSourceType)
+    : undefined;
 
   try {
     const admission = await createAdmission({
@@ -154,6 +204,15 @@ export async function POST(request: Request): Promise<NextResponse> {
       heightCm,
       bmiFormula,
       bsaFormula,
+      interviewInformationQuality,
+      interviewInformationSourceType,
+      interviewInformationSourceName,
+      interviewInformationSourceRelationship,
+      interviewInterventionMotive,
+      interviewSubjective,
+      interviewRelevantSymptoms,
+      interviewPendingIssues,
+      interviewPlan,
       responsibleLogin: sessionUsername
     });
 
@@ -183,6 +242,23 @@ export async function PUT(request: Request): Promise<NextResponse> {
   const heightCm = parseOptionalPositiveNumber(body.heightCm);
   const bmiFormulaRaw = typeof body.bmiFormula === "string" ? body.bmiFormula : "";
   const bsaFormulaRaw = typeof body.bsaFormula === "string" ? body.bsaFormula : "";
+  const interviewInformationQualityRaw =
+    typeof body.interviewInformationQuality === "string"
+      ? body.interviewInformationQuality.trim().toLowerCase()
+      : "";
+  const interviewInformationSourceTypeRaw =
+    typeof body.interviewInformationSourceType === "string"
+      ? body.interviewInformationSourceType.trim().toLowerCase()
+      : "";
+  const interviewInformationSourceName = parseOptionalTrimmedString(body.interviewInformationSourceName);
+  const interviewInformationSourceRelationship = parseOptionalTrimmedString(
+    body.interviewInformationSourceRelationship
+  );
+  const interviewInterventionMotive = parseOptionalTrimmedString(body.interviewInterventionMotive);
+  const interviewSubjective = parseOptionalTrimmedString(body.interviewSubjective);
+  const interviewRelevantSymptoms = parseOptionalTrimmedString(body.interviewRelevantSymptoms);
+  const interviewPendingIssues = parseOptionalTrimmedString(body.interviewPendingIssues);
+  const interviewPlan = parseOptionalTrimmedString(body.interviewPlan);
   const admissionId = typeof admissionIdRaw === "number" ? admissionIdRaw : Number(admissionIdRaw);
   const hasMeasurements = weightKg !== null && heightCm !== null;
 
@@ -212,8 +288,25 @@ export async function PUT(request: Request): Promise<NextResponse> {
     return NextResponse.json({ message: "Calculadora de superfície corporal inválida." }, { status: 400 });
   }
 
+  if (interviewInformationQualityRaw && !isInterviewInformationQuality(interviewInformationQualityRaw)) {
+    return NextResponse.json({ message: "Qualidade das informações inválida." }, { status: 400 });
+  }
+
+  if (
+    interviewInformationSourceTypeRaw &&
+    !isInterviewInformationSourceType(interviewInformationSourceTypeRaw)
+  ) {
+    return NextResponse.json({ message: "Fonte da informação inválida." }, { status: 400 });
+  }
+
   const bmiFormula = hasMeasurements ? (bmiFormulaRaw as BmiFormulaId) : undefined;
   const bsaFormula = hasMeasurements ? (bsaFormulaRaw as BsaFormulaId) : undefined;
+  const interviewInformationQuality = interviewInformationQualityRaw
+    ? (interviewInformationQualityRaw as InterviewInformationQuality)
+    : undefined;
+  const interviewInformationSourceType = interviewInformationSourceTypeRaw
+    ? (interviewInformationSourceTypeRaw as InterviewInformationSourceType)
+    : undefined;
 
   try {
     const admission = await updateAdmission({
@@ -228,6 +321,15 @@ export async function PUT(request: Request): Promise<NextResponse> {
       heightCm,
       bmiFormula,
       bsaFormula,
+      interviewInformationQuality,
+      interviewInformationSourceType,
+      interviewInformationSourceName,
+      interviewInformationSourceRelationship,
+      interviewInterventionMotive,
+      interviewSubjective,
+      interviewRelevantSymptoms,
+      interviewPendingIssues,
+      interviewPlan,
       responsibleLogin: sessionUsername
     });
 
