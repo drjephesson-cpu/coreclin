@@ -15,6 +15,8 @@ import {
   type BsaFormulaId,
   type CouncilOption,
   type DashboardData,
+  type PatientExamImportRecord,
+  type PatientExamResultRecord,
   type PatientRecord,
   type ProfessionOption
 } from "@/lib/coreclin-types";
@@ -78,6 +80,7 @@ const INPATIENT_SIDEBAR_ITEMS = [
 const PATIENT_VIEW_ITEMS = [
   { id: "allergies", label: "Alergias" },
   { id: "admission-info", label: "Informações da internação" },
+  { id: "exams", label: "Exames" },
   { id: "prior-use", label: "Medicamentos de uso prévio" },
   { id: "medication-validation", label: "Validação de medicamentos" },
   { id: "prescriptions", label: "Prescrição médica" }
@@ -230,6 +233,14 @@ type SummaryMedicationCandidate = {
   doseUnit: string;
   frequency: string;
   shifts: string;
+};
+
+type ExtractedExamImportResult = {
+  fileName: string;
+  pageCount: number;
+  importedAt: string;
+  records: PatientExamResultRecord[];
+  rawText: string;
 };
 
 type DashboardConsoleProps = {
@@ -591,6 +602,198 @@ function formatDurationDays(durationDays: number | null): string {
   }
 
   return `${formatNumber(durationDays)} dias`;
+}
+
+function isLikelyExamResultValue(input: string): boolean {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  if (/^[<>]?\d+(?:[.,]\d+)?$/.test(trimmed)) {
+    return true;
+  }
+
+  const normalized = normalizeSearchValue(trimmed);
+  return [
+    "positivo",
+    "negativo",
+    "reagente",
+    "nao reagente",
+    "detectado",
+    "nao detectado",
+    "presente",
+    "ausente"
+  ].includes(normalized);
+}
+
+function isLikelyExamUnitValue(input: string): boolean {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  return /^(%|[a-zA-Zµ/0-9.^:-]+)$/.test(trimmed) && /[a-zA-Zµ%]/.test(trimmed);
+}
+
+function isLikelyExamReferenceValue(input: string): boolean {
+  const normalized = normalizeSearchValue(input);
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes("referencia") ||
+    normalized.includes("ate") ||
+    normalized.includes("adultos") ||
+    normalized.includes("criancas") ||
+    /[<>]?\d+(?:[.,]\d+)?\s*(?:-|a)\s*[<>]?\d+(?:[.,]\d+)?/.test(normalized)
+  );
+}
+
+function isLikelyExamName(input: string): boolean {
+  const normalized = normalizeSearchValue(input.replace(/:$/, ""));
+  if (!normalized || normalized.length < 3) {
+    return false;
+  }
+
+  const blockedTokens = [
+    "paciente",
+    "prontuario",
+    "convenio",
+    "cartao sus",
+    "pagina",
+    "origem",
+    "data de nascimento",
+    "emissao do laudo",
+    "solicitacao",
+    "metodo",
+    "valor de referencia",
+    "valores de referencia",
+    "recebimento material",
+    "liberado em",
+    "responsavel tecnico",
+    "dr a",
+    "dr",
+    "bioquimica",
+    "hematologia",
+    "uroanalise",
+    "parasitologia",
+    "microbiologia",
+    "observacao",
+    "obs"
+  ];
+
+  return !blockedTokens.some((token) => normalized.includes(token));
+}
+
+function buildExamPdfLines(
+  items: Array<{ str?: string; transform?: number[]; width?: number }>
+): string[] {
+  const positionedItems = items
+    .map((item) => ({
+      text: item.str?.trim() ?? "",
+      x: Array.isArray(item.transform) ? Number(item.transform[4] ?? 0) : 0,
+      y: Array.isArray(item.transform) ? Number(item.transform[5] ?? 0) : 0,
+      width: typeof item.width === "number" ? item.width : 0
+    }))
+    .filter((item) => item.text.length > 0)
+    .sort((first, second) => {
+      if (Math.abs(second.y - first.y) > 2) {
+        return second.y - first.y;
+      }
+
+      return first.x - second.x;
+    });
+
+  const lines: Array<{ y: number; items: typeof positionedItems }> = [];
+
+  for (const item of positionedItems) {
+    const existingLine = lines.find((line) => Math.abs(line.y - item.y) <= 2);
+    if (existingLine) {
+      existingLine.items.push(item);
+      continue;
+    }
+
+    lines.push({ y: item.y, items: [item] });
+  }
+
+  return lines
+    .sort((first, second) => second.y - first.y)
+    .map((line) => {
+      const orderedItems = [...line.items].sort((first, second) => first.x - second.x);
+      let content = "";
+
+      for (let index = 0; index < orderedItems.length; index += 1) {
+        const currentItem = orderedItems[index];
+        const previousItem = orderedItems[index - 1];
+
+        if (!previousItem) {
+          content = currentItem.text;
+          continue;
+        }
+
+        const previousEndX = previousItem.x + previousItem.width;
+        const gap = currentItem.x - previousEndX;
+        content += gap > 14 ? "\t" : " ";
+        content += currentItem.text;
+      }
+
+      return content.replace(/\s+\t/g, "\t").replace(/\t\s+/g, "\t").trim();
+    })
+    .filter((line) => line.length > 0);
+}
+
+function parseExtractedExamRecords(
+  pageLines: Array<{ pageNumber: number; line: string }>
+): PatientExamResultRecord[] {
+  const records: PatientExamResultRecord[] = [];
+
+  for (const { pageNumber, line } of pageLines) {
+    const segments = line
+      .split("\t")
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+
+    if (segments.length < 2) {
+      continue;
+    }
+
+    const resultIndex = segments.findIndex(
+      (segment, index) => index > 0 && isLikelyExamResultValue(segment)
+    );
+    if (resultIndex <= 0) {
+      continue;
+    }
+
+    const examName = segments.slice(0, resultIndex).join(" ").replace(/:\s*$/, "").trim();
+    if (!isLikelyExamName(examName)) {
+      continue;
+    }
+
+    const result = segments[resultIndex] ?? "";
+    const afterResultSegments = segments.slice(resultIndex + 1);
+    const unit = afterResultSegments.find((segment) => isLikelyExamUnitValue(segment)) ?? "";
+    const referenceRange =
+      afterResultSegments.find((segment) => isLikelyExamReferenceValue(segment)) ??
+      afterResultSegments.filter((segment) => !isLikelyExamUnitValue(segment)).join(" | ");
+
+    const key = normalizeSearchValue(`${pageNumber}-${examName}-${result}-${unit}`);
+    if (records.some((record) => record.key === key)) {
+      continue;
+    }
+
+    records.push({
+      key,
+      examName,
+      result,
+      unit,
+      referenceRange,
+      pageNumber
+    });
+  }
+
+  return records;
 }
 
 function normalizeSearchValue(input: string): string {
@@ -1019,6 +1222,7 @@ export default function DashboardConsole({
   const medications = data?.medications ?? [];
   const patientAllergies = data?.patientAllergies ?? [];
   const priorMedications = data?.priorMedications ?? [];
+  const examImports = data?.examImports ?? [];
   const prescriptions = data?.prescriptions ?? [];
   const currentProfessional = data?.currentProfessional ?? null;
   const searchPatientId = searchParams.get("patientId");
@@ -1223,6 +1427,11 @@ export default function DashboardConsole({
   const [rawPrescriptionLoading, setRawPrescriptionLoading] = useState(false);
   const admissionSummaryTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [admissionSummarySelection, setAdmissionSummarySelection] = useState("");
+  const examPdfInputRef = useRef<HTMLInputElement | null>(null);
+  const [examImportLoading, setExamImportLoading] = useState(false);
+  const [examImportFeedback, setExamImportFeedback] = useState<FeedbackState>(null);
+  const [examImportResult, setExamImportResult] = useState<ExtractedExamImportResult | null>(null);
+  const [selectedExamImportId, setSelectedExamImportId] = useState("");
 
   useEffect(() => {
     if (patients.length === 0) {
@@ -1843,6 +2052,11 @@ export default function DashboardConsole({
     setAdmissionSummarySelection("");
     setAllergyForm({ query: "", selectedValue: "" });
     setAllergyFeedback(null);
+    setExamImportFeedback(null);
+    setExamImportResult(null);
+    if (examPdfInputRef.current) {
+      examPdfInputRef.current.value = "";
+    }
   }, [selectedPatient?.birthDate, selectedPatient?.id]);
 
   useEffect(() => {
@@ -2422,12 +2636,182 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
     setAdmissionSummarySelection(selectedText);
   }
 
+  async function handleExamPdfImport(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setExamImportFeedback(null);
+
+    if (!selectedPatient) {
+      setExamImportFeedback({
+        type: "error",
+        message: "Selecione um paciente antes de importar os exames."
+      });
+      return;
+    }
+
+    const file = examPdfInputRef.current?.files?.[0] ?? null;
+    if (!file) {
+      setExamImportFeedback({
+        type: "error",
+        message: "Selecione um PDF de exames para extrair os dados."
+      });
+      return;
+    }
+
+    if (!file.name.toLowerCase().endsWith(".pdf")) {
+      setExamImportFeedback({
+        type: "error",
+        message: "Selecione um arquivo PDF válido."
+      });
+      return;
+    }
+
+    setExamImportLoading(true);
+
+    try {
+      const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as {
+        getDocument: (source: unknown) => {
+          promise: Promise<{
+            numPages: number;
+            getPage: (pageNumber: number) => Promise<{
+              getTextContent: () => Promise<{
+                items: unknown[];
+              }>;
+            }>;
+          }>;
+        };
+      };
+      const arrayBuffer = await file.arrayBuffer();
+      const loadingTask = pdfjs.getDocument({
+        data: new Uint8Array(arrayBuffer),
+        disableWorker: true
+      } as unknown);
+      const pdfDocument = await loadingTask.promise;
+      const pageLines: Array<{ pageNumber: number; line: string }> = [];
+
+      for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+        const page = await pdfDocument.getPage(pageNumber);
+        const textContent = await page.getTextContent();
+        const lines = buildExamPdfLines(
+          textContent.items as Array<{ str?: string; transform?: number[]; width?: number }>
+        );
+
+        for (const line of lines) {
+          pageLines.push({ pageNumber, line });
+        }
+      }
+
+      const rawText = pageLines.map((item) => `[Pág. ${item.pageNumber}] ${item.line}`).join("\n");
+      const records = parseExtractedExamRecords(pageLines);
+      const extractedResult: ExtractedExamImportResult = {
+        fileName: file.name,
+        pageCount: pdfDocument.numPages,
+        importedAt: new Date().toISOString(),
+        records,
+        rawText
+      };
+
+      setExamImportResult(extractedResult);
+
+      try {
+        const response = await fetch(`/api/patients/${selectedPatient.id}/exams`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fileName: extractedResult.fileName,
+            pageCount: extractedResult.pageCount,
+            rawText: extractedResult.rawText,
+            records: extractedResult.records
+          })
+        });
+
+        const result = (await response.json()) as {
+          message?: string;
+          examImport?: PatientExamImportRecord;
+        };
+
+        if (!response.ok) {
+          setExamImportFeedback({
+            type: "error",
+            message: result.message ?? "Os exames foram extraídos, mas não foi possível salvar no paciente."
+          });
+          return;
+        }
+
+        if (result.examImport) {
+          setExamImportResult({
+            fileName: result.examImport.fileName,
+            pageCount: result.examImport.pageCount,
+            importedAt: result.examImport.createdAt,
+            records: result.examImport.records,
+            rawText: result.examImport.rawText
+          });
+        }
+
+        setExamImportFeedback({
+          type: "success",
+          message:
+            records.length > 0
+              ? `${records.length} resultado(s) extraído(s) e salvo(s) no paciente.`
+              : "Texto extraído e salvo no paciente, sem resultados estruturados identificados."
+        });
+        router.refresh();
+      } catch {
+        setExamImportFeedback({
+          type: "error",
+          message: "Os exames foram extraídos, mas houve erro ao salvar no paciente."
+        });
+      }
+    } catch {
+      setExamImportResult(null);
+      setExamImportFeedback({
+        type: "error",
+        message: "Não foi possível extrair os dados do PDF informado."
+      });
+    } finally {
+      setExamImportLoading(false);
+      if (examPdfInputRef.current) {
+        examPdfInputRef.current.value = "";
+      }
+    }
+  }
+
   const selectedPatientPriorMedications = useMemo(
     () =>
       priorMedications.filter(
         (medication) => selectedPatient !== null && medication.patientId === selectedPatient.id
       ),
     [priorMedications, selectedPatient]
+  );
+
+  const selectedPatientExamImports = useMemo(
+    () =>
+      examImports.filter(
+        (examImport) => selectedPatient !== null && examImport.patientId === selectedPatient.id
+      ),
+    [examImports, selectedPatient]
+  );
+
+  useEffect(() => {
+    if (selectedPatientExamImports.length === 0) {
+      setSelectedExamImportId("");
+      return;
+    }
+
+    const hasSelectedImport = selectedPatientExamImports.some(
+      (examImport) => String(examImport.id) === selectedExamImportId
+    );
+
+    if (!hasSelectedImport) {
+      setSelectedExamImportId(String(selectedPatientExamImports[0].id));
+    }
+  }, [selectedExamImportId, selectedPatientExamImports]);
+
+  const selectedSavedExamImport = useMemo(
+    () =>
+      selectedPatientExamImports.find((examImport) => String(examImport.id) === selectedExamImportId) ??
+      selectedPatientExamImports[0] ??
+      null,
+    [selectedExamImportId, selectedPatientExamImports]
   );
 
   useEffect(() => {
@@ -5726,6 +6110,167 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                   )}
                                 </tbody>
                               </table>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {patientView === "exams" ? (
+                          <div className="dashboard-subsection-block">
+                            <h3>Exames</h3>
+                            <p className="dashboard-muted">
+                              Importe um PDF de exames para extrair o texto e identificar resultados. O PDF é
+                              processado para extração, mas não fica salvo no sistema; apenas os dados extraídos
+                              permanecem vinculados ao paciente.
+                            </p>
+
+                            <form className="dashboard-form" onSubmit={handleExamPdfImport}>
+                              <input
+                                ref={examPdfInputRef}
+                                type="file"
+                                accept="application/pdf"
+                                aria-label="Importar PDF de exames"
+                              />
+
+                              {examImportFeedback ? (
+                                <p className={`dashboard-feedback dashboard-feedback-${examImportFeedback.type}`}>
+                                  {examImportFeedback.message}
+                                </p>
+                              ) : null}
+
+                              <button type="submit" disabled={examImportLoading}>
+                                {examImportLoading ? "Extraindo..." : "Extrair dados do PDF"}
+                              </button>
+                            </form>
+
+                            {examImportResult ? (
+                              <>
+                                <div className="dashboard-calculation-box">
+                                  <h3>Última importação processada</h3>
+                                  <div className="dashboard-two-columns">
+                                    <input value={`Arquivo: ${examImportResult.fileName}`} disabled />
+                                    <input value={`Páginas: ${examImportResult.pageCount}`} disabled />
+                                  </div>
+                                  <input
+                                    value={`Extraído em: ${formatTimestamp(examImportResult.importedAt)}`}
+                                    disabled
+                                  />
+                                  <input
+                                    value={`Resultados identificados: ${examImportResult.records.length}`}
+                                    disabled
+                                  />
+                                </div>
+
+                                {examImportResult.records.length > 0 ? (
+                                  <div className="dashboard-table-wrap">
+                                    <table className="dashboard-table">
+                                      <thead>
+                                        <tr>
+                                          <th>Exame</th>
+                                          <th>Resultado</th>
+                                          <th>Unidade</th>
+                                          <th>Referência</th>
+                                          <th>Página</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {examImportResult.records.map((record) => (
+                                          <tr key={record.key}>
+                                            <td>{record.examName}</td>
+                                            <td>{record.result}</td>
+                                            <td>{record.unit || "-"}</td>
+                                            <td>{record.referenceRange || "-"}</td>
+                                            <td>{record.pageNumber}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                ) : null}
+
+                                <div className="dashboard-calculation-box">
+                                  <h3>Texto extraído</h3>
+                                  <textarea value={examImportResult.rawText} readOnly rows={18} />
+                                </div>
+                              </>
+                            ) : null}
+
+                            <div className="dashboard-calculation-box">
+                              <h3>Histórico salvo no paciente</h3>
+
+                              {selectedPatientExamImports.length > 0 ? (
+                                <>
+                                  <select
+                                    value={selectedSavedExamImport ? String(selectedSavedExamImport.id) : ""}
+                                    onChange={(event) => setSelectedExamImportId(event.target.value)}
+                                  >
+                                    {selectedPatientExamImports.map((examImport) => (
+                                      <option key={examImport.id} value={examImport.id}>
+                                        {`${formatTimestamp(examImport.createdAt)} - ${examImport.fileName}`}
+                                      </option>
+                                    ))}
+                                  </select>
+
+                                  {selectedSavedExamImport ? (
+                                    <>
+                                      <div className="dashboard-two-columns">
+                                        <input value={`Arquivo: ${selectedSavedExamImport.fileName}`} disabled />
+                                        <input value={`Páginas: ${selectedSavedExamImport.pageCount}`} disabled />
+                                      </div>
+                                      <div className="dashboard-two-columns">
+                                        <input
+                                          value={`Importado em: ${formatTimestamp(selectedSavedExamImport.createdAt)}`}
+                                          disabled
+                                        />
+                                        <input
+                                          value={`Importado por: ${selectedSavedExamImport.importedByProfessionalName}`}
+                                          disabled
+                                        />
+                                      </div>
+                                      <input
+                                        value={`Resultados identificados: ${selectedSavedExamImport.records.length}`}
+                                        disabled
+                                      />
+
+                                      {selectedSavedExamImport.records.length > 0 ? (
+                                        <div className="dashboard-table-wrap">
+                                          <table className="dashboard-table">
+                                            <thead>
+                                              <tr>
+                                                <th>Exame</th>
+                                                <th>Resultado</th>
+                                                <th>Unidade</th>
+                                                <th>Referência</th>
+                                                <th>Página</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {selectedSavedExamImport.records.map((record) => (
+                                                <tr key={record.key}>
+                                                  <td>{record.examName}</td>
+                                                  <td>{record.result}</td>
+                                                  <td>{record.unit || "-"}</td>
+                                                  <td>{record.referenceRange || "-"}</td>
+                                                  <td>{record.pageNumber}</td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      ) : (
+                                        <p className="dashboard-muted">
+                                          Essa importação não gerou resultados estruturados, mas o texto foi salvo.
+                                        </p>
+                                      )}
+
+                                      <textarea value={selectedSavedExamImport.rawText} readOnly rows={18} />
+                                    </>
+                                  ) : null}
+                                </>
+                              ) : (
+                                <p className="dashboard-muted">
+                                  Nenhuma importação de exames salva para este paciente.
+                                </p>
+                              )}
                             </div>
                           </div>
                         ) : null}

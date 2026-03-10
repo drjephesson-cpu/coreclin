@@ -9,6 +9,8 @@ import {
   type BsaFormulaId,
   type CouncilOption,
   type DashboardData,
+  type PatientExamImportRecord,
+  type PatientExamResultRecord,
   type MedicalPrescriptionRecord,
   type MedicationRecord,
   type MeasurementHistoryRecord,
@@ -133,6 +135,15 @@ export type AddMedicalPrescriptionInput = {
   validationEndAt?: string;
   validationStatus?: string;
   externalValidationCandidate?: boolean;
+};
+
+export type AddPatientExamImportInput = {
+  patientId: number;
+  fileName: string;
+  pageCount: number;
+  rawText: string;
+  records: PatientExamResultRecord[];
+  importedByLogin: string;
 };
 
 export type UpdateMedicalPrescriptionValidationInput = {
@@ -335,6 +346,65 @@ function mapPriorMedication(row: DbRow): PriorMedicationRecord {
     lotNumber: row.lot_number === null ? null : String(row.lot_number ?? ""),
     expirationDate: row.expiration_date === null ? null : String(row.expiration_date),
     manufacturer: row.manufacturer === null ? null : String(row.manufacturer ?? ""),
+    createdAt: toIso(row.created_at)
+  };
+}
+
+function normalizeExamImportRecords(value: unknown): PatientExamResultRecord[] {
+  const parsedValue =
+    typeof value === "string"
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return [];
+          }
+        })()
+      : value;
+
+  if (!Array.isArray(parsedValue)) {
+    return [];
+  }
+
+  return parsedValue
+    .filter((item): item is Record<string, unknown> => item !== null && typeof item === "object")
+    .map((item, index) => ({
+      key:
+        typeof item.key === "string" && item.key.trim().length > 0
+          ? item.key.trim()
+          : `exam-${index + 1}`,
+      examName: typeof item.examName === "string" ? item.examName.trim() : "",
+      result: typeof item.result === "string" ? item.result.trim() : "",
+      unit: typeof item.unit === "string" ? item.unit.trim() : "",
+      referenceRange:
+        typeof item.referenceRange === "string" ? item.referenceRange.trim() : "",
+      pageNumber:
+        typeof item.pageNumber === "number"
+          ? item.pageNumber
+          : typeof item.pageNumber === "string"
+            ? Number(item.pageNumber)
+            : 0
+    }))
+    .filter(
+      (item) =>
+        item.examName.length > 0 &&
+        item.result.length > 0 &&
+        Number.isInteger(item.pageNumber) &&
+        item.pageNumber > 0
+    );
+}
+
+function mapPatientExamImport(row: DbRow): PatientExamImportRecord {
+  return {
+    id: toNumber(row.id),
+    patientId: toNumber(row.patient_id),
+    patientName: String(row.patient_name ?? ""),
+    importedByProfessionalId: toNumber(row.imported_by_professional_id),
+    importedByProfessionalName: String(row.imported_by_professional_name ?? ""),
+    fileName: String(row.file_name ?? ""),
+    pageCount: toNumber(row.page_count),
+    rawText: String(row.raw_text ?? ""),
+    records: normalizeExamImportRecords(row.extracted_records),
     createdAt: toIso(row.created_at)
   };
 }
@@ -653,6 +723,17 @@ async function setupDatabase(): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS patient_exam_imports (
+      id SERIAL PRIMARY KEY,
+      patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+      imported_by_professional_id INTEGER NOT NULL REFERENCES professionals(id),
+      file_name TEXT NOT NULL,
+      page_count INTEGER NOT NULL,
+      raw_text TEXT NOT NULL,
+      extracted_records JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE INDEX IF NOT EXISTS idx_admissions_patient_id ON admissions (patient_id);
     CREATE INDEX IF NOT EXISTS idx_admissions_date ON admissions (admission_date DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_measurements_patient_id ON patient_measurements (patient_id);
@@ -661,6 +742,8 @@ async function setupDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_prior_medications_patient_id ON patient_prior_medications (patient_id);
     CREATE INDEX IF NOT EXISTS idx_prescriptions_patient_id ON medical_prescriptions (patient_id);
     CREATE INDEX IF NOT EXISTS idx_prescriptions_admission_id ON medical_prescriptions (admission_id);
+    CREATE INDEX IF NOT EXISTS idx_exam_imports_patient_id ON patient_exam_imports (patient_id);
+    CREATE INDEX IF NOT EXISTS idx_exam_imports_created_at ON patient_exam_imports (created_at DESC);
   `);
 
   await pool.query(`
@@ -1807,6 +1890,94 @@ export async function updatePriorMedication(
   }
 }
 
+export async function addPatientExamImport(
+  input: AddPatientExamImportInput
+): Promise<PatientExamImportRecord> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await ensurePatientExists(client, input.patientId);
+
+    const importedByProfessionalId = await findProfessionalIdByLogin(client, input.importedByLogin);
+    const normalizedFileName = input.fileName.trim();
+    const normalizedRawText = input.rawText.trim();
+    const normalizedRecords = normalizeExamImportRecords(input.records);
+
+    if (!normalizedFileName) {
+      throw new Error("Informe o nome do arquivo processado.");
+    }
+
+    if (!Number.isInteger(input.pageCount) || input.pageCount <= 0) {
+      throw new Error("Quantidade de páginas inválida.");
+    }
+
+    if (!normalizedRawText) {
+      throw new Error("Nenhum texto foi extraído do PDF informado.");
+    }
+
+    const inserted = await client.query(
+      `
+        INSERT INTO patient_exam_imports (
+          patient_id,
+          imported_by_professional_id,
+          file_name,
+          page_count,
+          raw_text,
+          extracted_records
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+        RETURNING id
+      `,
+      [
+        input.patientId,
+        importedByProfessionalId,
+        normalizedFileName,
+        input.pageCount,
+        normalizedRawText,
+        JSON.stringify(normalizedRecords)
+      ]
+    );
+
+    const examImportId = toNumber((inserted.rows[0] as DbRow).id);
+    const result = await client.query(
+      `
+        SELECT
+          pei.id,
+          pei.patient_id,
+          p.full_name AS patient_name,
+          pei.imported_by_professional_id,
+          prof.full_name AS imported_by_professional_name,
+          pei.file_name,
+          pei.page_count,
+          pei.raw_text,
+          pei.extracted_records,
+          pei.created_at
+        FROM patient_exam_imports pei
+        INNER JOIN patients p ON p.id = pei.patient_id
+        INNER JOIN professionals prof ON prof.id = pei.imported_by_professional_id
+        WHERE pei.id = $1
+        LIMIT 1
+      `,
+      [examImportId]
+    );
+
+    await client.query("COMMIT");
+    return mapPatientExamImport(result.rows[0] as DbRow);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    const postgresError = error as { code?: string };
+    if (postgresError.code === "23503") {
+      throw new Error("Paciente ou profissional inválido para salvar a importação dos exames.");
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function addMedicalPrescription(
   input: AddMedicalPrescriptionInput
 ): Promise<MedicalPrescriptionRecord> {
@@ -2329,6 +2500,30 @@ export async function listPriorMedications(): Promise<PriorMedicationRecord[]> {
   return result.rows.map((row) => mapPriorMedication(row as DbRow));
 }
 
+export async function listPatientExamImports(): Promise<PatientExamImportRecord[]> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const result = await pool.query(`
+    SELECT
+      pei.id,
+      pei.patient_id,
+      p.full_name AS patient_name,
+      pei.imported_by_professional_id,
+      prof.full_name AS imported_by_professional_name,
+      pei.file_name,
+      pei.page_count,
+      pei.raw_text,
+      pei.extracted_records,
+      pei.created_at
+    FROM patient_exam_imports pei
+    INNER JOIN patients p ON p.id = pei.patient_id
+    INNER JOIN professionals prof ON prof.id = pei.imported_by_professional_id
+    ORDER BY pei.created_at DESC, pei.id DESC
+  `);
+
+  return result.rows.map((row) => mapPatientExamImport(row as DbRow));
+}
+
 export async function listMedicalPrescriptions(): Promise<MedicalPrescriptionRecord[]> {
   await ensureDatabaseReady();
   const pool = getPool();
@@ -2379,6 +2574,7 @@ export async function getDashboardData(currentLogin: string): Promise<DashboardD
     medications,
     patientAllergies,
     priorMedications,
+    examImports,
     prescriptions
   ] = await Promise.all([
     findProfessionalByLogin(currentLogin),
@@ -2390,6 +2586,7 @@ export async function getDashboardData(currentLogin: string): Promise<DashboardD
     listMedicationCatalog(),
     listPatientAllergies(),
     listPriorMedications(),
+    listPatientExamImports(),
     listMedicalPrescriptions()
   ]);
 
@@ -2403,6 +2600,7 @@ export async function getDashboardData(currentLogin: string): Promise<DashboardD
     medications,
     patientAllergies,
     priorMedications,
+    examImports,
     prescriptions
   };
 }

@@ -156,6 +156,28 @@ export type PriorMedicationRecord = {
   createdAt: string;
 };
 
+export type PatientExamResultRecord = {
+  key: string;
+  examName: string;
+  result: string;
+  unit: string;
+  referenceRange: string;
+  pageNumber: number;
+};
+
+export type PatientExamImportRecord = {
+  id: number;
+  patientId: number;
+  patientName: string;
+  importedByProfessionalId: number;
+  importedByProfessionalName: string;
+  fileName: string;
+  pageCount: number;
+  rawText: string;
+  records: PatientExamResultRecord[];
+  createdAt: string;
+};
+
 export type MedicalPrescriptionRecord = {
   id: number;
   patientId: number;
@@ -192,5 +214,6 @@ export type DashboardData = {
   medications: MedicationRecord[];
   patientAllergies: PatientAllergyRecord[];
   priorMedications: PriorMedicationRecord[];
+  examImports: PatientExamImportRecord[];
   prescriptions: MedicalPrescriptionRecord[];
 };
