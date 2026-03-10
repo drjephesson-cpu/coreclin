@@ -132,6 +132,7 @@ export type AddMedicalPrescriptionInput = {
   validationStartAt?: string;
   validationEndAt?: string;
   validationStatus?: string;
+  externalValidationCandidate?: boolean;
 };
 
 export type UpdateMedicalPrescriptionValidationInput = {
@@ -359,6 +360,7 @@ function mapMedicalPrescription(row: DbRow): MedicalPrescriptionRecord {
       row.validation_start_at === null ? null : toIso(row.validation_start_at),
     validationEndAt: row.validation_end_at === null ? null : toIso(row.validation_end_at),
     validationStatus: row.validation_status === null ? null : String(row.validation_status),
+    externalValidationCandidate: Boolean(row.external_validation_candidate),
     quantityTablets: row.quantity_tablets === null ? null : toNumber(row.quantity_tablets),
     lotNumber: row.lot_number === null ? null : String(row.lot_number ?? ""),
     expirationDate: row.expiration_date === null ? null : String(row.expiration_date),
@@ -643,6 +645,7 @@ async function setupDatabase(): Promise<void> {
       validation_start_at TIMESTAMPTZ,
       validation_end_at TIMESTAMPTZ,
       validation_status TEXT,
+      external_validation_candidate BOOLEAN NOT NULL DEFAULT FALSE,
       quantity_tablets INTEGER,
       lot_number TEXT,
       expiration_date DATE,
@@ -695,6 +698,9 @@ async function setupDatabase(): Promise<void> {
   `);
 
   await pool.query(`
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS external_validation_candidate BOOLEAN NOT NULL DEFAULT FALSE;
+
     ALTER TABLE medical_prescriptions
     ADD COLUMN IF NOT EXISTS quantity_tablets INTEGER;
 
@@ -1846,12 +1852,13 @@ export async function addMedicalPrescription(
           validation_start_at,
           validation_end_at,
           validation_status,
+          external_validation_candidate,
           quantity_tablets,
           lot_number,
           expiration_date,
           manufacturer
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULL, NULL, NULL, NULL)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULL, NULL, NULL, NULL)
         RETURNING id
       `,
       [
@@ -1867,7 +1874,8 @@ export async function addMedicalPrescription(
         input.notes?.trim() ? input.notes.trim() : null,
         input.validationStartAt ?? null,
         input.validationEndAt ?? null,
-        input.validationStatus?.trim() ? input.validationStatus.trim() : null
+        input.validationStatus?.trim() ? input.validationStatus.trim() : null,
+        input.externalValidationCandidate ?? false
       ]
     );
 
@@ -1892,6 +1900,7 @@ export async function addMedicalPrescription(
           mp.validation_start_at,
           mp.validation_end_at,
           mp.validation_status,
+          mp.external_validation_candidate,
           mp.quantity_tablets,
           mp.lot_number,
           mp.expiration_date::text AS expiration_date,
@@ -1976,6 +1985,7 @@ export async function updateMedicalPrescriptionValidation(
           mp.validation_start_at,
           mp.validation_end_at,
           mp.validation_status,
+          mp.external_validation_candidate,
           mp.quantity_tablets,
           mp.lot_number,
           mp.expiration_date::text AS expiration_date,
@@ -2341,6 +2351,7 @@ export async function listMedicalPrescriptions(): Promise<MedicalPrescriptionRec
       mp.validation_start_at,
       mp.validation_end_at,
       mp.validation_status,
+      mp.external_validation_candidate,
       mp.quantity_tablets,
       mp.lot_number,
       mp.expiration_date::text AS expiration_date,

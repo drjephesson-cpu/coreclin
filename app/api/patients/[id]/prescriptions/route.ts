@@ -93,6 +93,7 @@ export async function POST(
   const validationEndAtRaw = typeof body.validationEndAt === "string" ? body.validationEndAt.trim() : "";
   const validationStartAt = normalizeDateTimeInput(validationStartAtRaw);
   const validationEndAt = normalizeDateTimeInput(validationEndAtRaw);
+  const externalValidationCandidate = Boolean(body.externalValidationCandidate);
 
   if (admissionId !== undefined && (!Number.isInteger(admissionId) || admissionId <= 0)) {
     return NextResponse.json({ message: "Internação inválida." }, { status: 400 });
@@ -144,7 +145,8 @@ export async function POST(
       notes,
       validationStartAt,
       validationEndAt,
-      validationStatus
+      validationStatus,
+      externalValidationCandidate
     });
 
     return NextResponse.json({ ok: true, prescription });

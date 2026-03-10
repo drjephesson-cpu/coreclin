@@ -2239,7 +2239,15 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
   const selectedPatientMedicationValidationRows = useMemo(
     () =>
       selectedPatientPrescriptions
-        .filter((prescription) => prescription.medicationId === null)
+        .filter((prescription) => {
+          if (prescription.externalValidationCandidate) {
+            return true;
+          }
+
+          return normalizeMedicationName(prescription.medicationName).startsWith(
+            "medicamento nao cadastrado"
+          );
+        })
         .map((prescription) => {
           const dailyTabletUse = calculateDailyTabletUse({
             dose: prescription.dose,
@@ -2250,6 +2258,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
 
           return {
             prescription,
+            displayMedicationName: sanitizeMedicationName(prescription.medicationName).medicationName,
             dailyTabletUse,
             durationDays: calculateDurationDays(prescription.quantityTablets, dailyTabletUse)
           };
@@ -3672,7 +3681,8 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
             notes: draft.notes,
             validationStartAt: draft.validationStartAt ?? prescriptionSetStartAt ?? undefined,
             validationEndAt: draft.validationEndAt ?? prescriptionSetEndAt ?? undefined,
-            validationStatus: draft.validationStatus || prescriptionSetStatus
+            validationStatus: draft.validationStatus || prescriptionSetStatus,
+            externalValidationCandidate: draft.shouldAddToPriorMedicationValidation
           })
         });
 
@@ -5743,7 +5753,7 @@ function hasTherapeuticClassRelation(allergyNormalized: string, classNormalized:
                                   ) : (
                                     selectedPatientMedicationValidationRows.map((row) => (
                                       <tr key={row.prescription.id}>
-                                        <td>{row.prescription.medicationName}</td>
+                                        <td>{row.displayMedicationName}</td>
                                         <td>
                                           {formatNumber(row.prescription.dose)} {row.prescription.doseUnit}
                                         </td>

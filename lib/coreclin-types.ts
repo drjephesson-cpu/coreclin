@@ -174,6 +174,7 @@ export type MedicalPrescriptionRecord = {
   validationStartAt: string | null;
   validationEndAt: string | null;
   validationStatus: string | null;
+  externalValidationCandidate: boolean;
   quantityTablets: number | null;
   lotNumber: string | null;
   expirationDate: string | null;
