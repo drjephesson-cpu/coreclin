@@ -124,6 +124,11 @@ export type RemovePriorMedicationInput = {
   priorMedicationId: number;
 };
 
+export type RemovePatientExamImportInput = {
+  patientId: number;
+  examImportId: number;
+};
+
 export type AddPriorMedicationInput = {
   patientId: number;
   medicationId?: number;
@@ -2348,6 +2353,37 @@ export async function addPatientExamImport(
     if (postgresError.code === "23503") {
       throw new Error("Paciente ou profissional inválido para salvar a importação dos exames.");
     }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function removePatientExamImport(input: RemovePatientExamImportInput): Promise<void> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await ensurePatientExists(client, input.patientId);
+
+    const deleted = await client.query(
+      `
+        DELETE FROM patient_exam_imports
+        WHERE id = $1 AND patient_id = $2
+        RETURNING id
+      `,
+      [input.examImportId, input.patientId]
+    );
+
+    if (deleted.rowCount === 0) {
+      throw new Error("Importação de exames não encontrada para este paciente.");
+    }
+
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();

@@ -1292,6 +1292,7 @@ function groupExamRecordsByDate(
       records: PatientExamResultRecord[];
     }
   >();
+  const recordOrderByKey = new Map(records.map((record, index) => [record.key, index]));
 
   for (const record of records) {
     const normalizedDate = normalizeAdmissionDateValue(record.examDate ?? "");
@@ -1315,16 +1316,17 @@ function groupExamRecordsByDate(
     .map((group) => ({
       ...group,
       records: [...group.records].sort((first, second) => {
-        const examNameComparison = first.examName.localeCompare(second.examName, "pt-BR");
-        if (examNameComparison !== 0) {
-          return examNameComparison;
+        const firstOrder = recordOrderByKey.get(first.key) ?? Number.MAX_SAFE_INTEGER;
+        const secondOrder = recordOrderByKey.get(second.key) ?? Number.MAX_SAFE_INTEGER;
+        if (firstOrder !== secondOrder) {
+          return firstOrder - secondOrder;
         }
 
         if (first.pageNumber !== second.pageNumber) {
           return first.pageNumber - second.pageNumber;
         }
 
-        return first.result.localeCompare(second.result, "pt-BR");
+        return 0;
       })
     }))
     .sort((first, second) => {
@@ -1994,6 +1996,7 @@ export default function DashboardConsole({
   const [examImportFeedback, setExamImportFeedback] = useState<FeedbackState>(null);
   const [examImportResult, setExamImportResult] = useState<ExtractedExamImportResult | null>(null);
   const [selectedExamImportId, setSelectedExamImportId] = useState("");
+  const [examImportRemovingId, setExamImportRemovingId] = useState<number | null>(null);
   const [inpatientWorkflowPersistenceReady, setInpatientWorkflowPersistenceReady] = useState(false);
   const lastPersistedInpatientWorkflowRef = useRef(
     JSON.stringify(persistedInpatientWorkflowPayload)
@@ -3313,6 +3316,69 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
   }
 
+  async function handleRemoveExamImport(examImport: PatientExamImportRecord): Promise<void> {
+    if (!selectedPatient) {
+      setExamImportFeedback({
+        type: "error",
+        message: "Selecione um paciente antes de remover os exames."
+      });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Remover a importação "${examImport.fileName}" de ${formatTimestamp(examImport.createdAt)}?`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setExamImportFeedback(null);
+    setExamImportRemovingId(examImport.id);
+
+    try {
+      const response = await fetch(
+        `/api/patients/${selectedPatient.id}/exams?examImportId=${examImport.id}`,
+        {
+          method: "DELETE"
+        }
+      );
+
+      const result = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        setExamImportFeedback({
+          type: "error",
+          message: result.message ?? "Não foi possível remover a importação de exames."
+        });
+        return;
+      }
+
+      if (selectedExamImportId === String(examImport.id)) {
+        setSelectedExamImportId("");
+      }
+
+      if (
+        examImportResult &&
+        examImport.fileName === examImportResult.fileName &&
+        examImport.createdAt === examImportResult.importedAt
+      ) {
+        setExamImportResult(null);
+      }
+
+      setExamImportFeedback({
+        type: "success",
+        message: "Importação de exames removida com sucesso."
+      });
+      refreshDashboard();
+    } catch {
+      setExamImportFeedback({
+        type: "error",
+        message: "Erro de conexão ao remover a importação de exames."
+      });
+    } finally {
+      setExamImportRemovingId(null);
+    }
+  }
+
   const selectedPatientPriorMedications = useMemo(
     () =>
       priorMedications.filter(
@@ -3680,11 +3746,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       sections.push("", title, ...sanitizedLines.map((line) => `- ${line}`));
     };
 
-    pushSection(
-      "#MOTIVO DA INTERVENÇÃO",
-      splitTextIntoBulletLines(admissionForm.interviewInterventionMotive)
-    );
-
     const patientDataLines: string[] = [];
     patientDataLines.push(
       selectedPatientAllergies.length === 0
@@ -3844,7 +3905,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     admissionForm.interviewInformationSourceName,
     admissionForm.interviewInformationSourceRelationship,
     admissionForm.interviewInformationSourceType,
-    admissionForm.interviewInterventionMotive,
     admissionForm.interviewPendingIssues,
     admissionForm.interviewPlan,
     admissionForm.interviewRelevantSymptoms,
@@ -7284,18 +7344,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               ) : null}
 
                               <textarea
-                                placeholder="Motivo da intervenção"
-                                value={admissionForm.interviewInterventionMotive}
-                                onChange={(event) =>
-                                  setAdmissionForm((current) => ({
-                                    ...current,
-                                    interviewInterventionMotive: event.target.value
-                                  }))
-                                }
-                                rows={3}
-                              />
-
-                              <textarea
                                 placeholder="Subjetivo"
                                 value={admissionForm.interviewSubjective}
                                 onChange={(event) =>
@@ -7480,6 +7528,19 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
                                   {selectedSavedExamImport ? (
                                     <>
+                                      <div className="dashboard-inline-actions">
+                                        <button
+                                          type="button"
+                                          className="dashboard-chip-remove"
+                                          onClick={() => handleRemoveExamImport(selectedSavedExamImport)}
+                                          disabled={examImportRemovingId === selectedSavedExamImport.id}
+                                        >
+                                          {examImportRemovingId === selectedSavedExamImport.id
+                                            ? "Removendo..."
+                                            : "Remover importação"}
+                                        </button>
+                                      </div>
+
                                       <div className="dashboard-exam-summary-grid">
                                         <div className="dashboard-exam-summary-card">
                                           <span>Arquivo</span>

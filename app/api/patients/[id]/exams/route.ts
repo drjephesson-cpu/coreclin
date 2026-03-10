@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
-import { addPatientExamImport } from "@/lib/db";
+import { addPatientExamImport, removePatientExamImport } from "@/lib/db";
 import { extractExamImportFromPdf } from "@/lib/exam-pdf";
 import { type PatientExamResultRecord } from "@/lib/coreclin-types";
 
@@ -167,6 +167,36 @@ export async function POST(
     return NextResponse.json({ ok: true, examImport });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao salvar importação de exames.";
+    return NextResponse.json({ message }, { status: 400 });
+  }
+}
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+): Promise<NextResponse> {
+  const session = await getCurrentSession();
+  if (!session) {
+    return NextResponse.json({ message: "Sessão inválida." }, { status: 401 });
+  }
+
+  const routeParams = await params;
+  const patientId = Number(routeParams.id);
+  if (!Number.isInteger(patientId) || patientId <= 0) {
+    return NextResponse.json({ message: "Paciente inválido." }, { status: 400 });
+  }
+
+  const examImportId = Number(new URL(request.url).searchParams.get("examImportId"));
+  if (!Number.isInteger(examImportId) || examImportId <= 0) {
+    return NextResponse.json({ message: "Importação de exames inválida." }, { status: 400 });
+  }
+
+  try {
+    await removePatientExamImport({ patientId, examImportId });
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Falha ao remover importação de exames.";
     return NextResponse.json({ message }, { status: 400 });
   }
 }
