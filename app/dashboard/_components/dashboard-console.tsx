@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, Fragment, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { FormEvent, Fragment, memo, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import LogoutButton from "@/app/_components/logout-button";
@@ -281,6 +281,22 @@ type PrescriptionInterventionFormState = {
   interventionResponse: "" | MedicalPrescriptionInterventionResponse;
 };
 
+type MandatoryEvolutionPreviewPayload = {
+  patient: PatientRecord;
+  allergies: PatientAllergyRecord[];
+  priorMedications: PriorMedicationRecord[];
+  latestExamImport: PatientExamImportRecord | null;
+  prescriptions: MedicalPrescriptionRecord[];
+  professionalSignature: string;
+};
+
+type MandatoryEvolutionPreviewState = {
+  entry: InpatientEntry;
+  baseText: string;
+  includeTitles: boolean;
+  feedback: FeedbackState;
+};
+
 type DashboardConsoleProps = {
   currentLogin: string;
   data: DashboardData | null;
@@ -410,6 +426,335 @@ function formatPrescriptionInterventionSummary(
 
   return parts.join(" | ");
 }
+
+function stripEvolutionTitles(input: string): string {
+  return input
+    .split(/\r?\n/)
+    .filter((line) => !line.trim().startsWith("#"))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function groupPrescriptionRecordsBySet(prescriptions: MedicalPrescriptionRecord[]): Array<{
+  key: string;
+  validationStartAt: string | null;
+  validationEndAt: string | null;
+  prescriptions: MedicalPrescriptionRecord[];
+}> {
+  const groups = new Map<
+    string,
+    {
+      key: string;
+      validationStartAt: string | null;
+      validationEndAt: string | null;
+      prescriptions: MedicalPrescriptionRecord[];
+    }
+  >();
+
+  for (const prescription of prescriptions) {
+    const key = [
+      prescription.admissionId ?? "sem-admissao",
+      normalizeDateOnlyKey(prescription.validationStartAt),
+      normalizeDateOnlyKey(prescription.validationEndAt),
+      prescription.validationStatus ?? "sem-status"
+    ].join("|");
+
+    const currentGroup = groups.get(key);
+    if (currentGroup) {
+      currentGroup.prescriptions.push(prescription);
+      continue;
+    }
+
+    groups.set(key, {
+      key,
+      validationStartAt: prescription.validationStartAt,
+      validationEndAt: prescription.validationEndAt,
+      prescriptions: [prescription]
+    });
+  }
+
+  return Array.from(groups.values()).sort((firstGroup, secondGroup) => {
+    const firstTime = getPrescriptionValiditySortTime(firstGroup.validationStartAt);
+    const secondTime = getPrescriptionValiditySortTime(secondGroup.validationStartAt);
+    return secondTime - firstTime;
+  });
+}
+
+function buildMandatoryEvolutionPreviewText(payload: MandatoryEvolutionPreviewPayload): string {
+  const latestAdmission = payload.patient.latestAdmission;
+  const latestMeasurement = payload.patient.latestMeasurement;
+  const patientAge = payload.patient.ageYears;
+
+  const sections: string[] = [
+    `${payload.patient.fullName.toUpperCase()} - ${payload.patient.chartNumber}${
+      patientAge !== null ? ` - Idade: ${patientAge} anos` : ""
+    }`
+  ];
+
+  const pushSection = (title: string, lines: string[]) => {
+    const sanitizedLines = lines.map((line) => line.trim()).filter((line) => line.length > 0);
+    if (sanitizedLines.length === 0) {
+      return;
+    }
+
+    sections.push("", title, ...sanitizedLines.map((line) => `- ${line}`));
+  };
+
+  const patientDataLines: string[] = [];
+  patientDataLines.push(
+    payload.allergies.length === 0
+      ? "ALERGIAS - Paciente NÃO possui ou DESCONHECE alergias/reações adversas"
+      : `ALERGIAS - ${payload.allergies.map((allergy) => formatAllergyDisplay(allergy)).join("; ")}`
+  );
+
+  const anthropometricParts = [
+    latestAdmission?.weightKg ?? latestMeasurement?.weightKg,
+    latestAdmission?.heightCm ?? latestMeasurement?.heightCm,
+    latestAdmission?.bmi ?? latestMeasurement?.bmi,
+    latestAdmission?.bodySurfaceArea ?? latestMeasurement?.bodySurfaceArea
+  ];
+  const [weightKg, heightCm, bmiValue, bodySurfaceAreaValue] = anthropometricParts;
+
+  const anthropometricText = [
+    weightKg !== null && weightKg !== undefined ? `PESO ${formatNumber(weightKg)} kg` : "",
+    heightCm !== null && heightCm !== undefined ? `ALTURA ${formatNumber(heightCm)} cm` : "",
+    bmiValue !== null && bmiValue !== undefined ? `IMC ${formatNumber(bmiValue)}` : "",
+    bodySurfaceAreaValue !== null && bodySurfaceAreaValue !== undefined
+      ? `ÁREA DE SUPERFÍCIE ${formatNumber(bodySurfaceAreaValue)}`
+      : ""
+  ].filter((item) => item.length > 0);
+
+  if (anthropometricText.length > 0) {
+    patientDataLines.push(anthropometricText.join(" | "));
+  }
+  pushSection("#DADOS DO PACIENTE", patientDataLines);
+
+  const examSummaryLines = payload.latestExamImport
+    ? groupExamRecordsByDate(
+        resolveExamRecordsWithDates(
+          payload.latestExamImport.records,
+          payload.latestExamImport.rawText
+        )
+      ).map((group) =>
+        `${group.label}: ${group.records
+          .map((record) =>
+            [
+              record.examName,
+              record.result,
+              record.unit || "",
+              record.referenceRange ? `(VR ${record.referenceRange})` : ""
+            ]
+              .filter((part) => part.length > 0)
+              .join(" ")
+          )
+          .join("; ")}`
+      )
+    : [];
+  pushSection("#EXAMES", examSummaryLines);
+
+  const qualityLabel = formatInterviewInformationQualityLabel(
+    latestAdmission?.interviewInformationQuality ?? null
+  );
+  const sourceType = latestAdmission?.interviewInformationSourceType ?? null;
+  const sourceName = latestAdmission?.interviewInformationSourceName?.trim() ?? "";
+  const sourceRelationship = latestAdmission?.interviewInformationSourceRelationship?.trim() ?? "";
+  const hasInformantDetails = sourceName.length > 0 || sourceRelationship.length > 0;
+  const informationSourceSummary =
+    sourceType === "patient"
+      ? `Próprio paciente fornece as informações${
+          qualityLabel ? ` com ${qualityLabel.toUpperCase()} CONFIABILIDADE` : ""
+        }`
+      : sourceType === "informant" || hasInformantDetails
+        ? [
+            [sourceName, sourceRelationship ? `(${sourceRelationship})` : ""]
+              .filter((part) => part.length > 0)
+              .join(" ")
+              .trim() || "Informante",
+            "fornece as informações",
+            qualityLabel ? `com ${qualityLabel.toUpperCase()} CONFIABILIDADE` : ""
+          ]
+            .filter((part) => part.length > 0)
+            .join(" ")
+        : qualityLabel
+          ? `Informações com ${qualityLabel.toUpperCase()} CONFIABILIDADE`
+          : "";
+  pushSection("#FONTE INFORMAÇÃO", informationSourceSummary ? [informationSourceSummary] : []);
+
+  const prescriptionGroups = groupPrescriptionRecordsBySet(payload.prescriptions);
+  pushSection(
+    "#MEDICAMENTO DE USO CONTÍNUO E RECONCILIAÇÃO",
+    payload.priorMedications.map((priorMedication) => {
+      const history = prescriptionGroups.map((group) => ({
+        reconciled: group.prescriptions.some((prescription) =>
+          isMedicationNameCompatible(prescription.medicationName, priorMedication.medicationName)
+        )
+      }));
+      const latestReconciled = history[0]?.reconciled ?? null;
+      const scheduleParts = [
+        priorMedication.dose > 0 ? `${formatNumber(priorMedication.dose)} ${priorMedication.doseUnit}` : "",
+        priorMedication.frequency.trim(),
+        priorMedication.shifts.trim()
+      ].filter((part) => part.length > 0);
+      const scheduleText = scheduleParts.length > 0 ? ` (${scheduleParts.join(" | ")})` : "";
+      const reconciledText =
+        latestReconciled === null ? "Não avaliado" : latestReconciled ? "Sim" : "Não";
+      return `${priorMedication.medicationName}${scheduleText} | Reconciliado: ${reconciledText}`;
+    })
+  );
+
+  pushSection(
+    "#VALIDAÇÃO DE MEDICAMENTOS",
+    payload.prescriptions
+      .filter((prescription) => {
+        if (prescription.externalValidationCandidate) {
+          return true;
+        }
+
+        return normalizeMedicationName(prescription.medicationName).startsWith(
+          "medicamento nao cadastrado"
+        );
+      })
+      .map((prescription) => {
+        const dailyTabletUse = calculateDailyTabletUse({
+          dose: prescription.dose,
+          doseUnit: prescription.doseUnit,
+          frequency: prescription.frequency,
+          shifts: prescription.shifts
+        });
+        const durationDays = calculateDurationDays(prescription.quantityTablets, dailyTabletUse);
+        const details = [
+          prescription.quantityTablets !== null ? `${prescription.quantityTablets} comp` : "",
+          prescription.lotNumber?.trim() ? `Lote ${prescription.lotNumber.trim()}` : "",
+          prescription.expirationDate
+            ? `Validade ${formatAdmissionDateValue(prescription.expirationDate)}`
+            : "",
+          prescription.manufacturer?.trim()
+            ? `Marca/Laboratório ${prescription.manufacturer.trim()}`
+            : "",
+          durationDays !== null ? `Duração estimada ${formatDurationDays(durationDays)}` : ""
+        ].filter((part) => part.length > 0);
+
+        const displayMedicationName = getMedicationReferenceName(prescription.medicationName);
+        return details.length > 0
+          ? `${displayMedicationName} | ${details.join(" | ")}`
+          : displayMedicationName;
+      })
+  );
+
+  const subjectiveLines = [
+    ...splitTextIntoBulletLines(latestAdmission?.interviewSubjective),
+    ...splitTextIntoBulletLines(latestAdmission?.interviewRelevantSymptoms).map(
+      (line) => `Sintomas relevantes: ${line}`
+    )
+  ];
+  pushSection("#SUBJETIVO", subjectiveLines);
+
+  pushSection(
+    "#INTERVENÇÕES",
+    payload.prescriptions
+      .filter((prescription) => hasPrescriptionIntervention(prescription))
+      .map(
+        (prescription) =>
+          `${getPrescriptionMedicationDisplayName(
+            prescription.medicationName,
+            prescription.externalValidationCandidate
+          )} | ${formatPrescriptionInterventionSummary(prescription)}`
+      )
+  );
+
+  pushSection(
+    "#PLANO E CONDUTA FARMACÊUTICA",
+    splitTextIntoBulletLines(latestAdmission?.interviewPlan)
+  );
+  pushSection("#PENDÊNCIAS", splitTextIntoBulletLines(latestAdmission?.interviewPendingIssues));
+
+  sections.push("", payload.professionalSignature);
+  return sections.join("\n").trim();
+}
+
+type PrescriptionInterventionEditorProps = {
+  prescription: Pick<
+    MedicalPrescriptionRecord,
+    "id" | "interventionNotes" | "interventionRequestedToPrescriber" | "interventionResponse"
+  >;
+  isSaving: boolean;
+  onSave: (prescriptionId: number, formState: PrescriptionInterventionFormState) => Promise<void>;
+};
+
+const PrescriptionInterventionEditor = memo(function PrescriptionInterventionEditor({
+  prescription,
+  isSaving,
+  onSave
+}: PrescriptionInterventionEditorProps) {
+  const [formState, setFormState] = useState<PrescriptionInterventionFormState>(() =>
+    createPrescriptionInterventionFormState(prescription)
+  );
+
+  useEffect(() => {
+    setFormState(createPrescriptionInterventionFormState(prescription));
+  }, [
+    prescription.id,
+    prescription.interventionNotes,
+    prescription.interventionRequestedToPrescriber,
+    prescription.interventionResponse
+  ]);
+
+  return (
+    <div className="dashboard-inline-editor">
+      <h4>Intervenção farmacêutica</h4>
+      <textarea
+        placeholder="Escreva a intervenção para este medicamento"
+        value={formState.interventionNotes}
+        onChange={(event) =>
+          setFormState((current) => ({
+            ...current,
+            interventionNotes: event.target.value
+          }))
+        }
+        rows={4}
+      />
+      <div className="dashboard-two-columns">
+        <select
+          value={formState.interventionRequestedToPrescriber}
+          onChange={(event) =>
+            setFormState((current) => ({
+              ...current,
+              interventionRequestedToPrescriber:
+                event.target.value as PrescriptionInterventionFormState["interventionRequestedToPrescriber"]
+            }))
+          }
+        >
+          <option value="">Solicitado ao prescritor?</option>
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+        <select
+          value={formState.interventionResponse}
+          onChange={(event) =>
+            setFormState((current) => ({
+              ...current,
+              interventionResponse:
+                event.target.value as PrescriptionInterventionFormState["interventionResponse"]
+            }))
+          }
+        >
+          <option value="">Resposta</option>
+          {MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="dashboard-inline-actions">
+        <button type="button" onClick={() => void onSave(prescription.id, formState)} disabled={isSaving}>
+          {isSaving ? "Salvando..." : "Salvar intervenção"}
+        </button>
+      </div>
+    </div>
+  );
+});
 
 function formatInterviewInformationQualityLabel(
   quality: InterviewInformationQuality | null | undefined
@@ -1894,6 +2239,11 @@ export default function DashboardConsole({
   const [mandatoryRawInput, setMandatoryRawInput] = useState("");
   const [mandatoryFeedback, setMandatoryFeedback] = useState<FeedbackState>(null);
   const [mandatoryLoading, setMandatoryLoading] = useState(false);
+  const [mandatoryEvolutionPreviewLoadingKey, setMandatoryEvolutionPreviewLoadingKey] = useState<
+    string | null
+  >(null);
+  const [mandatoryEvolutionPreview, setMandatoryEvolutionPreview] =
+    useState<MandatoryEvolutionPreviewState | null>(null);
   const [workflowByInpatientKey, setWorkflowByInpatientKey] = useState<
     Record<string, InpatientWorkflowState>
   >(() => persistedInpatientWorkflowPayload.workflowByKey);
@@ -1915,6 +2265,7 @@ export default function DashboardConsole({
   const [showAllergyComposer, setShowAllergyComposer] = useState(false);
   const [showAdmissionSummaryComposer, setShowAdmissionSummaryComposer] = useState(false);
   const [showAdmissionSummaryPreview, setShowAdmissionSummaryPreview] = useState(false);
+  const [interviewEvolutionIncludeTitles, setInterviewEvolutionIncludeTitles] = useState(true);
   const [prescriptionMode, setPrescriptionMode] = useState<PrescriptionMode>("view");
   const [selectedPrescriptionGroupKey, setSelectedPrescriptionGroupKey] = useState("");
   const [selectedPrescriptionMedicationHistory, setSelectedPrescriptionMedicationHistory] = useState<{
@@ -1958,9 +2309,6 @@ export default function DashboardConsole({
   const [medicationValidationForm, setMedicationValidationForm] = useState<
     Record<number, StockValidationFormState>
   >({});
-  const [prescriptionInterventionForm, setPrescriptionInterventionForm] = useState<
-    Record<number, PrescriptionInterventionFormState>
-  >({});
   const [prescriptionInterventionOpenId, setPrescriptionInterventionOpenId] = useState<number | null>(
     null
   );
@@ -1997,6 +2345,9 @@ export default function DashboardConsole({
   const [examImportFeedback, setExamImportFeedback] = useState<FeedbackState>(null);
   const [examImportResult, setExamImportResult] = useState<ExtractedExamImportResult | null>(null);
   const [selectedExamImportId, setSelectedExamImportId] = useState("");
+  const [selectedExamImportDetails, setSelectedExamImportDetails] =
+    useState<PatientExamImportRecord | null>(null);
+  const [selectedExamImportDetailsLoading, setSelectedExamImportDetailsLoading] = useState(false);
   const [examImportRemovingId, setExamImportRemovingId] = useState<number | null>(null);
   const [inpatientWorkflowPersistenceReady, setInpatientWorkflowPersistenceReady] = useState(false);
   const lastPersistedInpatientWorkflowRef = useRef(
@@ -3321,6 +3672,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
       if (selectedExamImportId === String(examImport.id)) {
         setSelectedExamImportId("");
+        setSelectedExamImportDetails(null);
       }
 
       if (
@@ -3365,6 +3717,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   useEffect(() => {
     if (selectedPatientExamImports.length === 0) {
       setSelectedExamImportId("");
+      setSelectedExamImportDetails(null);
       return;
     }
 
@@ -3384,6 +3737,70 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       null,
     [selectedExamImportId, selectedPatientExamImports]
   );
+
+  const selectedSavedExamImportDetails = useMemo(() => {
+    if (
+      selectedSavedExamImport &&
+      selectedExamImportDetails &&
+      selectedExamImportDetails.id === selectedSavedExamImport.id
+    ) {
+      return selectedExamImportDetails;
+    }
+
+    return selectedSavedExamImport;
+  }, [selectedExamImportDetails, selectedSavedExamImport]);
+
+  useEffect(() => {
+    if (!selectedPatient || !selectedSavedExamImport) {
+      setSelectedExamImportDetails(null);
+      setSelectedExamImportDetailsLoading(false);
+      return;
+    }
+
+    if (selectedSavedExamImport.rawText.trim()) {
+      setSelectedExamImportDetails(selectedSavedExamImport);
+      setSelectedExamImportDetailsLoading(false);
+      return;
+    }
+
+    let isCancelled = false;
+    setSelectedExamImportDetailsLoading(true);
+
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/patients/${selectedPatient.id}/exams?examImportId=${selectedSavedExamImport.id}`
+        );
+        const result = (await response.json()) as {
+          message?: string;
+          examImport?: PatientExamImportRecord;
+        };
+
+        if (!response.ok || !result.examImport) {
+          if (!isCancelled) {
+            setSelectedExamImportDetails(null);
+          }
+          return;
+        }
+
+        if (!isCancelled) {
+          setSelectedExamImportDetails(result.examImport);
+        }
+      } catch {
+        if (!isCancelled) {
+          setSelectedExamImportDetails(null);
+        }
+      } finally {
+        if (!isCancelled) {
+          setSelectedExamImportDetailsLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedPatient, selectedSavedExamImport]);
 
   useEffect(() => {
     setPriorMedicationReconciliationForm(
@@ -3494,14 +3911,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   }, [selectedPatientMedicationValidationRows]);
 
   useEffect(() => {
-    setPrescriptionInterventionForm(
-      Object.fromEntries(
-        selectedPatientPrescriptions.map((prescription) => [
-          prescription.id,
-          createPrescriptionInterventionFormState(prescription)
-        ])
-      )
-    );
     setPrescriptionInterventionOpenId(null);
   }, [selectedPatientPrescriptions]);
 
@@ -3742,11 +4151,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
     pushSection("#DADOS DO PACIENTE", patientDataLines);
 
-    const examSummaryLines = selectedSavedExamImport
+    const examSummaryLines = selectedSavedExamImportDetails
       ? groupExamRecordsByDate(
           resolveExamRecordsWithDates(
-            selectedSavedExamImport.records,
-            selectedSavedExamImport.rawText
+            selectedSavedExamImportDetails.records,
+            selectedSavedExamImportDetails.rawText
           )
         ).map((group) =>
           `${group.label}: ${group.records
@@ -3887,8 +4296,26 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     selectedPatientAgePreview,
     selectedPatientAllergies,
     selectedPatientPrescriptions,
-    selectedSavedExamImport
+    selectedSavedExamImportDetails
   ]);
+
+  const visibleInterviewEvolutionText = useMemo(
+    () =>
+      interviewEvolutionIncludeTitles
+        ? interviewEvolutionText
+        : stripEvolutionTitles(interviewEvolutionText),
+    [interviewEvolutionIncludeTitles, interviewEvolutionText]
+  );
+
+  const visibleMandatoryEvolutionPreviewText = useMemo(() => {
+    if (!mandatoryEvolutionPreview) {
+      return "";
+    }
+
+    return mandatoryEvolutionPreview.includeTitles
+      ? mandatoryEvolutionPreview.baseText
+      : stripEvolutionTitles(mandatoryEvolutionPreview.baseText);
+  }, [mandatoryEvolutionPreview]);
 
   const selectedPrescriptionMedicationHistoryRows = useMemo(() => {
     if (!selectedPrescriptionMedicationHistory) {
@@ -4047,6 +4474,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     return query ? `/dashboard?${query}` : "/dashboard";
   }
 
+  function replaceDashboardUrl(url: string): void {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.history.replaceState(window.history.state, "", url);
+  }
+
   function toggleList(sectionId: DashboardSectionId): void {
     setListVisibility((current) => ({ ...current, [sectionId]: !current[sectionId] }));
   }
@@ -4110,14 +4545,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       return;
     }
 
-    navigateDashboard(
+    replaceDashboardUrl(
       buildDashboardUrl({
         section: "inpatients",
         inpatientMode: requestedInpatientMode,
         patientId: Number(selectedPatientId),
         patientView: view
-      }),
-      "Abrindo paciente..."
+      })
     );
   }
 
@@ -4623,7 +5057,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   async function handleCopyInterviewEvolution(): Promise<void> {
     setInterviewFeedback(null);
 
-    if (!interviewEvolutionText.trim()) {
+    if (!visibleInterviewEvolutionText.trim()) {
       setInterviewFeedback({
         type: "error",
         message: "Preencha algum dado da entrevista para gerar a evolução."
@@ -4632,7 +5066,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
 
     try {
-      await navigator.clipboard.writeText(interviewEvolutionText);
+      await navigator.clipboard.writeText(visibleInterviewEvolutionText);
       setInterviewFeedback({
         type: "success",
         message: "Padrão de evolução copiado."
@@ -5163,20 +5597,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
   }
 
-  function updatePrescriptionInterventionField(
-    prescriptionId: number,
-    field: keyof PrescriptionInterventionFormState,
-    value: PrescriptionInterventionFormState[keyof PrescriptionInterventionFormState]
-  ): void {
-    setPrescriptionInterventionForm((current) => ({
-      ...current,
-      [prescriptionId]: {
-        ...(current[prescriptionId] ?? createPrescriptionInterventionFormState()),
-        [field]: value
-      }
-    }));
-  }
-
   async function submitPrescriptionInterventionUpdate(
     patientId: number,
     prescriptionId: number,
@@ -5214,17 +5634,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
   }
 
-  async function handleSavePrescriptionIntervention(prescriptionId: number): Promise<void> {
+  async function handleSavePrescriptionIntervention(
+    prescriptionId: number,
+    formState: PrescriptionInterventionFormState
+  ): Promise<void> {
     if (!selectedPatient) {
       setPrescriptionFeedback({
         type: "error",
         message: "Selecione um paciente para registrar a intervenção."
       });
-      return;
-    }
-
-    const formState = prescriptionInterventionForm[prescriptionId];
-    if (!formState) {
       return;
     }
 
@@ -5622,7 +6040,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     });
   }
 
-  function handleGenerateMandatoryEvolution(entry: InpatientEntry): void {
+  async function handleGenerateMandatoryEvolution(entry: InpatientEntry): Promise<void> {
     const currentWorkflow = resolveInpatientWorkflow(entry);
     if (!currentWorkflow.firstVisitCompletedAt && currentWorkflow.status !== "Concluído") {
       setMandatoryFeedback({
@@ -5632,6 +6050,49 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       return;
     }
 
+    if (!entry.patientId) {
+      setMandatoryFeedback({
+        type: "error",
+        message: "Este paciente precisa estar vinculado ao cadastro para gerar a prévia da evolução."
+      });
+      return;
+    }
+
+    setMandatoryFeedback(null);
+    setMandatoryEvolutionPreviewLoadingKey(entry.key);
+
+    try {
+      const response = await fetch(`/api/patients/${entry.patientId}/evolution-preview`);
+      const result = (await response.json()) as {
+        message?: string;
+        preview?: MandatoryEvolutionPreviewPayload;
+      };
+
+      if (!response.ok || !result.preview) {
+        setMandatoryFeedback({
+          type: "error",
+          message: result.message ?? "Não foi possível carregar a prévia da evolução."
+        });
+        return;
+      }
+
+      setMandatoryEvolutionPreview({
+        entry,
+        baseText: buildMandatoryEvolutionPreviewText(result.preview),
+        includeTitles: true,
+        feedback: null
+      });
+    } catch {
+      setMandatoryFeedback({
+        type: "error",
+        message: "Erro de conexão ao carregar a prévia da evolução."
+      });
+    } finally {
+      setMandatoryEvolutionPreviewLoadingKey(null);
+    }
+  }
+
+  function confirmMandatoryEvolutionGeneration(entry: InpatientEntry): void {
     setWorkflowByInpatientKey((current) => {
       const now = new Date().toISOString();
       const fallbackWorkflow: InpatientWorkflowState = {
@@ -5657,10 +6118,44 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       };
     });
 
+    setMandatoryEvolutionPreview(null);
     setMandatoryFeedback({
       type: "success",
       message: `Evolução registrada para ${entry.patientName} na sua lista diária.`
     });
+  }
+
+  async function handleCopyMandatoryEvolutionPreview(): Promise<void> {
+    if (!mandatoryEvolutionPreview || !visibleMandatoryEvolutionPreviewText.trim()) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(visibleMandatoryEvolutionPreviewText);
+      setMandatoryEvolutionPreview((current) =>
+        current
+          ? {
+              ...current,
+              feedback: {
+                type: "success",
+                message: "Prévia da evolução copiada."
+              }
+            }
+          : current
+      );
+    } catch {
+      setMandatoryEvolutionPreview((current) =>
+        current
+          ? {
+              ...current,
+              feedback: {
+                type: "error",
+                message: "Não foi possível copiar a prévia da evolução."
+              }
+            }
+          : current
+      );
+    }
   }
 
   function handleInpatientTeamChange(inpatientKey: string, nextTeamValue: string): void {
@@ -5922,6 +6417,71 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           <div className="dashboard-loading-card">
             <span className="dashboard-loading-spinner" aria-hidden="true" />
             <p>{dashboardTransitionLabel || "Carregando painel..."}</p>
+          </div>
+        </div>
+      ) : null}
+
+      {mandatoryEvolutionPreview ? (
+        <div className="dashboard-modal-overlay" role="dialog" aria-modal="true">
+          <div className="dashboard-modal-card">
+            <div className="dashboard-inline-actions">
+              <h3>Prévia da evolução</h3>
+              <button
+                type="button"
+                className="dashboard-mini-button"
+                onClick={() => setMandatoryEvolutionPreview(null)}
+              >
+                Fechar
+              </button>
+            </div>
+            <p className="dashboard-muted">
+              Revise o texto antes de concluir a evolução de {mandatoryEvolutionPreview.entry.patientName}.
+            </p>
+            <label className="dashboard-inline-toggle">
+              <input
+                type="checkbox"
+                checked={mandatoryEvolutionPreview.includeTitles}
+                onChange={(event) =>
+                  setMandatoryEvolutionPreview((current) =>
+                    current
+                      ? {
+                          ...current,
+                          includeTitles: event.target.checked
+                        }
+                      : current
+                  )
+                }
+              />
+              Mostrar títulos automáticos
+            </label>
+            <textarea
+              className="dashboard-evolution-preview"
+              value={visibleMandatoryEvolutionPreviewText}
+              readOnly
+              rows={22}
+            />
+            {mandatoryEvolutionPreview.feedback ? (
+              <p
+                className={`dashboard-feedback dashboard-feedback-${mandatoryEvolutionPreview.feedback.type}`}
+              >
+                {mandatoryEvolutionPreview.feedback.message}
+              </p>
+            ) : null}
+            <div className="dashboard-inline-actions">
+              <button
+                type="button"
+                className="dashboard-mini-button"
+                onClick={() => void handleCopyMandatoryEvolutionPreview()}
+              >
+                Copiar prévia
+              </button>
+              <button
+                type="button"
+                onClick={() => confirmMandatoryEvolutionGeneration(mandatoryEvolutionPreview.entry)}
+              >
+                Concluir geração
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
@@ -6654,10 +7214,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                             <button
                                               type="button"
                                               className="dashboard-mini-button"
-                                              onClick={() => handleGenerateMandatoryEvolution(entry)}
-                                              disabled={!workflow.firstVisitCompletedAt}
+                                              onClick={() => void handleGenerateMandatoryEvolution(entry)}
+                                              disabled={
+                                                !workflow.firstVisitCompletedAt ||
+                                                mandatoryEvolutionPreviewLoadingKey === entry.key
+                                              }
                                             >
-                                              Gerar evolução
+                                              {mandatoryEvolutionPreviewLoadingKey === entry.key
+                                                ? "Carregando..."
+                                                : "Gerar evolução"}
                                             </button>
                                           )}
                                         </td>
@@ -7420,9 +7985,19 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               <p className="dashboard-muted">
                                 Só entram no texto os blocos que já tiverem informação preenchida.
                               </p>
+                              <label className="dashboard-inline-toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={interviewEvolutionIncludeTitles}
+                                  onChange={(event) =>
+                                    setInterviewEvolutionIncludeTitles(event.target.checked)
+                                  }
+                                />
+                                Mostrar títulos automáticos
+                              </label>
                               <textarea
                                 className="dashboard-evolution-preview"
-                                value={interviewEvolutionText}
+                                value={visibleInterviewEvolutionText}
                                 readOnly
                                 rows={22}
                               />
@@ -7504,7 +8079,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               {selectedPatientExamImports.length > 0 ? (
                                 <>
                                   <select
-                                    value={selectedSavedExamImport ? String(selectedSavedExamImport.id) : ""}
+                                    value={
+                                      selectedSavedExamImportDetails
+                                        ? String(selectedSavedExamImportDetails.id)
+                                        : ""
+                                    }
                                     onChange={(event) => setSelectedExamImportId(event.target.value)}
                                   >
                                     {selectedPatientExamImports.map((examImport) => (
@@ -7514,16 +8093,20 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     ))}
                                   </select>
 
-                                  {selectedSavedExamImport ? (
+                                  {selectedSavedExamImportDetails ? (
                                     <>
                                       <div className="dashboard-inline-actions">
                                         <button
                                           type="button"
                                           className="dashboard-chip-remove"
-                                          onClick={() => handleRemoveExamImport(selectedSavedExamImport)}
-                                          disabled={examImportRemovingId === selectedSavedExamImport.id}
+                                          onClick={() =>
+                                            handleRemoveExamImport(selectedSavedExamImportDetails)
+                                          }
+                                          disabled={
+                                            examImportRemovingId === selectedSavedExamImportDetails.id
+                                          }
                                         >
-                                          {examImportRemovingId === selectedSavedExamImport.id
+                                          {examImportRemovingId === selectedSavedExamImportDetails.id
                                             ? "Removendo..."
                                             : "Remover importação"}
                                         </button>
@@ -7532,38 +8115,55 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                       <div className="dashboard-exam-summary-grid">
                                         <div className="dashboard-exam-summary-card">
                                           <span>Arquivo</span>
-                                          <strong>{selectedSavedExamImport.fileName}</strong>
+                                          <strong>{selectedSavedExamImportDetails.fileName}</strong>
                                         </div>
                                         <div className="dashboard-exam-summary-card">
                                           <span>Páginas processadas</span>
-                                          <strong>{selectedSavedExamImport.pageCount}</strong>
+                                          <strong>{selectedSavedExamImportDetails.pageCount}</strong>
                                         </div>
                                         <div className="dashboard-exam-summary-card">
                                           <span>Importado em</span>
-                                          <strong>{formatTimestamp(selectedSavedExamImport.createdAt)}</strong>
+                                          <strong>
+                                            {formatTimestamp(selectedSavedExamImportDetails.createdAt)}
+                                          </strong>
                                         </div>
                                         <div className="dashboard-exam-summary-card">
                                           <span>Importado por</span>
-                                          <strong>{selectedSavedExamImport.importedByProfessionalName}</strong>
+                                          <strong>
+                                            {selectedSavedExamImportDetails.importedByProfessionalName}
+                                          </strong>
                                         </div>
                                         <div className="dashboard-exam-summary-card">
                                           <span>Resultados identificados</span>
-                                          <strong>{selectedSavedExamImport.records.length}</strong>
+                                          <strong>{selectedSavedExamImportDetails.records.length}</strong>
                                         </div>
                                       </div>
 
                                       <div className="dashboard-calculation-box">
                                         <h3>Painel dos exames salvos</h3>
+                                        {selectedExamImportDetailsLoading ? (
+                                          <p className="dashboard-muted">
+                                            Carregando detalhes completos da importação...
+                                          </p>
+                                        ) : null}
                                         <ExamResultsPanel
-                                          records={selectedSavedExamImport.records}
-                                          rawText={selectedSavedExamImport.rawText}
+                                          records={selectedSavedExamImportDetails.records}
+                                          rawText={selectedSavedExamImportDetails.rawText}
                                           emptyMessage="Essa importação não gerou resultados estruturados, mas o texto foi salvo."
                                         />
                                       </div>
 
                                       <div className="dashboard-calculation-box">
                                         <h3>Texto extraído</h3>
-                                        <textarea value={selectedSavedExamImport.rawText} readOnly rows={18} />
+                                        <textarea
+                                          value={
+                                            selectedExamImportDetailsLoading
+                                              ? "Carregando texto extraído..."
+                                              : selectedSavedExamImportDetails.rawText
+                                          }
+                                          readOnly
+                                          rows={18}
+                                        />
                                       </div>
                                     </>
                                   ) : null}
@@ -8476,9 +9076,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                               const prescriptionSafetyFlags = resolveMedicationSafetyFlags(
                                                 getMedicationReferenceName(prescription.medicationName)
                                               );
-                                              const interventionFormState =
-                                                prescriptionInterventionForm[prescription.id] ??
-                                                createPrescriptionInterventionFormState(prescription);
                                               const isInterventionOpen =
                                                 prescriptionInterventionOpenId === prescription.id;
 
@@ -8561,77 +9158,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                                   {isInterventionOpen ? (
                                                     <tr>
                                                       <td colSpan={10}>
-                                                        <div className="dashboard-inline-editor">
-                                                          <h4>Intervenção farmacêutica</h4>
-                                                          <textarea
-                                                            placeholder="Escreva a intervenção para este medicamento"
-                                                            value={interventionFormState.interventionNotes}
-                                                            onChange={(event) =>
-                                                              updatePrescriptionInterventionField(
-                                                                prescription.id,
-                                                                "interventionNotes",
-                                                                event.target.value
-                                                              )
-                                                            }
-                                                            rows={4}
-                                                          />
-                                                          <div className="dashboard-two-columns">
-                                                            <select
-                                                              value={
-                                                                interventionFormState.interventionRequestedToPrescriber
-                                                              }
-                                                              onChange={(event) =>
-                                                                updatePrescriptionInterventionField(
-                                                                  prescription.id,
-                                                                  "interventionRequestedToPrescriber",
-                                                                  event.target.value as
-                                                                    PrescriptionInterventionFormState["interventionRequestedToPrescriber"]
-                                                                )
-                                                              }
-                                                            >
-                                                              <option value="">
-                                                                Solicitado ao prescritor?
-                                                              </option>
-                                                              <option value="sim">Sim</option>
-                                                              <option value="nao">Não</option>
-                                                            </select>
-                                                            <select
-                                                              value={interventionFormState.interventionResponse}
-                                                              onChange={(event) =>
-                                                                updatePrescriptionInterventionField(
-                                                                  prescription.id,
-                                                                  "interventionResponse",
-                                                                  event.target.value as
-                                                                    PrescriptionInterventionFormState["interventionResponse"]
-                                                                )
-                                                              }
-                                                            >
-                                                              <option value="">Resposta</option>
-                                                              {MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS.map(
-                                                                (option) => (
-                                                                  <option key={option} value={option}>
-                                                                    {option}
-                                                                  </option>
-                                                                )
-                                                              )}
-                                                            </select>
-                                                          </div>
-                                                          <div className="dashboard-inline-actions">
-                                                            <button
-                                                              type="button"
-                                                              onClick={() =>
-                                                                handleSavePrescriptionIntervention(prescription.id)
-                                                              }
-                                                              disabled={
-                                                                prescriptionInterventionSavingId === prescription.id
-                                                              }
-                                                            >
-                                                              {prescriptionInterventionSavingId === prescription.id
-                                                                ? "Salvando..."
-                                                                : "Salvar intervenção"}
-                                                            </button>
-                                                          </div>
-                                                        </div>
+                                                        <PrescriptionInterventionEditor
+                                                          prescription={prescription}
+                                                          isSaving={
+                                                            prescriptionInterventionSavingId === prescription.id
+                                                          }
+                                                          onSave={handleSavePrescriptionIntervention}
+                                                        />
                                                       </td>
                                                     </tr>
                                                   ) : null}

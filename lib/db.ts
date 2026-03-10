@@ -3117,10 +3117,53 @@ export async function listPriorMedications(patientId?: number | null): Promise<P
   return result.rows.map((row) => mapPriorMedication(row as DbRow));
 }
 
-export async function listPatientExamImports(patientId?: number | null): Promise<PatientExamImportRecord[]> {
+export async function listPatientExamImports(
+  patientId?: number | null,
+  options?: {
+    includeRawText?: "all" | "latest" | "none";
+  }
+): Promise<PatientExamImportRecord[]> {
   await ensureDatabaseReady();
   const pool = getPool();
   const shouldFilterByPatientId = Number.isInteger(patientId) && Number(patientId) > 0;
+  const includeRawText = options?.includeRawText ?? "all";
+  const rawTextSelect =
+    includeRawText === "all"
+      ? "pei.raw_text"
+      : includeRawText === "latest"
+        ? "CASE WHEN row_number() OVER (PARTITION BY pei.patient_id ORDER BY pei.created_at DESC, pei.id DESC) = 1 THEN pei.raw_text ELSE NULL END AS raw_text"
+        : "NULL::text AS raw_text";
+  const result = await pool.query(
+    `
+    SELECT
+      pei.id,
+      pei.patient_id,
+      p.full_name AS patient_name,
+      pei.imported_by_professional_id,
+      prof.full_name AS imported_by_professional_name,
+      pei.file_name,
+      pei.page_count,
+      ${rawTextSelect},
+      pei.extracted_records,
+      pei.created_at
+    FROM patient_exam_imports pei
+    INNER JOIN patients p ON p.id = pei.patient_id
+    INNER JOIN professionals prof ON prof.id = pei.imported_by_professional_id
+    ${shouldFilterByPatientId ? "WHERE pei.patient_id = $1" : ""}
+    ORDER BY pei.created_at DESC, pei.id DESC
+  `,
+    shouldFilterByPatientId ? [Number(patientId)] : []
+  );
+
+  return result.rows.map((row) => mapPatientExamImport(row as DbRow));
+}
+
+export async function getPatientExamImportById(
+  patientId: number,
+  examImportId: number
+): Promise<PatientExamImportRecord | null> {
+  await ensureDatabaseReady();
+  const pool = getPool();
   const result = await pool.query(
     `
     SELECT
@@ -3137,13 +3180,13 @@ export async function listPatientExamImports(patientId?: number | null): Promise
     FROM patient_exam_imports pei
     INNER JOIN patients p ON p.id = pei.patient_id
     INNER JOIN professionals prof ON prof.id = pei.imported_by_professional_id
-    ${shouldFilterByPatientId ? "WHERE pei.patient_id = $1" : ""}
-    ORDER BY pei.created_at DESC, pei.id DESC
+    WHERE pei.patient_id = $1 AND pei.id = $2
+    LIMIT 1
   `,
-    shouldFilterByPatientId ? [Number(patientId)] : []
+    [patientId, examImportId]
   );
 
-  return result.rows.map((row) => mapPatientExamImport(row as DbRow));
+  return result.rows[0] ? mapPatientExamImport(result.rows[0] as DbRow) : null;
 }
 
 export async function listMedicalPrescriptions(
@@ -3207,29 +3250,6 @@ function normalizeDashboardSection(
   }
 }
 
-function normalizeDashboardPatientView(
-  patientView?: string | null
-):
-  | "allergies"
-  | "admission-info"
-  | "interview"
-  | "exams"
-  | "prior-use"
-  | "medication-validation"
-  | "prescriptions" {
-  switch (patientView) {
-    case "allergies":
-    case "interview":
-    case "exams":
-    case "prior-use":
-    case "medication-validation":
-    case "prescriptions":
-      return patientView;
-    default:
-      return "admission-info";
-  }
-}
-
 function normalizeDashboardInpatientMode(
   inpatientMode?: string | null
 ): "all" | "team" | "mandatory" | "discharged" {
@@ -3258,15 +3278,12 @@ export async function getDashboardData(
       ? Number(options?.selectedPatientId)
       : null;
   const section = normalizeDashboardSection(options?.section);
-  const patientView = normalizeDashboardPatientView(options?.patientView);
   const inpatientMode = normalizeDashboardInpatientMode(options?.inpatientMode);
   const isPatientDetailsPage = section === "inpatients" && selectedPatientId !== null;
   const shouldLoadProfessionals = section === "professional";
   const shouldLoadTeams =
     section === "team" ||
-    (section === "inpatients" &&
-      ((!isPatientDetailsPage && inpatientMode !== "all") ||
-        (isPatientDetailsPage && patientView === "admission-info")));
+    (section === "inpatients" && ((!isPatientDetailsPage && inpatientMode !== "all") || isPatientDetailsPage));
   const shouldLoadPatients =
     section === "patient" || isPatientDetailsPage || (section === "inpatients" && inpatientMode === "mandatory");
   const shouldLoadInpatientOverviewEntries = section === "inpatients" && !isPatientDetailsPage;
@@ -3274,21 +3291,13 @@ export async function getDashboardData(
   const shouldLoadMedications =
     section === "patient" ||
     section === "medication" ||
-    (isPatientDetailsPage &&
-      ["allergies", "admission-info", "interview", "prior-use", "prescriptions"].includes(
-        patientView
-      ));
-  const shouldLoadPatientAllergies =
-    isPatientDetailsPage && ["allergies", "interview", "prescriptions"].includes(patientView);
-  const shouldLoadPriorMedications =
-    isPatientDetailsPage &&
-    ["admission-info", "interview", "prior-use", "prescriptions"].includes(patientView);
-  const shouldLoadExamImports = isPatientDetailsPage && ["exams", "interview"].includes(patientView);
+    isPatientDetailsPage;
+  const shouldLoadPatientAllergies = isPatientDetailsPage;
+  const shouldLoadPriorMedications = isPatientDetailsPage;
+  const shouldLoadExamImports = isPatientDetailsPage;
   const shouldLoadWorkflow =
     section === "inpatients" && !isPatientDetailsPage && inpatientMode !== "all";
-  const shouldLoadPrescriptions =
-    isPatientDetailsPage &&
-    ["interview", "prior-use", "medication-validation", "prescriptions"].includes(patientView);
+  const shouldLoadPrescriptions = isPatientDetailsPage;
 
   const [
     currentProfessional,
@@ -3319,7 +3328,9 @@ export async function getDashboardData(
     shouldLoadMedications ? listMedicationCatalog() : Promise.resolve([]),
     shouldLoadPatientAllergies ? listPatientAllergies(selectedPatientId) : Promise.resolve([]),
     shouldLoadPriorMedications ? listPriorMedications(selectedPatientId) : Promise.resolve([]),
-    shouldLoadExamImports ? listPatientExamImports(selectedPatientId) : Promise.resolve([]),
+    shouldLoadExamImports
+      ? listPatientExamImports(selectedPatientId, { includeRawText: "latest" })
+      : Promise.resolve([]),
     shouldLoadWorkflow ? getInpatientWorkflowSnapshotByLogin(currentLogin) : Promise.resolve(null),
     shouldLoadPrescriptions ? listMedicalPrescriptions(selectedPatientId) : Promise.resolve([])
   ]);
