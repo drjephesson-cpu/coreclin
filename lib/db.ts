@@ -112,6 +112,7 @@ export type CreateMedicationInput = {
 export type AddPatientAllergyInput = {
   patientId: number;
   allergyName: string;
+  reactionDescription?: string | null;
 };
 
 export type RemovePatientAllergyInput = {
@@ -431,6 +432,8 @@ function mapPatientAllergy(row: DbRow): PatientAllergyRecord {
     patientId: toNumber(row.patient_id),
     patientName: String(row.patient_name ?? ""),
     allergyName: String(row.allergy_name ?? ""),
+    reactionDescription:
+      row.reaction_description === null ? null : String(row.reaction_description ?? ""),
     createdAt: toIso(row.created_at)
   };
 }
@@ -892,6 +895,7 @@ async function setupDatabase(): Promise<void> {
       id SERIAL PRIMARY KEY,
       patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
       allergy_name TEXT NOT NULL,
+      reaction_description TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (patient_id, allergy_name)
     );
@@ -1016,6 +1020,9 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE admissions
     ADD COLUMN IF NOT EXISTS interview_plan TEXT;
+
+    ALTER TABLE patient_allergies
+    ADD COLUMN IF NOT EXISTS reaction_description TEXT;
 
     ALTER TABLE medical_prescriptions
     ADD COLUMN IF NOT EXISTS intervention_notes TEXT;
@@ -2015,11 +2022,15 @@ export async function addPatientAllergy(input: AddPatientAllergyInput): Promise<
     const normalizedAllergy = await resolveMedicationNameFromCatalog(client, input.allergyName);
     const inserted = await client.query(
       `
-        INSERT INTO patient_allergies (patient_id, allergy_name)
-        VALUES ($1, $2)
+        INSERT INTO patient_allergies (patient_id, allergy_name, reaction_description)
+        VALUES ($1, $2, $3)
         RETURNING id
       `,
-      [input.patientId, normalizedAllergy]
+      [
+        input.patientId,
+        normalizedAllergy,
+        input.reactionDescription?.trim() ? input.reactionDescription.trim() : null
+      ]
     );
 
     const allergyId = toNumber((inserted.rows[0] as DbRow).id);
@@ -2030,6 +2041,7 @@ export async function addPatientAllergy(input: AddPatientAllergyInput): Promise<
           pa.patient_id,
           p.full_name AS patient_name,
           pa.allergy_name,
+          pa.reaction_description,
           pa.created_at
         FROM patient_allergies pa
         INNER JOIN patients p ON p.id = pa.patient_id
@@ -3055,13 +3067,14 @@ export async function listPatientAllergies(patientId?: number | null): Promise<P
   const shouldFilterByPatientId = Number.isInteger(patientId) && Number(patientId) > 0;
   const result = await pool.query(
     `
-    SELECT
-      pa.id,
-      pa.patient_id,
-      p.full_name AS patient_name,
-      pa.allergy_name,
-      pa.created_at
-    FROM patient_allergies pa
+      SELECT
+        pa.id,
+        pa.patient_id,
+        p.full_name AS patient_name,
+        pa.allergy_name,
+        pa.reaction_description,
+        pa.created_at
+      FROM patient_allergies pa
     INNER JOIN patients p ON p.id = pa.patient_id
     ${shouldFilterByPatientId ? "WHERE pa.patient_id = $1" : ""}
     ORDER BY pa.created_at DESC, pa.id DESC

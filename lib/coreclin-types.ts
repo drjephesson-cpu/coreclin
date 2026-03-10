@@ -192,6 +192,7 @@ export type PatientAllergyRecord = {
   patientId: number;
   patientName: string;
   allergyName: string;
+  reactionDescription: string | null;
   createdAt: string;
 };
 

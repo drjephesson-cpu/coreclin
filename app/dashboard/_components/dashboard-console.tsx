@@ -28,6 +28,7 @@ import {
   type InpatientWorkflowStoragePayload,
   type PatientExamImportRecord,
   type PatientExamResultRecord,
+  type PatientAllergyRecord,
   type PatientRecord,
   type PriorMedicationRecord,
   type ProfessionOption
@@ -230,6 +231,7 @@ type AllergySuggestionItem = {
   label: string;
   value: string;
   source: "medication" | "active-ingredient" | "therapeutic-class";
+  normalizedValue: string;
   normalizedSearch: string;
 };
 
@@ -435,6 +437,15 @@ function splitTextIntoBulletLines(input: string | null | undefined): string[] {
     .split(/\r?\n/)
     .map((line) => line.replace(/^[\s\-#*]+/, "").trim())
     .filter((line) => line.length > 0);
+}
+
+function formatAllergyDisplay(
+  allergy: Pick<PatientAllergyRecord, "allergyName" | "reactionDescription">
+): string {
+  const reactionDescription = allergy.reactionDescription?.trim();
+  return reactionDescription
+    ? `${allergy.allergyName} (${reactionDescription})`
+    : allergy.allergyName;
 }
 
 function parseStockValidationQuantity(value: string): number | null {
@@ -1925,7 +1936,8 @@ export default function DashboardConsole({
 
   const [allergyForm, setAllergyForm] = useState({
     query: "",
-    selectedValue: ""
+    selectedValue: "",
+    reactionDescription: ""
   });
   const [allergyFeedback, setAllergyFeedback] = useState<FeedbackState>(null);
   const [allergyLoading, setAllergyLoading] = useState(false);
@@ -2532,7 +2544,7 @@ export default function DashboardConsole({
     setShowAdmissionSummaryComposer(false);
     setShowAdmissionSummaryPreview(false);
     setAdmissionSummarySelection("");
-    setAllergyForm({ query: "", selectedValue: "" });
+    setAllergyForm({ query: "", selectedValue: "", reactionDescription: "" });
     setAllergyFeedback(null);
     setInterviewFeedback(null);
     setExamImportFeedback(null);
@@ -2629,6 +2641,7 @@ export default function DashboardConsole({
           label: `${medicationValue} (medicamento)`,
           value: medicationValue,
           source: "medication",
+          normalizedValue: normalizeMedicationName(medicationValue),
           normalizedSearch: normalizeMedicationName(
             `${medicationValue} ${descriptor.medication.activeIngredients ?? ""} ${
               descriptor.medication.therapeuticClass ?? ""
@@ -2646,6 +2659,7 @@ export default function DashboardConsole({
             label: `${ingredientValue} (princípio ativo)`,
             value: ingredientValue,
             source: "active-ingredient",
+            normalizedValue: normalizeMedicationName(ingredientValue),
             normalizedSearch: normalizeMedicationName(
               `${ingredientValue} ${descriptor.medication.name} ${descriptor.medication.searchAliases ?? ""}`
             )
@@ -2661,6 +2675,7 @@ export default function DashboardConsole({
           label: `${classValue} (classe terapêutica)`,
           value: classValue,
           source: "therapeutic-class",
+          normalizedValue: normalizeMedicationName(classValue),
           normalizedSearch: normalizeMedicationName(classValue)
         });
       }
@@ -2677,8 +2692,47 @@ export default function DashboardConsole({
       return [];
     }
 
+    const getAllergySuggestionScore = (item: AllergySuggestionItem): number => {
+      let score = 0;
+
+      if (item.normalizedValue === normalizedQuery) {
+        score += 1000;
+      } else if (item.normalizedValue.startsWith(normalizedQuery)) {
+        score += 850;
+      } else if (hasTokenBoundaryMatch(item.normalizedValue, normalizedQuery)) {
+        score += 760;
+      } else if (item.normalizedSearch.includes(normalizedQuery)) {
+        score += 620;
+      } else if (hasConceptTermMatch(item.normalizedSearch, normalizedQuery)) {
+        score += 420;
+      }
+
+      if (item.source === "medication") {
+        score += 40;
+      } else if (item.source === "active-ingredient") {
+        score += 25;
+      } else {
+        score += 10;
+      }
+
+      score -= Math.max(0, item.normalizedValue.length - normalizedQuery.length);
+      return score;
+    };
+
     return allergySuggestionItems
-      .filter((item) => hasConceptTermMatch(item.normalizedSearch, normalizedQuery))
+      .map((item) => ({
+        item,
+        score: getAllergySuggestionScore(item)
+      }))
+      .filter(({ score }) => score > 0)
+      .sort((first, second) => {
+        if (first.score !== second.score) {
+          return second.score - first.score;
+        }
+
+        return first.item.value.localeCompare(second.item.value, "pt-BR");
+      })
+      .map(({ item }) => item)
       .slice(0, 30);
   }, [allergySuggestionItems, allergyForm.query]);
 
@@ -3750,7 +3804,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     patientDataLines.push(
       selectedPatientAllergies.length === 0
         ? "ALERGIAS - Paciente NÃO possui ou DESCONHECE alergias/reações adversas"
-        : `ALERGIAS - ${selectedPatientAllergies.map((allergy) => allergy.allergyName).join("; ")}`
+        : `ALERGIAS - ${selectedPatientAllergies.map((allergy) => formatAllergyDisplay(allergy)).join("; ")}`
     );
 
     const weightKg = Number(admissionForm.weightKg);
@@ -4842,6 +4896,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
 
     const allergyName = (allergyForm.selectedValue || allergyForm.query).trim();
+    const reactionDescription = allergyForm.reactionDescription.trim();
 
     if (!allergyName) {
       setAllergyFeedback({
@@ -4856,7 +4911,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       const response = await fetch(`/api/patients/${selectedPatient.id}/allergies`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ allergyName })
+        body: JSON.stringify({ allergyName, reactionDescription })
       });
 
       const result = (await response.json()) as { message?: string };
@@ -4867,7 +4922,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
       setAllergyFeedback({ type: "success", message: "Alergia cadastrada com sucesso." });
       setShowAllergyComposer(false);
-      setAllergyForm({ query: "", selectedValue: "" });
+      setAllergyForm({ query: "", selectedValue: "", reactionDescription: "" });
       refreshDashboard();
     } catch {
       setAllergyFeedback({ type: "error", message: "Erro de conexão ao cadastrar alergia." });
@@ -6814,7 +6869,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   onClick={() => {
                                     setShowAllergyComposer((current) => !current);
                                     setAllergyFeedback(null);
-                                    setAllergyForm({ query: "", selectedValue: "" });
+                                    setAllergyForm({
+                                      query: "",
+                                      selectedValue: "",
+                                      reactionDescription: ""
+                                    });
                                   }}
                                 >
                                   {showAllergyComposer ? "Cancelar" : "Adicionar alergia"}
@@ -6829,7 +6888,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     onChange={(event) =>
                                       setAllergyForm({
                                         query: event.target.value,
-                                        selectedValue: ""
+                                        selectedValue: "",
+                                        reactionDescription: allergyForm.reactionDescription
                                       })
                                     }
                                   />
@@ -6851,7 +6911,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                             onClick={() =>
                                               setAllergyForm({
                                                 query: suggestion.value,
-                                                selectedValue: suggestion.value
+                                                selectedValue: suggestion.value,
+                                                reactionDescription: allergyForm.reactionDescription
                                               })
                                             }
                                           >
@@ -6866,6 +6927,18 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     A busca atualiza em tempo real. Você pode registrar por medicamento ou por
                                     princípio ativo (ex.: Morfina).
                                   </p>
+
+                                  <textarea
+                                    placeholder="Tipo de reação / o que aconteceu"
+                                    value={allergyForm.reactionDescription}
+                                    onChange={(event) =>
+                                      setAllergyForm((current) => ({
+                                        ...current,
+                                        reactionDescription: event.target.value
+                                      }))
+                                    }
+                                    rows={3}
+                                  />
 
                                   {allergyFeedback ? (
                                     <p className={`dashboard-feedback dashboard-feedback-${allergyFeedback.type}`}>
@@ -6888,6 +6961,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   <thead>
                                     <tr>
                                       <th>Alergia</th>
+                                      <th>Reação</th>
                                       <th>Registro</th>
                                       <th>Ações</th>
                                     </tr>
@@ -6895,12 +6969,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   <tbody>
                                     {selectedPatientAllergies.length === 0 ? (
                                       <tr>
-                                        <td colSpan={3}>Nenhuma alergia cadastrada.</td>
+                                        <td colSpan={4}>Nenhuma alergia cadastrada.</td>
                                       </tr>
                                     ) : (
                                       selectedPatientAllergies.map((allergy) => (
                                         <tr key={allergy.id}>
                                           <td>{allergy.allergyName}</td>
+                                          <td>{allergy.reactionDescription?.trim() || "-"}</td>
                                           <td>{formatTimestamp(allergy.createdAt)}</td>
                                           <td>
                                             <button
@@ -6961,7 +7036,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 ) : (
                                   <ul className="dashboard-chip-list">
                                     {selectedPatientAllergies.map((allergy) => (
-                                      <li key={allergy.id}>{allergy.allergyName}</li>
+                                      <li key={allergy.id}>{formatAllergyDisplay(allergy)}</li>
                                     ))}
                                   </ul>
                                 )}

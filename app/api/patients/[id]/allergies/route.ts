@@ -29,13 +29,19 @@ export async function POST(
 
   const body = payload as Record<string, unknown>;
   const allergyName = typeof body.allergyName === "string" ? body.allergyName.trim() : "";
+  const reactionDescription =
+    typeof body.reactionDescription === "string" ? body.reactionDescription.trim() : "";
 
   if (!allergyName) {
     return NextResponse.json({ message: "Informe a alergia." }, { status: 400 });
   }
 
   try {
-    const allergy = await addPatientAllergy({ patientId, allergyName });
+    const allergy = await addPatientAllergy({
+      patientId,
+      allergyName,
+      reactionDescription: reactionDescription || null
+    });
     return NextResponse.json({ ok: true, allergy });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao cadastrar alergia.";
