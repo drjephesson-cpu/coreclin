@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
+import { PATIENT_SEX_OPTIONS, type PatientSex } from "@/lib/coreclin-types";
 import { createPatient } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -22,6 +23,8 @@ export async function POST(request: Request): Promise<NextResponse> {
   const fullName = typeof body.fullName === "string" ? body.fullName.trim() : "";
   const chartNumber = typeof body.chartNumber === "string" ? body.chartNumber.trim() : "";
   const birthDate = typeof body.birthDate === "string" ? body.birthDate : "";
+  const sexRaw = typeof body.sex === "string" ? body.sex.trim().toLowerCase() : "";
+  const sex = PATIENT_SEX_OPTIONS.includes(sexRaw as PatientSex) ? (sexRaw as PatientSex) : null;
   const allergiesRaw = Array.isArray(body.allergies) ? body.allergies : [];
   const allergies = allergiesRaw
     .filter((item): item is string => typeof item === "string")
@@ -37,6 +40,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       fullName,
       chartNumber,
       birthDate: birthDate.trim() || null,
+      sex,
       responsibleLogin: session.username,
       allergies
     });

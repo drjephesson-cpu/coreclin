@@ -46,6 +46,7 @@ export const MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS = [
 ] as const;
 export const INTERVIEW_INFORMATION_QUALITY_OPTIONS = ["baixa", "media", "alta"] as const;
 export const INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS = ["patient", "informant"] as const;
+export const PATIENT_SEX_OPTIONS = ["female", "male"] as const;
 
 export type ProfessionOption = (typeof PROFESSION_OPTIONS)[number];
 export type CouncilOption = (typeof COUNCIL_OPTIONS)[number];
@@ -57,6 +58,7 @@ export type InterviewInformationQuality =
   (typeof INTERVIEW_INFORMATION_QUALITY_OPTIONS)[number];
 export type InterviewInformationSourceType =
   (typeof INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS)[number];
+export type PatientSex = (typeof PATIENT_SEX_OPTIONS)[number];
 
 export type ProfessionalRecord = {
   id: number;
@@ -125,6 +127,7 @@ export type PatientRecord = {
   chartNumber: string;
   birthDate: string | null;
   ageYears: number | null;
+  sex: PatientSex | null;
   responsibleProfessionalId: number;
   responsibleProfessionalName: string;
   responsibleProfessionalLogin: string;

@@ -1,4 +1,5 @@
-import { type PatientExamResultRecord } from "./coreclin-types";
+import { calculateEstimatedGfr } from "./clinical";
+import { type PatientExamResultRecord, type PatientSex } from "./coreclin-types";
 
 export type ImportantExamId =
   | "creatinina"
@@ -19,10 +20,12 @@ export type ImportantExamId =
   | "pcr"
   | "ttpa";
 
+export type ImportantExamCardId = ImportantExamId | "tfge";
+
 export type ImportantExamStatus = "high" | "low" | "normal" | "unknown";
 
 export type ImportantExamCard = {
-  id: ImportantExamId;
+  id: ImportantExamCardId;
   label: string;
   examName: string;
   result: string;
@@ -32,6 +35,7 @@ export type ImportantExamCard = {
   examDate: string | null;
   status: ImportantExamStatus;
   resultRecordKey: string | null;
+  note: string | null;
 };
 
 type ImportantExamDefinition = {
@@ -828,6 +832,122 @@ function getResultStatus(
   return "normal";
 }
 
+function formatCalculatedResult(value: number): string {
+  return new Intl.NumberFormat("pt-BR", {
+    minimumFractionDigits: Number.isInteger(value) ? 0 : 1,
+    maximumFractionDigits: 1
+  }).format(value);
+}
+
+function normalizeExamUnitForCalculation(unit: string): "mg/dl" | "umol/l" | null {
+  const normalizedUnit = normalizeExamSearchValue(unit)
+    .replace(/\s+/g, "")
+    .replace(/[µμ]/gu, "u");
+
+  if (!normalizedUnit) {
+    return "mg/dl";
+  }
+
+  if (normalizedUnit === "mg/dl" || normalizedUnit === "md/dl") {
+    return "mg/dl";
+  }
+
+  if (normalizedUnit === "umol/l") {
+    return "umol/l";
+  }
+
+  return null;
+}
+
+function buildEstimatedGfrCard(input: {
+  creatinineCard: ImportantExamCard;
+  patientAgeYears?: number | null;
+  patientSex?: PatientSex | null;
+}): ImportantExamCard {
+  const unit = "mL/min/1,73 m²";
+  const referenceText = "Maior ou igual a 90 mL/min/1,73 m²";
+  const baseCard = {
+    id: "tfge" as const,
+    label: "TFGe",
+    examName: "TFGe (CKD-EPI 2021)",
+    unit,
+    referenceText,
+    pageNumber: input.creatinineCard.pageNumber,
+    examDate: input.creatinineCard.examDate,
+    resultRecordKey: null,
+    result: "",
+    status: "unknown" as ImportantExamStatus,
+    note: null as string | null
+  };
+
+  if (!input.creatinineCard.result.trim()) {
+    return {
+      ...baseCard,
+      note: "TFGe indisponível: creatinina mais recente não identificada."
+    };
+  }
+
+  if (input.patientAgeYears === null || input.patientAgeYears === undefined || input.patientAgeYears <= 0) {
+    return {
+      ...baseCard,
+      note: "TFGe indisponível: preencha a data de nascimento do paciente."
+    };
+  }
+
+  if (input.patientAgeYears < 18) {
+    return {
+      ...baseCard,
+      note: "TFGe indisponível: o cálculo CKD-EPI 2021 está configurado apenas para adultos."
+    };
+  }
+
+  if (!input.patientSex) {
+    return {
+      ...baseCard,
+      note: "TFGe indisponível: preencha o sexo biológico do paciente."
+    };
+  }
+
+  const creatinineValue = parseNumericValue(input.creatinineCard.result);
+  if (creatinineValue === null) {
+    return {
+      ...baseCard,
+      note: "TFGe indisponível: creatinina sem valor numérico válido."
+    };
+  }
+
+  const calculationUnit = normalizeExamUnitForCalculation(input.creatinineCard.unit);
+  if (!calculationUnit) {
+    return {
+      ...baseCard,
+      note: "TFGe indisponível: unidade da creatinina não suportada para cálculo."
+    };
+  }
+
+  const creatinineMgDl =
+    calculationUnit === "umol/l" ? creatinineValue / 88.4 : creatinineValue;
+  const estimatedGfr = calculateEstimatedGfr(
+    creatinineMgDl,
+    input.patientAgeYears,
+    input.patientSex
+  );
+
+  if (!Number.isFinite(estimatedGfr)) {
+    return {
+      ...baseCard,
+      note: "TFGe indisponível: não foi possível calcular com os dados atuais."
+    };
+  }
+
+  const result = formatCalculatedResult(estimatedGfr);
+  return {
+    ...baseCard,
+    result,
+    status: getResultStatus(result, 90, null),
+    note: "Calculado pela CKD-EPI 2021 usando a creatinina mais recente."
+  };
+}
+
 export function mergeImportantExamRecords(
   records: PatientExamResultRecord[],
   rawText: string
@@ -899,11 +1019,12 @@ export function mergeImportantExamRecords(
 export function buildImportantExamCards(input: {
   records: PatientExamResultRecord[];
   rawText?: string;
+  patientAgeYears?: number | null;
+  patientSex?: PatientSex | null;
 }): ImportantExamCard[] {
   const recordMatches = buildRecordMatchMap(input.records);
   const sections = input.rawText?.trim() ? buildExamSections(input.rawText) : [];
-
-  return IMPORTANT_EXAM_DEFINITIONS.map((definition) => {
+  const examCards = IMPORTANT_EXAM_DEFINITIONS.map((definition) => {
     const record = recordMatches.get(definition.id)?.record ?? null;
     const rawReference =
       record && sections.length > 0 ? findBestRawResultMatch(definition, sections)?.reference ?? null : null;
@@ -921,9 +1042,28 @@ export function buildImportantExamCards(input: {
       pageNumber: record?.pageNumber ?? null,
       examDate: record?.examDate ?? null,
       status: getResultStatus(result, reference.low, reference.high),
-      resultRecordKey: record?.key ?? null
+      resultRecordKey: record?.key ?? null,
+      note: null
     };
   });
+
+  const creatinineCard = examCards.find((card) => card.id === "creatinina");
+  if (!creatinineCard) {
+    return examCards;
+  }
+
+  const estimatedGfrCard = buildEstimatedGfrCard({
+    creatinineCard,
+    patientAgeYears: input.patientAgeYears,
+    patientSex: input.patientSex
+  });
+  const creatinineIndex = examCards.findIndex((card) => card.id === "creatinina");
+
+  return [
+    ...examCards.slice(0, creatinineIndex + 1),
+    estimatedGfrCard,
+    ...examCards.slice(creatinineIndex + 1)
+  ];
 }
 
 export function findImportantExamCardByRecord(

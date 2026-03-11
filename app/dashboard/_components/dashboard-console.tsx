@@ -14,6 +14,7 @@ import {
   INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS,
   COUNCIL_OPTIONS,
   MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS,
+  PATIENT_SEX_OPTIONS,
   PROFESSION_OPTIONS,
   type BmiFormulaId,
   type BsaFormulaId,
@@ -33,6 +34,7 @@ import {
   type PatientExamResultRecord,
   type PatientAllergyRecord,
   type PatientRecord,
+  type PatientSex,
   type PriorMedicationRecord,
   type ProfessionalRecord,
   type ProfessionOption,
@@ -88,6 +90,18 @@ const DASHBOARD_NAV_GROUPS = [
   { label: "Paciente", items: [{ id: "patient", label: "Cadastrar pacientes" }] },
   { label: "Medicamentos", items: [{ id: "medication", label: "Cadastrar medicamentos" }] }
 ] as const;
+
+function formatPatientSexLabel(sex: PatientSex | null | undefined): string {
+  if (sex === "female") {
+    return "Feminino";
+  }
+
+  if (sex === "male") {
+    return "Masculino";
+  }
+
+  return "Não informado";
+}
 
 const INPATIENT_SIDEBAR_ITEMS = [
   { id: "all", label: "Todos" },
@@ -1864,12 +1878,16 @@ function ExamResultsPanel({
 function ImportantExamCardsPanel({
   records,
   rawText,
+  patientAgeYears,
+  patientSex,
   emptyMessage,
   onRemoveRecord,
   removingRecordKey
 }: {
   records: PatientExamResultRecord[];
   rawText?: string;
+  patientAgeYears?: number | null;
+  patientSex?: PatientSex | null;
   emptyMessage: string;
   onRemoveRecord?: (record: PatientExamResultRecord) => void;
   removingRecordKey?: string | null;
@@ -1878,14 +1896,14 @@ function ImportantExamCardsPanel({
     return <p className="dashboard-muted">{emptyMessage}</p>;
   }
 
-  const cards = buildImportantExamCards({ records, rawText });
+  const cards = buildImportantExamCards({ records, rawText, patientAgeYears, patientSex });
   const identifiedCount = cards.filter((card) => card.result.trim().length > 0).length;
   const recordByKey = new Map(records.map((record) => [record.key, record]));
 
   return (
     <div className="dashboard-important-exams">
       <p className="dashboard-muted">
-        {`${identifiedCount} de ${cards.length} exames principais preenchidos automaticamente a partir do PDF.`}
+        {`${identifiedCount} de ${cards.length} cards laboratoriais preenchidos automaticamente ou calculados a partir do PDF.`}
       </p>
 
       <div className="dashboard-important-exam-grid">
@@ -1898,7 +1916,9 @@ function ImportantExamCardsPanel({
                 ? "Abaixo da referência"
                 : card.status === "normal"
                   ? "Dentro da referência"
-                  : "Não identificado";
+                  : card.note
+                    ? "Aguardando dados clínicos"
+                    : "Não identificado";
           const meta = [
             card.examDate ? formatExamDateLabel(card.examDate) : "",
             card.pageNumber ? `Pág. ${card.pageNumber}` : ""
@@ -1914,20 +1934,26 @@ function ImportantExamCardsPanel({
             >
               <div className="dashboard-important-exam-card-header">
                 <h4>{card.label}</h4>
-                {indicator ? (
-                  <span className="dashboard-important-exam-indicator" aria-hidden="true">
-                    {indicator}
-                  </span>
-                ) : null}
+                {card.id === "tfge" ? <span className="dashboard-important-exam-badge">Calculado</span> : null}
               </div>
 
               <strong className="dashboard-important-exam-value">
-                {card.result.trim()
-                  ? [card.result, card.unit].filter((item) => item.length > 0).join(" ")
-                  : "Não identificado"}
+                {card.result.trim() ? (
+                  <>
+                    {[card.result, card.unit].filter((item) => item.length > 0).join(" ")}
+                    {indicator ? (
+                      <span className="dashboard-important-exam-value-indicator" aria-hidden="true">
+                        {indicator}
+                      </span>
+                    ) : null}
+                  </>
+                ) : (
+                  "Não identificado"
+                )}
               </strong>
 
               <p className="dashboard-important-exam-reference">{`VR: ${card.referenceText}`}</p>
+              {card.note ? <p className="dashboard-important-exam-note">{card.note}</p> : null}
               <span className="dashboard-important-exam-status">{statusLabel}</span>
               {onRemoveRecord && matchingRecord ? (
                 <button
@@ -2710,6 +2736,7 @@ export default function DashboardConsole({
     fullName: "",
     chartNumber: "",
     birthDate: "",
+    sex: "" as PatientSex | "",
     allergies: [] as string[]
   });
   const [patientFeedback, setPatientFeedback] = useState<FeedbackState>(null);
@@ -2768,7 +2795,8 @@ export default function DashboardConsole({
   );
   const effectivePatientPageMode = patientPageOverride ?? patientPageMode;
   const [selectedPatientProfileForm, setSelectedPatientProfileForm] = useState({
-    birthDate: ""
+    birthDate: "",
+    sex: "" as PatientSex | ""
   });
   const [showAllergyComposer, setShowAllergyComposer] = useState(false);
   const [showAdmissionSummaryComposer, setShowAdmissionSummaryComposer] = useState(false);
@@ -3422,7 +3450,8 @@ export default function DashboardConsole({
 
   useEffect(() => {
     setSelectedPatientProfileForm({
-      birthDate: formatAdmissionDateValue(selectedPatient?.birthDate ?? "")
+      birthDate: formatAdmissionDateValue(selectedPatient?.birthDate ?? ""),
+      sex: selectedPatient?.sex ?? ""
     });
     setShowAllergyComposer(false);
     setShowAdmissionSummaryComposer(false);
@@ -3437,7 +3466,7 @@ export default function DashboardConsole({
     if (examPdfInputRef.current) {
       examPdfInputRef.current.value = "";
     }
-  }, [selectedPatient?.birthDate, selectedPatient?.id]);
+  }, [selectedPatient?.birthDate, selectedPatient?.id, selectedPatient?.sex]);
 
   useEffect(() => {
     if (!selectedPatient) {
@@ -5652,6 +5681,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         fullName: "",
         chartNumber: "",
         birthDate: "",
+        sex: "",
         allergies: []
       });
       setPatientInitialAllergyForm({
@@ -5708,6 +5738,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     const normalizedBirthDate = selectedPatientProfileForm.birthDate.trim()
       ? normalizeAdmissionDateValue(selectedPatientProfileForm.birthDate)
       : null;
+    const normalizedPatientSex = PATIENT_SEX_OPTIONS.includes(selectedPatientProfileForm.sex as PatientSex)
+      ? (selectedPatientProfileForm.sex as PatientSex)
+      : null;
     if (selectedPatientProfileForm.birthDate.trim() && !normalizedBirthDate) {
       setAdmissionFeedback({
         type: "error",
@@ -5719,7 +5752,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setAdmissionLoading(true);
 
     try {
-      if (normalizedBirthDate && normalizedBirthDate !== selectedPatient.birthDate) {
+      const shouldUpdatePatientProfile =
+        (normalizedBirthDate !== null && normalizedBirthDate !== selectedPatient.birthDate) ||
+        normalizedPatientSex !== selectedPatient.sex;
+
+      if (shouldUpdatePatientProfile) {
         const patientResponse = await fetch("/api/patients", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -5727,6 +5764,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             fullName: selectedPatient.fullName,
             chartNumber: selectedPatient.chartNumber,
             birthDate: normalizedBirthDate,
+            sex: normalizedPatientSex,
             allergies: []
           })
         });
@@ -7632,6 +7670,34 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                       <input value={agePreview === null ? "Idade" : `${agePreview} anos`} disabled />
                     </div>
 
+                    <div className="dashboard-two-columns">
+                      <select
+                        value={patientForm.sex}
+                        onChange={(event) =>
+                          setPatientForm((current) => ({
+                            ...current,
+                            sex: event.target.value as PatientSex | ""
+                          }))
+                        }
+                      >
+                        <option value="">Sexo biológico</option>
+                        {PATIENT_SEX_OPTIONS.map((sex) => (
+                          <option key={sex} value={sex}>
+                            {formatPatientSexLabel(sex)}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        value={
+                          patientForm.sex
+                            ? `Sexo: ${formatPatientSexLabel(patientForm.sex as PatientSex)}`
+                            : "Sexo não informado"
+                        }
+                        disabled
+                        aria-label="Sexo biológico selecionado"
+                      />
+                    </div>
+
                     <p className="dashboard-muted">
                       Se o prontuário já existir, este cadastro complementa o paciente já importado.
                     </p>
@@ -7723,6 +7789,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 <th>Nome</th>
                                 <th>Prontuário</th>
                                 <th>Idade</th>
+                                <th>Sexo</th>
                                 <th>Profissional</th>
                                 <th>Última internação</th>
                                 <th>Último leito</th>
@@ -7734,6 +7801,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   <td>{patient.fullName}</td>
                                   <td>{patient.chartNumber}</td>
                                   <td>{patient.ageYears !== null ? `${patient.ageYears} anos` : "-"}</td>
+                                  <td>{formatPatientSexLabel(patient.sex)}</td>
                                   <td>{patient.responsibleProfessionalName}</td>
                                   <td>{formatAdmissionDate(patient.latestAdmission?.admissionDate)}</td>
                                   <td>{patient.latestAdmission?.bed ?? "-"}</td>
@@ -8358,6 +8426,36 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 />
                               </div>
 
+                              <div className="dashboard-two-columns">
+                                <select
+                                  value={selectedPatientProfileForm.sex}
+                                  onChange={(event) =>
+                                    setSelectedPatientProfileForm((current) => ({
+                                      ...current,
+                                      sex: event.target.value as PatientSex | ""
+                                    }))
+                                  }
+                                >
+                                  <option value="">Sexo biológico</option>
+                                  {PATIENT_SEX_OPTIONS.map((sex) => (
+                                    <option key={sex} value={sex}>
+                                      {formatPatientSexLabel(sex)}
+                                    </option>
+                                  ))}
+                                </select>
+                                <input
+                                  value={
+                                    selectedPatientProfileForm.sex
+                                      ? `Sexo: ${formatPatientSexLabel(
+                                          selectedPatientProfileForm.sex as PatientSex
+                                        )}`
+                                      : "Sexo não informado"
+                                  }
+                                  disabled
+                                  aria-label="Sexo biológico do paciente"
+                                />
+                              </div>
+
                               <div className="dashboard-calculation-box">
                                 <h3>Alergias replicadas do cadastro do paciente</h3>
                                 {selectedPatientAllergies.length === 0 ? (
@@ -8876,25 +8974,30 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   <ImportantExamCardsPanel
                                     records={examImportResult.records}
                                     rawText={examImportResult.rawText}
+                                    patientAgeYears={selectedPatient?.ageYears}
+                                    patientSex={selectedPatient?.sex}
                                     emptyMessage="Nenhum exame principal foi identificado nesta importação."
                                   />
                                 </div>
 
-                                <div className="dashboard-calculation-box">
-                                  <h3>Outros resultados extraídos</h3>
-                                  <ExamResultsPanel
-                                    records={examImportResult.records.filter(
-                                      (record) => !isImportantExamRecord(record.examName)
-                                    )}
-                                    rawText={examImportResult.rawText}
-                                    emptyMessage="Nenhum resultado adicional foi identificado nesta importação."
-                                  />
-                                </div>
+                                <details className="dashboard-collapsible-panel">
+                                  <summary>Ver outros resultados e texto extraído</summary>
+                                  <div className="dashboard-calculation-box">
+                                    <h3>Outros resultados extraídos</h3>
+                                    <ExamResultsPanel
+                                      records={examImportResult.records.filter(
+                                        (record) => !isImportantExamRecord(record.examName)
+                                      )}
+                                      rawText={examImportResult.rawText}
+                                      emptyMessage="Nenhum resultado adicional foi identificado nesta importação."
+                                    />
+                                  </div>
 
-                                <div className="dashboard-calculation-box">
-                                  <h3>Texto extraído</h3>
-                                  <textarea value={examImportResult.rawText} readOnly rows={18} />
-                                </div>
+                                  <div className="dashboard-calculation-box">
+                                    <h3>Texto extraído</h3>
+                                    <textarea value={examImportResult.rawText} readOnly rows={18} />
+                                  </div>
+                                </details>
                               </>
                             ) : null}
 
@@ -8977,6 +9080,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         <ImportantExamCardsPanel
                                           records={selectedSavedExamImportDetails.records}
                                           rawText={selectedSavedExamImportDetails.rawText}
+                                          patientAgeYears={selectedPatient?.ageYears}
+                                          patientSex={selectedPatient?.sex}
                                           emptyMessage="Essa importação não gerou exames principais estruturados."
                                           onRemoveRecord={(record) =>
                                             void handleRemoveExamRecord(
@@ -8988,39 +9093,42 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         />
                                       </div>
 
-                                      <div className="dashboard-calculation-box">
-                                        <h3>Outros resultados salvos</h3>
-                                        <p className="dashboard-muted">
-                                          Você pode remover resultados individualmente sem excluir a importação inteira.
-                                        </p>
-                                        <ExamResultsPanel
-                                          records={selectedSavedExamImportDetails.records.filter(
-                                            (record) => !isImportantExamRecord(record.examName)
-                                          )}
-                                          rawText={selectedSavedExamImportDetails.rawText}
-                                          emptyMessage="Essa importação não gerou outros resultados estruturados, mas o texto foi salvo."
-                                          onRemoveRecord={(record) =>
-                                            void handleRemoveExamRecord(
-                                              selectedSavedExamImportDetails,
-                                              record
-                                            )
-                                          }
-                                          removingRecordKey={examRecordRemovingKey}
-                                        />
-                                      </div>
+                                      <details className="dashboard-collapsible-panel">
+                                        <summary>Ver outros resultados e texto extraído</summary>
+                                        <div className="dashboard-calculation-box">
+                                          <h3>Outros resultados salvos</h3>
+                                          <p className="dashboard-muted">
+                                            Você pode remover resultados individualmente sem excluir a importação inteira.
+                                          </p>
+                                          <ExamResultsPanel
+                                            records={selectedSavedExamImportDetails.records.filter(
+                                              (record) => !isImportantExamRecord(record.examName)
+                                            )}
+                                            rawText={selectedSavedExamImportDetails.rawText}
+                                            emptyMessage="Essa importação não gerou outros resultados estruturados, mas o texto foi salvo."
+                                            onRemoveRecord={(record) =>
+                                              void handleRemoveExamRecord(
+                                                selectedSavedExamImportDetails,
+                                                record
+                                              )
+                                            }
+                                            removingRecordKey={examRecordRemovingKey}
+                                          />
+                                        </div>
 
-                                      <div className="dashboard-calculation-box">
-                                        <h3>Texto extraído</h3>
-                                        <textarea
-                                          value={
-                                            selectedExamImportDetailsLoading
-                                              ? "Carregando texto extraído..."
-                                              : selectedSavedExamImportDetails.rawText
-                                          }
-                                          readOnly
-                                          rows={18}
-                                        />
-                                      </div>
+                                        <div className="dashboard-calculation-box">
+                                          <h3>Texto extraído</h3>
+                                          <textarea
+                                            value={
+                                              selectedExamImportDetailsLoading
+                                                ? "Carregando texto extraído..."
+                                                : selectedSavedExamImportDetails.rawText
+                                            }
+                                            readOnly
+                                            rows={18}
+                                          />
+                                        </div>
+                                      </details>
                                     </>
                                   ) : null}
                                 </>

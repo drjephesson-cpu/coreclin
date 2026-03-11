@@ -6,6 +6,7 @@ import {
   COUNCIL_OPTIONS,
   INTERVIEW_INFORMATION_QUALITY_OPTIONS,
   INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS,
+  PATIENT_SEX_OPTIONS,
   PROFESSION_OPTIONS,
   type AdmissionRecord,
   type BmiFormulaId,
@@ -25,6 +26,7 @@ import {
   type MeasurementHistoryRecord,
   type PatientRecord,
   type PatientAllergyRecord,
+  type PatientSex,
   type PriorMedicationRecord,
   type ProfessionOption,
   type ProfessionalRecord,
@@ -49,6 +51,7 @@ export type CreatePatientInput = {
   fullName: string;
   chartNumber: string;
   birthDate?: string | null;
+  sex?: PatientSex | null;
   responsibleLogin: string;
   allergies: string[];
 };
@@ -254,6 +257,15 @@ function parseJsonValue<T>(value: unknown, fallback: T): T {
   }
 
   return fallback;
+}
+
+function normalizePatientSex(value: unknown): PatientSex | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return PATIENT_SEX_OPTIONS.includes(normalized as PatientSex) ? (normalized as PatientSex) : null;
 }
 
 function normalizeMedicationCatalogName(name: string): string {
@@ -623,6 +635,7 @@ function mapPatient(row: DbRow): PatientRecord {
     chartNumber: String(row.chart_number ?? ""),
     birthDate: row.birth_date === null ? null : String(row.birth_date),
     ageYears: row.age_years === null ? null : toNumber(row.age_years),
+    sex: normalizePatientSex(row.sex),
     responsibleProfessionalId: toNumber(row.responsible_professional_id),
     responsibleProfessionalName: String(row.responsible_professional_name ?? ""),
     responsibleProfessionalLogin: String(row.responsible_professional_login ?? ""),
@@ -849,6 +862,7 @@ async function setupDatabase(): Promise<void> {
       chart_number TEXT NOT NULL UNIQUE,
       responsible_professional_id INTEGER NOT NULL REFERENCES professionals(id),
       birth_date DATE,
+      sex TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -988,6 +1002,9 @@ async function setupDatabase(): Promise<void> {
   await pool.query(`
     ALTER TABLE patients
     ALTER COLUMN birth_date DROP NOT NULL;
+
+    ALTER TABLE patients
+    ADD COLUMN IF NOT EXISTS sex TEXT;
 
     ALTER TABLE patient_measurements
     ADD COLUMN IF NOT EXISTS admission_id INTEGER REFERENCES admissions(id) ON DELETE SET NULL;
@@ -1729,6 +1746,7 @@ export async function createPatient(input: CreatePatientInput): Promise<PatientR
     await client.query("BEGIN");
     const responsibleProfessionalId = await findProfessionalIdByLogin(client, input.responsibleLogin);
     const normalizedBirthDate = input.birthDate?.trim() ? input.birthDate.trim() : null;
+    const normalizedSex = normalizePatientSex(input.sex);
 
     const inserted = await client.query(
       `
@@ -1736,17 +1754,25 @@ export async function createPatient(input: CreatePatientInput): Promise<PatientR
           full_name,
           chart_number,
           responsible_professional_id,
-          birth_date
+          birth_date,
+          sex
         )
-        VALUES ($1, $2, $3, $4)
+        VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (chart_number) DO UPDATE
         SET
           full_name = EXCLUDED.full_name,
           responsible_professional_id = EXCLUDED.responsible_professional_id,
-          birth_date = COALESCE(EXCLUDED.birth_date, patients.birth_date)
+          birth_date = COALESCE(EXCLUDED.birth_date, patients.birth_date),
+          sex = COALESCE(EXCLUDED.sex, patients.sex)
         RETURNING id
       `,
-      [input.fullName.trim(), input.chartNumber.trim(), responsibleProfessionalId, normalizedBirthDate]
+      [
+        input.fullName.trim(),
+        input.chartNumber.trim(),
+        responsibleProfessionalId,
+        normalizedBirthDate,
+        normalizedSex
+      ]
     );
 
     const patientId = toNumber((inserted.rows[0] as DbRow).id);
@@ -2941,6 +2967,7 @@ export async function listPatients(
       p.full_name,
       p.chart_number,
       p.birth_date::text AS birth_date,
+      p.sex,
       CASE
         WHEN p.birth_date IS NULL THEN NULL
         ELSE DATE_PART('year', AGE(CURRENT_DATE, p.birth_date))::int
