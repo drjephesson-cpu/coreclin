@@ -2918,6 +2918,18 @@ export default function DashboardConsole({
     );
   }, [inpatients, inpatientSearch]);
 
+  const activeInpatientByPatientId = useMemo(() => {
+    const lookup = new Map<number, InpatientEntry>();
+
+    for (const entry of inpatients) {
+      if (entry.patientId !== null && !lookup.has(entry.patientId)) {
+        lookup.set(entry.patientId, entry);
+      }
+    }
+
+    return lookup;
+  }, [inpatients]);
+
   useEffect(() => {
     const hasServerSnapshot =
       Object.keys(persistedInpatientWorkflowPayload.workflowByKey).length > 0 ||
@@ -3239,10 +3251,25 @@ export default function DashboardConsole({
   const mandatoryOverviewRows = useMemo(
     () => {
       const trackedKeys = new Set(trackedInpatientEntries.map((entry) => entry.key));
+      const explicitMandatoryWorkflowKeys = new Set(
+        Object.entries(workflowByInpatientKey)
+          .filter(([, workflow]) => workflow.mandatory)
+          .map(([entryKey]) => entryKey)
+      );
 
       return inpatientEntriesWithWorkflow
-        .filter(({ entry }) => trackedKeys.has(entry.key))
-        .filter(({ workflow }) => workflow.mandatory)
+        .filter(({ entry, workflow }) => {
+          if (!workflow.mandatory) {
+            return false;
+          }
+
+          return (
+            trackedKeys.has(entry.key) ||
+            explicitMandatoryWorkflowKeys.has(entry.key) ||
+            workflow.assignedTeamId !== null ||
+            entry.teamId !== null
+          );
+        })
         .sort((first, second) => {
           const firstPriority = first.workflow.firstVisitCompletedAt ? 1 : 0;
           const secondPriority = second.workflow.firstVisitCompletedAt ? 1 : 0;
@@ -7090,6 +7117,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
         const entryKey = `patient-${patientRecord.id}`;
         const admissionKey = `${patientRecord.id}:${admissionDate}:${normalizeSearchValue(bed)}`;
+        const matchedActiveInpatient = activeInpatientByPatientId.get(patientRecord.id) ?? null;
+        const matchedTeamId = matchedActiveInpatient?.teamId ?? null;
+        const matchedTeamName = matchedActiveInpatient?.teamName ?? null;
 
         if (!knownAdmissionKeys.has(admissionKey)) {
           const admissionResponse = await fetch("/api/admissions", {
@@ -7131,12 +7161,12 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           reportedAgeYears: patientRecord.ageYears,
           admissionDate,
           bed,
-          teamName: null,
-          teamId: null,
+          teamName: matchedTeamName,
+          teamId: matchedTeamId,
           source: "active",
           createdAt: new Date().toISOString()
         });
-        entriesToPending.set(entryKey, null);
+        entriesToPending.set(entryKey, matchedTeamId);
       }
 
       if (
@@ -7945,9 +7975,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               `Leito | Nome | Idade | Prontuário | Admissão`.
                             </p>
                             <p className="dashboard-muted">
-                              Aqui aparecem apenas os pacientes adicionados por você. O paciente só sai desta
-                              lista quando você marcar `Concluído`; depois disso, ele permanece em `Por equipe`
-                              e `Todos`.
+                              Aqui aparecem os pacientes adicionados por você e também os internados que já
+                              estão vinculados a uma equipe. Eles só saem desta lista quando você marcar
+                              `Concluído`; depois disso, permanecem em `Por equipe` e `Todos`.
                             </p>
 
                             <div className="dashboard-form">
