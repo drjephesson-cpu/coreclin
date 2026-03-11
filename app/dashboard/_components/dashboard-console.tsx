@@ -3085,6 +3085,9 @@ export default function DashboardConsole({
   });
   const [allergyFeedback, setAllergyFeedback] = useState<FeedbackState>(null);
   const [allergyLoading, setAllergyLoading] = useState(false);
+  const [allergyEditingId, setAllergyEditingId] = useState<number | null>(null);
+  const [allergyEditReactionDescription, setAllergyEditReactionDescription] = useState("");
+  const [allergyUpdatingId, setAllergyUpdatingId] = useState<number | null>(null);
   const [allergyRemovingId, setAllergyRemovingId] = useState<number | null>(null);
 
   const [priorMedicationForm, setPriorMedicationForm] = useState({
@@ -3830,6 +3833,9 @@ export default function DashboardConsole({
     setShowAdmissionSummaryPreview(false);
     setAdmissionSummarySelection("");
     setAllergyForm({ query: "", selectedValue: "", reactionDescription: "" });
+    setAllergyEditingId(null);
+    setAllergyEditReactionDescription("");
+    setAllergyUpdatingId(null);
     setAllergyFeedback(null);
     setEvolutionFeedback(null);
     setExamImportFeedback(null);
@@ -5437,6 +5443,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }));
   }
 
+  function updatePatientAllergyLocally(nextAllergy: PatientAllergyRecord): void {
+    setPatientAllergies((current) => upsertRecordById(current, nextAllergy));
+    mutateCachedPatientDetails(nextAllergy.patientId, (details) => ({
+      ...details,
+      allergies: upsertRecordById(details.allergies, nextAllergy)
+    }));
+  }
+
   function removePatientAllergyLocally(patientId: number, allergyId: number): void {
     setPatientAllergies((current) => removeRecordById(current, allergyId));
     mutateCachedPatientDetails(patientId, (details) => ({
@@ -6555,6 +6569,55 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       setAllergyFeedback({ type: "error", message: "Erro de conexão ao remover alergia." });
     } finally {
       setAllergyRemovingId(null);
+    }
+  }
+
+  function startAllergyEdit(allergy: PatientAllergyRecord): void {
+    setAllergyFeedback(null);
+    setAllergyEditingId(allergy.id);
+    setAllergyEditReactionDescription(allergy.reactionDescription ?? "");
+  }
+
+  function cancelAllergyEdit(): void {
+    setAllergyEditingId(null);
+    setAllergyEditReactionDescription("");
+    setAllergyUpdatingId(null);
+  }
+
+  async function handleUpdateAllergy(allergy: PatientAllergyRecord): Promise<void> {
+    if (!selectedPatient) {
+      setAllergyFeedback({ type: "error", message: "Selecione um paciente para editar a alergia." });
+      return;
+    }
+
+    setAllergyFeedback(null);
+    setAllergyUpdatingId(allergy.id);
+
+    try {
+      const response = await fetch(`/api/patients/${selectedPatient.id}/allergies`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          allergyId: allergy.id,
+          reactionDescription: allergyEditReactionDescription
+        })
+      });
+
+      const result = (await response.json()) as {
+        message?: string;
+        allergy?: PatientAllergyRecord;
+      };
+      if (!response.ok || !result.allergy) {
+        setAllergyFeedback({ type: "error", message: result.message ?? "Falha ao atualizar alergia." });
+        return;
+      }
+
+      setAllergyFeedback({ type: "success", message: "Reação da alergia atualizada com sucesso." });
+      updatePatientAllergyLocally(result.allergy);
+      cancelAllergyEdit();
+    } catch {
+      setAllergyFeedback({ type: "error", message: "Erro de conexão ao atualizar alergia." });
+      setAllergyUpdatingId(null);
     }
   }
 
@@ -8761,19 +8824,69 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                       selectedPatientAllergies.map((allergy) => (
                                         <tr key={allergy.id}>
                                           <td>{allergy.allergyName}</td>
-                                          <td>{allergy.reactionDescription?.trim() || "-"}</td>
+                                          <td>
+                                            {allergyEditingId === allergy.id ? (
+                                              <textarea
+                                                value={allergyEditReactionDescription}
+                                                onChange={(event) =>
+                                                  setAllergyEditReactionDescription(event.target.value)
+                                                }
+                                                rows={3}
+                                                placeholder="Tipo de reação / o que aconteceu"
+                                              />
+                                            ) : (
+                                              allergy.reactionDescription?.trim() || "-"
+                                            )}
+                                          </td>
                                           <td>{formatTimestamp(allergy.createdAt)}</td>
                                           <td>
-                                            <button
-                                              type="button"
-                                              className="dashboard-chip-remove"
-                                              onClick={() =>
-                                                handleRemoveAllergy(allergy.id, allergy.allergyName)
-                                              }
-                                              disabled={allergyRemovingId === allergy.id}
-                                            >
-                                              {allergyRemovingId === allergy.id ? "Removendo..." : "Remover"}
-                                            </button>
+                                            <div className="dashboard-inline-actions">
+                                              {allergyEditingId === allergy.id ? (
+                                                <>
+                                                  <button
+                                                    type="button"
+                                                    className="dashboard-mini-button"
+                                                    onClick={() => void handleUpdateAllergy(allergy)}
+                                                    disabled={allergyUpdatingId === allergy.id}
+                                                  >
+                                                    {allergyUpdatingId === allergy.id
+                                                      ? "Salvando..."
+                                                      : "Salvar"}
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    className="dashboard-chip-remove"
+                                                    onClick={cancelAllergyEdit}
+                                                    disabled={allergyUpdatingId === allergy.id}
+                                                  >
+                                                    Cancelar
+                                                  </button>
+                                                </>
+                                              ) : (
+                                                <>
+                                                  <button
+                                                    type="button"
+                                                    className="dashboard-mini-button"
+                                                    onClick={() => startAllergyEdit(allergy)}
+                                                    disabled={allergyRemovingId === allergy.id}
+                                                  >
+                                                    Editar
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    className="dashboard-chip-remove"
+                                                    onClick={() =>
+                                                      handleRemoveAllergy(allergy.id, allergy.allergyName)
+                                                    }
+                                                    disabled={allergyRemovingId === allergy.id}
+                                                  >
+                                                    {allergyRemovingId === allergy.id
+                                                      ? "Removendo..."
+                                                      : "Remover"}
+                                                  </button>
+                                                </>
+                                              )}
+                                            </div>
                                           </td>
                                         </tr>
                                       ))

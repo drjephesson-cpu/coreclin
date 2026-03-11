@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
-import { addPatientAllergy, removePatientAllergy } from "@/lib/db";
+import { addPatientAllergy, removePatientAllergy, updatePatientAllergy } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -83,6 +83,50 @@ export async function DELETE(
     return NextResponse.json({ ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao remover alergia.";
+    return NextResponse.json({ message }, { status: 400 });
+  }
+}
+
+export async function PUT(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+): Promise<NextResponse> {
+  const session = await getCurrentSession();
+  if (!session) {
+    return NextResponse.json({ message: "Sessão inválida." }, { status: 401 });
+  }
+
+  const routeParams = await params;
+  const patientId = Number(routeParams.id);
+  if (!Number.isInteger(patientId) || patientId <= 0) {
+    return NextResponse.json({ message: "Paciente inválido." }, { status: 400 });
+  }
+
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return NextResponse.json({ message: "Corpo inválido." }, { status: 400 });
+  }
+
+  const body = payload as Record<string, unknown>;
+  const allergyId = Number(body.allergyId);
+  const reactionDescription =
+    typeof body.reactionDescription === "string" ? body.reactionDescription.trim() : "";
+
+  if (!Number.isInteger(allergyId) || allergyId <= 0) {
+    return NextResponse.json({ message: "Alergia inválida." }, { status: 400 });
+  }
+
+  try {
+    const allergy = await updatePatientAllergy({
+      patientId,
+      allergyId,
+      reactionDescription: reactionDescription || null
+    });
+    return NextResponse.json({ ok: true, allergy });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Falha ao atualizar alergia.";
     return NextResponse.json({ message }, { status: 400 });
   }
 }

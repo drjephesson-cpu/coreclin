@@ -118,6 +118,12 @@ export type AddPatientAllergyInput = {
   reactionDescription?: string | null;
 };
 
+export type UpdatePatientAllergyInput = {
+  patientId: number;
+  allergyId: number;
+  reactionDescription?: string | null;
+};
+
 export type RemovePatientAllergyInput = {
   patientId: number;
   allergyId: number;
@@ -2137,6 +2143,62 @@ export async function removePatientAllergy(input: RemovePatientAllergyInput): Pr
     }
 
     await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function updatePatientAllergy(
+  input: UpdatePatientAllergyInput
+): Promise<PatientAllergyRecord> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await ensurePatientExists(client, input.patientId);
+
+    const updated = await client.query(
+      `
+        UPDATE patient_allergies
+        SET reaction_description = $3
+        WHERE id = $1 AND patient_id = $2
+        RETURNING id
+      `,
+      [
+        input.allergyId,
+        input.patientId,
+        input.reactionDescription?.trim() ? input.reactionDescription.trim() : null
+      ]
+    );
+
+    if (updated.rowCount === 0) {
+      throw new Error("Alergia não encontrada para este paciente.");
+    }
+
+    const result = await client.query(
+      `
+        SELECT
+          pa.id,
+          pa.patient_id,
+          p.full_name AS patient_name,
+          pa.allergy_name,
+          pa.reaction_description,
+          pa.created_at
+        FROM patient_allergies pa
+        INNER JOIN patients p ON p.id = pa.patient_id
+        WHERE pa.id = $1
+        LIMIT 1
+      `,
+      [input.allergyId]
+    );
+
+    await client.query("COMMIT");
+    return mapPatientAllergy(result.rows[0] as DbRow);
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
