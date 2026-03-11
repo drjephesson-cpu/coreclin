@@ -1,4 +1,5 @@
 import { type PatientExamResultRecord } from "./coreclin-types";
+import { mergeImportantExamRecords } from "./exam-highlights";
 
 export type ExtractedExamImportPayload = {
   fileName: string;
@@ -769,11 +770,13 @@ export async function extractExamImportFromPdf(
   }
 
   const pageDates = inferExamDatesByPage(pageLines);
+  const rawText = pageLines.map((item) => `[Pág. ${item.pageNumber}] ${item.line}`).join("\n");
+  const records = mergeImportantExamRecords(parseExtractedExamRecords(pageLines, pageDates), rawText);
 
   return {
     fileName,
     pageCount: pdfDocument.numPages,
-    records: parseExtractedExamRecords(pageLines, pageDates),
-    rawText: pageLines.map((item) => `[Pág. ${item.pageNumber}] ${item.line}`).join("\n")
+    records,
+    rawText
   };
 }

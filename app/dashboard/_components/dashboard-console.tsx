@@ -42,6 +42,7 @@ import {
   HEPATOTOXIC_MEDICATIONS,
   RENAL_ADJUSTMENT_MEDICATIONS
 } from "@/lib/medication-safety-flags";
+import { buildImportantExamCards, isImportantExamRecord } from "@/lib/exam-highlights";
 
 const UF_OPTIONS = [
   "AC",
@@ -199,7 +200,7 @@ const MEDICATION_VARIANT_STOPWORDS = new Set([
 ]);
 type DashboardSectionId = (typeof DASHBOARD_NAV_ITEMS)[number]["id"];
 type PatientViewId = (typeof PATIENT_VIEW_ITEMS)[number]["id"];
-type PrescriptionMode = "view" | "create" | "raw";
+type PrescriptionMode = "view" | "raw";
 type InpatientOverviewMode = (typeof INPATIENT_SIDEBAR_ITEMS)[number]["id"];
 type FeedbackType = "success" | "error";
 
@@ -1117,15 +1118,65 @@ function extractDoseFromText(input: string): { dose: number | null; doseUnit: st
   return parseDosePart(`${match[1]} ${match[2]}`);
 }
 
+function extractShiftPatternFromText(input: string): string {
+  const match = input.match(/\b(\d+(?:[.,]\d+)?(?:\s*-\s*\d+(?:[.,]\d+)?){2,5})\b/i);
+  if (!match) {
+    return "";
+  }
+
+  return match[1]?.replace(/\s+/g, "") ?? "";
+}
+
+function buildDailyFrequencyLabel(administrationsPerDay: number): string {
+  if (!Number.isFinite(administrationsPerDay) || administrationsPerDay <= 0) {
+    return "";
+  }
+
+  return `${Math.round(administrationsPerDay)}x ao dia`;
+}
+
+function countScheduledAdministrations(shifts: string): number | null {
+  const normalizedShifts = shifts.trim();
+  if (!normalizedShifts) {
+    return null;
+  }
+
+  const administrations = normalizedShifts
+    .split("-")
+    .map((part) => Number(part.replace(",", ".")))
+    .filter((value) => Number.isFinite(value) && value > 0).length;
+
+  return administrations > 0 ? administrations : null;
+}
+
 function extractFrequencyFromText(input: string): string {
   const normalizedInput = input.trim();
   if (!normalizedInput) {
     return "";
   }
 
+  const shiftsPattern = extractShiftPatternFromText(normalizedInput);
+  const administrationsFromShifts = countScheduledAdministrations(shiftsPattern);
+  if (administrationsFromShifts !== null) {
+    return buildDailyFrequencyLabel(administrationsFromShifts);
+  }
+
+  if (/\b(?:s\/?\s*n|sn|sos|se\s+necess[aá]rio)\b/i.test(normalizedInput)) {
+    return "Se necessário";
+  }
+
+  const hourlyMatch = normalizedInput.match(/(?:de\s+)?(\d+)\s*\/\s*(\d+)\s*(?:h|horas?)/i);
+  if (hourlyMatch) {
+    const hours = Number(hourlyMatch[2] ?? hourlyMatch[1]);
+    if (Number.isFinite(hours) && hours > 0 && 24 % hours === 0) {
+      return buildDailyFrequencyLabel(24 / hours);
+    }
+
+    return hourlyMatch[0].replace(/\s+/g, " ").trim();
+  }
+
   const patterns = [
-    /(\d+\s*\/\s*\d+\s*horas?)/i,
-    /(\d+\s*x\s*\/\s*dia)/i,
+    /(\d+\s*x\s*\/?\s*d(?:ia)?)/i,
     /(\d+\s*vez(?:es)?\s+ao\s+dia)/i,
     /(1x\s*\/\s*m[eê]s)/i,
     /(antes\s+das?\s+refei[cç][oõ]es)/i,
@@ -1135,6 +1186,13 @@ function extractFrequencyFromText(input: string): string {
   for (const pattern of patterns) {
     const match = normalizedInput.match(pattern);
     if (match) {
+      if (pattern === patterns[0] || pattern === patterns[1]) {
+        const administrations = Number(match[1]?.match(/\d+/)?.[0] ?? "");
+        if (Number.isFinite(administrations) && administrations > 0) {
+          return buildDailyFrequencyLabel(administrations);
+        }
+      }
+
       return match[1].replace(/\s+/g, " ").trim();
     }
   }
@@ -1143,6 +1201,11 @@ function extractFrequencyFromText(input: string): string {
 }
 
 function extractShiftsFromText(input: string): string {
+  const shiftPattern = extractShiftPatternFromText(input);
+  if (shiftPattern) {
+    return shiftPattern;
+  }
+
   const normalizedInput = normalizeMedicationName(input);
   const shifts = [
     normalizedInput.includes("manha") ? "Manhã" : "",
@@ -1794,6 +1857,93 @@ function ExamResultsPanel({
           </div>
         </section>
       ))}
+    </div>
+  );
+}
+
+function ImportantExamCardsPanel({
+  records,
+  rawText,
+  emptyMessage,
+  onRemoveRecord,
+  removingRecordKey
+}: {
+  records: PatientExamResultRecord[];
+  rawText?: string;
+  emptyMessage: string;
+  onRemoveRecord?: (record: PatientExamResultRecord) => void;
+  removingRecordKey?: string | null;
+}) {
+  if (records.length === 0) {
+    return <p className="dashboard-muted">{emptyMessage}</p>;
+  }
+
+  const cards = buildImportantExamCards({ records, rawText });
+  const identifiedCount = cards.filter((card) => card.result.trim().length > 0).length;
+  const recordByKey = new Map(records.map((record) => [record.key, record]));
+
+  return (
+    <div className="dashboard-important-exams">
+      <p className="dashboard-muted">
+        {`${identifiedCount} de ${cards.length} exames principais preenchidos automaticamente a partir do PDF.`}
+      </p>
+
+      <div className="dashboard-important-exam-grid">
+        {cards.map((card) => {
+          const indicator = card.status === "high" ? "↑" : card.status === "low" ? "↓" : "";
+          const statusLabel =
+            card.status === "high"
+              ? "Acima da referência"
+              : card.status === "low"
+                ? "Abaixo da referência"
+                : card.status === "normal"
+                  ? "Dentro da referência"
+                  : "Não identificado";
+          const meta = [
+            card.examDate ? formatExamDateLabel(card.examDate) : "",
+            card.pageNumber ? `Pág. ${card.pageNumber}` : ""
+          ]
+            .filter((item) => item.length > 0)
+            .join(" · ");
+          const matchingRecord = card.resultRecordKey ? recordByKey.get(card.resultRecordKey) : null;
+
+          return (
+            <article
+              key={card.id}
+              className={`dashboard-important-exam-card dashboard-important-exam-card-${card.status}`}
+            >
+              <div className="dashboard-important-exam-card-header">
+                <h4>{card.label}</h4>
+                {indicator ? (
+                  <span className="dashboard-important-exam-indicator" aria-hidden="true">
+                    {indicator}
+                  </span>
+                ) : null}
+              </div>
+
+              <strong className="dashboard-important-exam-value">
+                {card.result.trim()
+                  ? [card.result, card.unit].filter((item) => item.length > 0).join(" ")
+                  : "Não identificado"}
+              </strong>
+
+              <p className="dashboard-important-exam-reference">{`VR: ${card.referenceText}`}</p>
+              <span className="dashboard-important-exam-status">{statusLabel}</span>
+              {onRemoveRecord && matchingRecord ? (
+                <button
+                  type="button"
+                  className="dashboard-chip-remove"
+                  onClick={() => onRemoveRecord(matchingRecord)}
+                  disabled={removingRecordKey === matchingRecord.key}
+                >
+                  {removingRecordKey === matchingRecord.key ? "Removendo..." : "Remover"}
+                </button>
+              ) : null}
+              {meta ? <span className="dashboard-important-exam-meta">{meta}</span> : null}
+            </article>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -2673,26 +2823,8 @@ export default function DashboardConsole({
   const [prescriptionInterventionSavingId, setPrescriptionInterventionSavingId] = useState<number | null>(
     null
   );
-  const [prescriptionForm, setPrescriptionForm] = useState({
-    admissionId: "",
-    medicationId: medications[0] ? String(medications[0].id) : "",
-    medicationName: "",
-    dose: "",
-    doseUnit: medications[0]?.defaultUnit ?? "mg",
-    administrationRoute: "",
-    frequency: "",
-    shifts: "",
-    notes: ""
-  });
-  const [prescriptionSetForm, setPrescriptionSetForm] = useState({
-    startAt: "",
-    endAt: "",
-    status: "Validado"
-  });
   const [prescriptionFeedback, setPrescriptionFeedback] = useState<FeedbackState>(null);
-  const [prescriptionLoading, setPrescriptionLoading] = useState(false);
   const [rawPrescriptionInput, setRawPrescriptionInput] = useState("");
-  const [rawPrescriptionAdmissionId, setRawPrescriptionAdmissionId] = useState("");
   const [rawPrescriptionDrafts, setRawPrescriptionDrafts] = useState<RawPrescriptionDraft[]>([]);
   const [rawPrescriptionFeedback, setRawPrescriptionFeedback] = useState<FeedbackState>(null);
   const [rawPrescriptionLoading, setRawPrescriptionLoading] = useState(false);
@@ -3777,15 +3909,21 @@ function extractMedicationLabelFromSummaryChunk(chunk: string): string {
     .replace(/^medica[cç][oõ]es?\s+de\s+uso\s+pr[eé]vio\s*:?\s*/i, "")
     .trim();
   const leadingLabel = withoutMarker.split(/\s+[–-]\s+/)[0]?.trim() ?? withoutMarker;
-  const withoutDose = leadingLabel
-      .replace(
-        /\b\d+(?:[.,]\d+)?\s*(mg|mcg|g|kg|mL|ml|UI|ui|U|cp|cps|cmp|comprimidos?|caps?|cápsulas?|gotas?)\b/gi,
-        " "
-      )
-      .replace(/\s+/g, " ")
-      .trim();
+  const withoutDose = leadingLabel.replace(
+    /\b\d+(?:[.,]\d+)?\s*(mg|mcg|g|kg|mL|ml|UI|ui|U|cp|cps|cmp|comprimidos?|caps?|cápsulas?|gotas?)\b/gi,
+    " "
+  );
+  const withoutUsageHints = withoutDose
+    .replace(/\b\d+\s*x\s*\/?\s*d(?:ia)?\b/gi, " ")
+    .replace(/\b(?:de\s+)?\d+\s*\/\s*\d+\s*(?:h|horas?)\b/gi, " ")
+    .replace(/\b\d+(?:[.,]\d+)?(?:\s*-\s*\d+(?:[.,]\d+)?){2,5}\b/gi, " ")
+    .replace(/\b(?:s\/?\s*n|sn|sos|se\s+necess[aá]rio)\b/gi, " ")
+    .replace(/\b(?:manh[aã]|tarde|noite|alm[oó]co|jantar)\b/gi, " ")
+    .replace(/[,:]+$/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  return withoutDose || leadingLabel;
+  return withoutUsageHints || withoutDose.replace(/\s+/g, " ").trim() || leadingLabel;
 }
 
 function isLikelySummaryMedicationLabel(input: string): boolean {
@@ -3826,42 +3964,50 @@ function isLikelySummaryMedicationLabel(input: string): boolean {
 
 function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicationCandidate[] {
   const candidates = new Map<string, SummaryMedicationCandidate>();
-  const chunks = summaryText
+  const baseChunks = summaryText
     .split("\n")
     .flatMap((line) =>
       line
-        .split(";")
-          .map((chunk) => chunk.trim())
-          .filter((chunk) => chunk.length > 0)
+        .split(/[;•]/)
+        .map((chunk) => chunk.trim())
+        .filter((chunk) => chunk.length > 0)
     );
+  const chunks = baseChunks.flatMap((chunk) => {
+    const protectedChunk = chunk.replace(/(\d),(\d)/g, "$1__DECIMAL__$2");
+
+    return protectedChunk
+      .split(/,(?=\s*[A-Za-zÀ-ÿ])/)
+      .map((item) => item.replace(/__DECIMAL__/g, ",").trim())
+      .filter((item) => item.length > 0);
+  });
 
   for (const chunk of chunks) {
-      const medication = findBestCatalogMedicationFromSummaryChunk(chunk);
-      const extractedLabel = extractMedicationLabelFromSummaryChunk(chunk);
-      const medicationName = medication?.name ?? extractedLabel;
-      const normalizedMedicationName = normalizeMedicationName(medicationName);
+    const medication = findBestCatalogMedicationFromSummaryChunk(chunk);
+    const extractedLabel = extractMedicationLabelFromSummaryChunk(chunk);
+    const medicationName = medication?.name ?? extractedLabel;
+    const normalizedMedicationName = normalizeMedicationName(medicationName);
 
-      if (!isLikelySummaryMedicationLabel(medicationName) || !normalizedMedicationName) {
-        continue;
-      }
-
-      if (candidates.has(normalizedMedicationName)) {
-        continue;
-      }
-
-      const parsedDose = extractDoseFromText(chunk);
-      candidates.set(normalizedMedicationName, {
-        medicationId: medication?.id ?? null,
-        medicationName,
-        dose: parsedDose.dose,
-        doseUnit: parsedDose.doseUnit,
-        frequency: extractFrequencyFromText(chunk),
-        shifts: extractShiftsFromText(chunk)
-      });
+    if (!isLikelySummaryMedicationLabel(medicationName) || !normalizedMedicationName) {
+      continue;
     }
 
-    return Array.from(candidates.values());
+    if (candidates.has(normalizedMedicationName)) {
+      continue;
+    }
+
+    const parsedDose = extractDoseFromText(chunk);
+    candidates.set(normalizedMedicationName, {
+      medicationId: medication?.id ?? null,
+      medicationName,
+      dose: parsedDose.dose,
+      doseUnit: parsedDose.doseUnit,
+      frequency: extractFrequencyFromText(chunk),
+      shifts: extractShiftsFromText(chunk)
+    });
   }
+
+  return Array.from(candidates.values());
+}
 
   async function autoPopulateFromAdmissionSummary(
     patientId: number,
@@ -4382,28 +4528,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setPrescriptionInterventionOpenId(null);
   }, [selectedPatientPrescriptions]);
 
-  const prescriptionMedicationNameForAlert = useMemo(() => {
-    if (prescriptionForm.medicationId) {
-      const selectedMedication = medications.find(
-        (medication) => String(medication.id) === prescriptionForm.medicationId
-      );
-      if (selectedMedication) {
-        return selectedMedication.name;
-      }
-    }
-    return prescriptionForm.medicationName.trim();
-  }, [prescriptionForm.medicationId, prescriptionForm.medicationName, medications]);
-
-  const prescriptionAllergyConflict = useMemo(
-    () => resolveAllergyConflict(prescriptionMedicationNameForAlert),
-    [prescriptionMedicationNameForAlert, selectedPatientAllergies, medicationDescriptors]
-  );
-
-  const prescriptionMedicationSafetyFlags = useMemo(
-    () => resolveMedicationSafetyFlags(prescriptionMedicationNameForAlert),
-    [prescriptionMedicationNameForAlert, medicationDescriptors]
-  );
-
   const selectedPatientPrescriptionGroups = useMemo(() => {
     const groups = new Map<
       string,
@@ -4839,19 +4963,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   );
 
   useEffect(() => {
-    if (!rawPrescriptionAdmissionId) {
-      return;
-    }
-
-    const hasAdmission = selectedPatientAdmissions.some(
-      (admission) => String(admission.id) === rawPrescriptionAdmissionId
-    );
-    if (!hasAdmission) {
-      setRawPrescriptionAdmissionId("");
-    }
-  }, [rawPrescriptionAdmissionId, selectedPatientAdmissions]);
-
-  useEffect(() => {
     if (prescriptionMode !== "view") {
       return;
     }
@@ -4890,9 +5001,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
   }, [selectedPatientPrescriptions, selectedPrescriptionMedicationHistory, selectedPrescriptionMedicationReferenceName]);
 
-  const prescriptionSetStartAt = normalizeHospitalDateTime(prescriptionSetForm.startAt);
-  const prescriptionSetEndAt = normalizeHospitalDateTime(prescriptionSetForm.endAt);
-  const prescriptionSetStatus = prescriptionSetForm.status.trim() || "Validado";
   const isDashboardLoading = isDashboardTransitionPending;
 
   useEffect(() => {
@@ -5348,9 +5456,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         validationMessage = "Via de administração ausente.";
       } else if (!frequency) {
         validationMessage = "Frequência ausente.";
-      } else if (!validationStartRaw || !validationEndRaw) {
-        validationMessage = "Defina data de início e data de fim da vigência da prescrição.";
-      } else if (!validationStartAt || !validationEndAt) {
+      } else if ((validationStartRaw && !validationStartAt) || (validationEndRaw && !validationEndAt)) {
         validationMessage = "Formato de data inválido. Use dd/mm/aaaa hh:mm.";
       }
 
@@ -5381,7 +5487,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
   function handleProcessRawPrescription(): void {
     setRawPrescriptionFeedback(null);
-    const { drafts, detectedSet } = buildRawPrescriptionDrafts(rawPrescriptionInput, prescriptionSetForm);
+    const { drafts } = buildRawPrescriptionDrafts(rawPrescriptionInput, {
+      startAt: "",
+      endAt: "",
+      status: "Validado"
+    });
 
     if (drafts.length === 0) {
       setRawPrescriptionFeedback({
@@ -5390,14 +5500,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       });
       setRawPrescriptionDrafts([]);
       return;
-    }
-
-    if (detectedSet.startAt || detectedSet.endAt || detectedSet.status) {
-      setPrescriptionSetForm((current) => ({
-        startAt: current.startAt || detectedSet.startAt,
-        endAt: current.endAt || detectedSet.endAt,
-        status: current.status === "Validado" && detectedSet.status ? detectedSet.status : current.status
-      }));
     }
 
     const validCount = drafts.filter((draft) => draft.isValid).length;
@@ -6581,78 +6683,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
   }
 
-  async function handlePrescriptionSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
-    setPrescriptionFeedback(null);
-
-    if (!selectedPatient) {
-      setPrescriptionFeedback({ type: "error", message: "Selecione um paciente para cadastrar prescrição." });
-      return;
-    }
-
-    if (!prescriptionSetStartAt || !prescriptionSetEndAt) {
-      setPrescriptionFeedback({
-        type: "error",
-        message: "Defina a data de início e a data de fim da vigência do conjunto da prescrição."
-      });
-      return;
-    }
-
-    setPrescriptionLoading(true);
-    try {
-      const response = await fetch(`/api/patients/${selectedPatient.id}/prescriptions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          admissionId: prescriptionForm.admissionId,
-          medicationId: prescriptionForm.medicationId,
-          medicationName: prescriptionForm.medicationName,
-          dose: Number(prescriptionForm.dose),
-          doseUnit: prescriptionForm.doseUnit,
-          administrationRoute: prescriptionForm.administrationRoute,
-          frequency: prescriptionForm.frequency,
-          shifts: prescriptionForm.shifts,
-          notes: prescriptionForm.notes,
-          validationStartAt: prescriptionSetStartAt,
-          validationEndAt: prescriptionSetEndAt,
-          validationStatus: prescriptionSetStatus
-        })
-      });
-
-      const result = (await response.json()) as {
-        message?: string;
-        prescription?: MedicalPrescriptionRecord;
-      };
-      if (!response.ok || !result.prescription) {
-        setPrescriptionFeedback({
-          type: "error",
-          message: result.message ?? "Falha ao cadastrar prescrição médica."
-        });
-        return;
-      }
-
-      setPrescriptionFeedback({ type: "success", message: "Prescrição médica cadastrada com sucesso." });
-      setPrescriptionForm((current) => ({
-        ...current,
-        medicationName: "",
-        dose: "",
-        frequency: "",
-        shifts: "",
-        notes: "",
-        administrationRoute: ""
-      }));
-      setPrescriptionMode("view");
-      appendPrescriptionLocally(result.prescription);
-    } catch {
-      setPrescriptionFeedback({
-        type: "error",
-        message: "Erro de conexão ao cadastrar prescrição médica."
-      });
-    } finally {
-      setPrescriptionLoading(false);
-    }
-  }
-
   async function handleImportRawPrescriptions(): Promise<void> {
     setRawPrescriptionFeedback(null);
 
@@ -6682,7 +6712,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            admissionId: rawPrescriptionAdmissionId || undefined,
+            admissionId: selectedCurrentAdmission?.id ?? undefined,
             medicationId: draft.medicationId ?? undefined,
             medicationName: draft.medicationName,
             dose: draft.dose,
@@ -6691,9 +6721,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             frequency: draft.frequency,
             shifts: draft.shifts,
             notes: draft.notes,
-            validationStartAt: draft.validationStartAt ?? prescriptionSetStartAt ?? undefined,
-            validationEndAt: draft.validationEndAt ?? prescriptionSetEndAt ?? undefined,
-            validationStatus: draft.validationStatus || prescriptionSetStatus,
+            validationStartAt: draft.validationStartAt ?? undefined,
+            validationEndAt: draft.validationEndAt ?? undefined,
+            validationStatus: draft.validationStatus || "Validado",
             externalValidationCandidate: draft.shouldAddToPriorMedicationValidation
           })
         });
@@ -6747,19 +6777,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       ...current,
       medicationId: selectedCatalogMedication ? String(selectedCatalogMedication.id) : "",
       medicationName: nextMedicationName,
-      doseUnit: selectedCatalogMedication ? selectedCatalogMedication.defaultUnit : current.doseUnit
-    }));
-  }
-
-  function handlePrescriptionCatalogChange(nextMedicationId: string): void {
-    const selectedCatalogMedication = medications.find(
-      (medication) => String(medication.id) === nextMedicationId
-    );
-
-    setPrescriptionForm((current) => ({
-      ...current,
-      medicationId: nextMedicationId,
-      medicationName: selectedCatalogMedication ? selectedCatalogMedication.name : current.medicationName,
       doseUnit: selectedCatalogMedication ? selectedCatalogMedication.defaultUnit : current.doseUnit
     }));
   }
@@ -8855,11 +8872,22 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 </div>
 
                                 <div className="dashboard-calculation-box">
-                                  <h3>Painel dos exames extraídos</h3>
-                                  <ExamResultsPanel
+                                  <h3>Exames principais em card</h3>
+                                  <ImportantExamCardsPanel
                                     records={examImportResult.records}
                                     rawText={examImportResult.rawText}
-                                    emptyMessage="Nenhum resultado estruturado foi identificado nesta importação."
+                                    emptyMessage="Nenhum exame principal foi identificado nesta importação."
+                                  />
+                                </div>
+
+                                <div className="dashboard-calculation-box">
+                                  <h3>Outros resultados extraídos</h3>
+                                  <ExamResultsPanel
+                                    records={examImportResult.records.filter(
+                                      (record) => !isImportantExamRecord(record.examName)
+                                    )}
+                                    rawText={examImportResult.rawText}
+                                    emptyMessage="Nenhum resultado adicional foi identificado nesta importação."
                                   />
                                 </div>
 
@@ -8937,19 +8965,40 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                       </div>
 
                                       <div className="dashboard-calculation-box">
-                                        <h3>Painel dos exames salvos</h3>
+                                        <h3>Exames principais em card</h3>
                                         <p className="dashboard-muted">
-                                          Você pode remover resultados individualmente sem excluir a importação inteira.
+                                          Os exames principais mostram valor, faixa de referência e alerta de alto ou baixo.
                                         </p>
                                         {selectedExamImportDetailsLoading ? (
                                           <p className="dashboard-muted">
                                             Carregando detalhes completos da importação...
                                           </p>
                                         ) : null}
-                                        <ExamResultsPanel
+                                        <ImportantExamCardsPanel
                                           records={selectedSavedExamImportDetails.records}
                                           rawText={selectedSavedExamImportDetails.rawText}
-                                          emptyMessage="Essa importação não gerou resultados estruturados, mas o texto foi salvo."
+                                          emptyMessage="Essa importação não gerou exames principais estruturados."
+                                          onRemoveRecord={(record) =>
+                                            void handleRemoveExamRecord(
+                                              selectedSavedExamImportDetails,
+                                              record
+                                            )
+                                          }
+                                          removingRecordKey={examRecordRemovingKey}
+                                        />
+                                      </div>
+
+                                      <div className="dashboard-calculation-box">
+                                        <h3>Outros resultados salvos</h3>
+                                        <p className="dashboard-muted">
+                                          Você pode remover resultados individualmente sem excluir a importação inteira.
+                                        </p>
+                                        <ExamResultsPanel
+                                          records={selectedSavedExamImportDetails.records.filter(
+                                            (record) => !isImportantExamRecord(record.examName)
+                                          )}
+                                          rawText={selectedSavedExamImportDetails.rawText}
+                                          emptyMessage="Essa importação não gerou outros resultados estruturados, mas o texto foi salvo."
                                           onRemoveRecord={(record) =>
                                             void handleRemoveExamRecord(
                                               selectedSavedExamImportDetails,
@@ -9447,20 +9496,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               <button
                                 type="button"
                                 className={`dashboard-mini-button ${
-                                  prescriptionMode === "create" ? "is-active" : ""
-                                }`}
-                                onClick={() => setPrescriptionMode("create")}
-                              >
-                                Cadastrar prescrição
-                              </button>
-                              <button
-                                type="button"
-                                className={`dashboard-mini-button ${
                                   prescriptionMode === "raw" ? "is-active" : ""
                                 }`}
                                 onClick={() => setPrescriptionMode("raw")}
                               >
-                                Tratar dados brutos
+                                Colar prescrição
                               </button>
                             </div>
 
@@ -9503,232 +9543,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   </div>
                                 )}
                               </div>
-                            ) : (
-                              <div className="dashboard-calculation-box">
-                                <h3>Vigência do conjunto da prescrição</h3>
-                                <div className="dashboard-two-columns">
-                                  <input
-                                    type="text"
-                                    aria-label="Data início da vigência do conjunto"
-                                    placeholder="DD/MM/AAAA HH:MM"
-                                    value={prescriptionSetForm.startAt}
-                                    onChange={(event) =>
-                                      setPrescriptionSetForm((current) => ({
-                                        ...current,
-                                        startAt: event.target.value
-                                      }))
-                                    }
-                                  />
-                                  <input
-                                    type="text"
-                                    aria-label="Data fim da vigência do conjunto"
-                                    placeholder="DD/MM/AAAA HH:MM"
-                                    value={prescriptionSetForm.endAt}
-                                    onChange={(event) =>
-                                      setPrescriptionSetForm((current) => ({
-                                        ...current,
-                                        endAt: event.target.value
-                                      }))
-                                    }
-                                  />
-                                </div>
-                                <input
-                                  placeholder="Status da vigência (ex.: Validado)"
-                                  value={prescriptionSetForm.status}
-                                  onChange={(event) =>
-                                    setPrescriptionSetForm((current) => ({
-                                      ...current,
-                                      status: event.target.value
-                                    }))
-                                  }
-                                />
-                                <p>
-                                  Esta vigência vale para o conjunto atual de medicamentos, sem repetir por item.
-                                </p>
-                              </div>
-                            )}
-
-                            {prescriptionMode === "create" ? (
-                              <form className="dashboard-form" onSubmit={handlePrescriptionSubmit}>
-                                <select
-                                  value={prescriptionForm.admissionId}
-                                  onChange={(event) =>
-                                    setPrescriptionForm((current) => ({
-                                      ...current,
-                                      admissionId: event.target.value
-                                    }))
-                                  }
-                                >
-                                  <option value="">Sem vínculo com internação</option>
-                                  {selectedPatientAdmissions.map((admission) => (
-                                    <option key={admission.id} value={admission.id}>
-                                      {formatAdmissionDate(admission.admissionDate)} | Leito {admission.bed} |{" "}
-                                      {admission.teamName ?? "-"}
-                                    </option>
-                                  ))}
-                                </select>
-
-                                <div className="dashboard-two-columns">
-                                  <select
-                                    value={prescriptionForm.medicationId}
-                                    onChange={(event) => handlePrescriptionCatalogChange(event.target.value)}
-                                  >
-                                    <option value="">Sem vínculo com cadastro</option>
-                                    {medications.map((medication) => (
-                                      <option key={medication.id} value={medication.id}>
-                                        {medication.name}
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <input
-                                    placeholder="Nome do medicamento"
-                                    value={prescriptionForm.medicationName}
-                                    onChange={(event) =>
-                                      setPrescriptionForm((current) => ({
-                                        ...current,
-                                        medicationName: event.target.value
-                                      }))
-                                    }
-                                  />
-                                </div>
-
-                                {prescriptionAllergyConflict ? (
-                                  <p className="dashboard-feedback dashboard-feedback-error">
-                                    Flag de alergia: {prescriptionAllergyConflict.allergyName} (
-                                    {buildAllergyConflictBadge(prescriptionAllergyConflict)}).
-                                  </p>
-                                ) : null}
-
-                                {hasMedicationSafetyFlag(prescriptionMedicationSafetyFlags)
-                                  ? renderMedicationFlags(null, prescriptionMedicationSafetyFlags)
-                                  : null}
-
-                                <div className="dashboard-two-columns">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    min="0"
-                                    placeholder="Dose"
-                                    value={prescriptionForm.dose}
-                                    onChange={(event) =>
-                                      setPrescriptionForm((current) => ({
-                                        ...current,
-                                        dose: event.target.value
-                                      }))
-                                    }
-                                    required
-                                  />
-                                  <input
-                                    placeholder="Unidade da dose"
-                                    value={prescriptionForm.doseUnit}
-                                    onChange={(event) =>
-                                      setPrescriptionForm((current) => ({
-                                        ...current,
-                                        doseUnit: event.target.value
-                                      }))
-                                    }
-                                    required
-                                  />
-                                </div>
-
-                                <div className="dashboard-two-columns">
-                                  <input
-                                    placeholder="Via (ex.: EV, VO, IM)"
-                                    value={prescriptionForm.administrationRoute}
-                                    onChange={(event) =>
-                                      setPrescriptionForm((current) => ({
-                                        ...current,
-                                        administrationRoute: event.target.value
-                                      }))
-                                    }
-                                    required
-                                  />
-                                  <input
-                                    placeholder="Frequência"
-                                    value={prescriptionForm.frequency}
-                                    onChange={(event) =>
-                                      setPrescriptionForm((current) => ({
-                                        ...current,
-                                        frequency: event.target.value
-                                      }))
-                                    }
-                                    required
-                                  />
-                                </div>
-
-                                <input
-                                  placeholder="Turnos (opcional)"
-                                  value={prescriptionForm.shifts}
-                                  onChange={(event) =>
-                                    setPrescriptionForm((current) => ({
-                                      ...current,
-                                      shifts: event.target.value
-                                    }))
-                                  }
-                                />
-
-                                <textarea
-                                  placeholder="Observações da prescrição (opcional)"
-                                  value={prescriptionForm.notes}
-                                  onChange={(event) =>
-                                    setPrescriptionForm((current) => ({
-                                      ...current,
-                                      notes: event.target.value
-                                    }))
-                                  }
-                                />
-
-                                {prescriptionFeedback ? (
-                                  <p className={`dashboard-feedback dashboard-feedback-${prescriptionFeedback.type}`}>
-                                    {prescriptionFeedback.message}
-                                  </p>
-                                ) : null}
-
-                                <button type="submit" disabled={prescriptionLoading}>
-                                  {prescriptionLoading ? "Salvando..." : "Salvar prescrição"}
-                                </button>
-                              </form>
                             ) : null}
 
                             {prescriptionMode === "raw" ? (
                               <div className="dashboard-subsection-block">
-                                <h3>Entrada de prescrição por dados brutos</h3>
+                                <h3>Colar prescrição</h3>
                                 <p className="dashboard-muted">
-                                  Cole as linhas de medicamentos no padrão hospitalar:
-                                  `Medicamento - Administrar Dose Unidade; Via; Frequência; Obs;`.
+                                  Cole as linhas da prescrição. O sistema trata automaticamente as linhas válidas
+                                  e vincula à internação atual do paciente quando houver uma ativa.
                                 </p>
-                                <p className="dashboard-muted">
-                                  Se você colar também as linhas de início, fim e status logo abaixo de cada
-                                  medicamento, o sistema agrupa esse bloco automaticamente.
-                                </p>
-                                <p className="dashboard-muted">
-                                  Vigência atual:
-                                  {" "}
-                                  {prescriptionSetStartAt
-                                    ? formatPrescriptionValidityDate(prescriptionSetStartAt)
-                                    : "não definida"}
-                                  {" "}
-                                  até
-                                  {" "}
-                                  {prescriptionSetEndAt
-                                    ? formatPrescriptionValidityDate(prescriptionSetEndAt)
-                                    : "não definida"}
-                                  {" "}
-                                  | Status: {prescriptionSetStatus}
-                                </p>
-
-                                <select
-                                  value={rawPrescriptionAdmissionId}
-                                  onChange={(event) => setRawPrescriptionAdmissionId(event.target.value)}
-                                >
-                                  <option value="">Sem vínculo com internação</option>
-                                  {selectedPatientAdmissions.map((admission) => (
-                                    <option key={admission.id} value={admission.id}>
-                                      {formatAdmissionDate(admission.admissionDate)} | Leito {admission.bed} |{" "}
-                                      {admission.teamName ?? "-"}
-                                    </option>
-                                  ))}
-                                </select>
 
                                 <textarea
                                   placeholder="Cole aqui as linhas da prescrição bruta"
