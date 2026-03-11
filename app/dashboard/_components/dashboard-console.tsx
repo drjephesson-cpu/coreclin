@@ -120,7 +120,7 @@ const PRIOR_MEDICATION_FREQUENCY_OPTIONS = [
   "5 vezes por semana"
 ] as const;
 
-const INPATIENT_STATUS_OPTIONS = ["Pendente", "Concluído", "Alta"] as const;
+const INPATIENT_STATUS_OPTIONS = ["Visitado", "Pendente", "Alta", "Concluído"] as const;
 const INPATIENT_WORKFLOW_STORAGE_KEY = "coreclin.inpatient-workflow.v1";
 const INTERVIEW_INFORMATION_QUALITY_LABELS: Record<InterviewInformationQuality, string> = {
   baixa: "Baixa",
@@ -859,7 +859,9 @@ function normalizeInpatientWorkflowStoragePayload(
 
             const workflow = workflowValue as Partial<InpatientWorkflowState>;
             const status =
-              workflow.status === "Concluído" || workflow.status === "Alta"
+              workflow.status === "Visitado" ||
+              workflow.status === "Concluído" ||
+              workflow.status === "Alta"
                 ? workflow.status
                 : "Pendente";
             const evolutionGeneratedAt =
@@ -867,7 +869,7 @@ function normalizeInpatientWorkflowStoragePayload(
             const firstVisitCompletedAt =
               typeof workflow.firstVisitCompletedAt === "string"
                 ? workflow.firstVisitCompletedAt
-                : status === "Concluído"
+                : status === "Visitado" || status === "Concluído"
                   ? typeof workflow.updatedAt === "string"
                     ? workflow.updatedAt
                     : new Date().toISOString()
@@ -1832,7 +1834,7 @@ function shouldRemainMandatory(
   status: InpatientWorkflowStatus,
   _evolutionGeneratedAt: string | null
 ): boolean {
-  return status === "Pendente";
+  return status !== "Concluído";
 }
 
 function escapeRegExp(input: string): string {
@@ -3251,7 +3253,7 @@ export default function DashboardConsole({
   const mandatoryOverviewRows = useMemo(
     () => {
       return inpatientEntriesWithWorkflow
-        .filter(({ workflow }) => workflow.status === "Pendente")
+        .filter(({ workflow }) => workflow.status !== "Concluído")
         .sort((first, second) => {
           const firstPriority = first.workflow.firstVisitCompletedAt ? 1 : 0;
           const secondPriority = second.workflow.firstVisitCompletedAt ? 1 : 0;
@@ -3268,7 +3270,7 @@ export default function DashboardConsole({
   const dischargedOverviewRows = useMemo(
     () =>
       inpatientEntriesWithWorkflow
-        .filter(({ workflow }) => workflow.status === "Alta" && !workflow.mandatory)
+        .filter(({ workflow }) => workflow.status === "Alta")
         .sort((first, second) => {
           const firstUpdated = new Date(first.workflow.updatedAt).getTime();
           const secondUpdated = new Date(second.workflow.updatedAt).getTime();
@@ -6794,7 +6796,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       const nextFirstVisitCompletedAt =
         nextStatus === "Pendente"
           ? null
-          : nextStatus === "Concluído"
+          : nextStatus === "Visitado" || nextStatus === "Concluído"
             ? currentWorkflow.firstVisitCompletedAt ?? now
             : currentWorkflow.firstVisitCompletedAt;
       const nextEvolutionGeneratedAt =
@@ -7957,8 +7959,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               `Leito | Nome | Idade | Prontuário | Admissão`.
                             </p>
                             <p className="dashboard-muted">
-                              Aqui aparecem todos os pacientes internados com status `Pendente`. Eles só saem
-                              desta lista quando você marcar `Concluído` ou `Alta`.
+                              Todos os pacientes internados entram nesta lista e permanecem aqui enquanto o
+                              status for `Visitado`, `Pendente` ou `Alta`. Eles só saem quando você marcar
+                              `Concluído`.
                             </p>
 
                             <div className="dashboard-form">
@@ -8080,7 +8083,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                           <div className="dashboard-subsection-block">
                             <h3>Pacientes de alta</h3>
                             <p className="dashboard-muted">
-                              Histórico de pacientes com status Alta após saírem da lista diária.
+                              Histórico de pacientes com status Alta.
                             </p>
                             <div className="dashboard-table-wrap">
                               <table className="dashboard-table">

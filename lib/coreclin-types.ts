@@ -76,7 +76,7 @@ export type TeamRecord = {
   createdAt: string;
 };
 
-export type InpatientWorkflowStatus = "Pendente" | "Concluído" | "Alta";
+export type InpatientWorkflowStatus = "Visitado" | "Pendente" | "Alta" | "Concluído";
 
 export type InpatientWorkflowState = {
   status: InpatientWorkflowStatus;
