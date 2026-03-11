@@ -2950,23 +2950,9 @@ export default function DashboardConsole({
     }
 
     try {
-      const rawPayload = window.localStorage.getItem(inpatientWorkflowStorageKey);
-      const parsedPayload = rawPayload
-        ? (JSON.parse(rawPayload) as Partial<InpatientWorkflowStoragePayload>)
-        : null;
-      const normalizedPayload = normalizeInpatientWorkflowStoragePayload(parsedPayload);
-
-      if (
-        Object.keys(normalizedPayload.workflowByKey).length > 0 ||
-        normalizedPayload.trackedEntries.length > 0 ||
-        normalizedPayload.priorityTeamIds.length > 0
-      ) {
-        setWorkflowByInpatientKey(normalizedPayload.workflowByKey);
-        setTrackedInpatientEntries(normalizedPayload.trackedEntries);
-        setPriorityTeamIds(normalizedPayload.priorityTeamIds);
-      }
+      window.localStorage.removeItem(inpatientWorkflowStorageKey);
     } catch {
-      // ignore local fallback errors and keep the server snapshot/default state
+      // ignore local cleanup errors and keep the server snapshot/default state
     } finally {
       setInpatientWorkflowPersistenceReady(true);
     }
