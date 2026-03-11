@@ -1767,6 +1767,33 @@ function normalizeAdmissionDateValue(input: string): string | null {
   return buildIsoAdmissionDate(year, month, day);
 }
 
+function formatEditableDateInput(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const normalized = normalizeAdmissionDateValue(trimmed);
+  if (normalized) {
+    return formatAdmissionDateValue(normalized);
+  }
+
+  const digitsOnly = trimmed.replace(/\D/g, "").slice(0, 8);
+  if (!digitsOnly) {
+    return "";
+  }
+
+  if (digitsOnly.length <= 2) {
+    return digitsOnly;
+  }
+
+  if (digitsOnly.length <= 4) {
+    return `${digitsOnly.slice(0, 2)}/${digitsOnly.slice(2)}`;
+  }
+
+  return `${digitsOnly.slice(0, 2)}/${digitsOnly.slice(2, 4)}/${digitsOnly.slice(4)}`;
+}
+
 function formatAdmissionDateValue(input: string | null | undefined): string {
   if (!input) {
     return "";
@@ -3069,6 +3096,10 @@ export default function DashboardConsole({
   );
 
   useEffect(() => {
+    if (activeSection !== "patient") {
+      return;
+    }
+
     if (patients.length === 0) {
       setSelectedPatientId("");
       return;
@@ -3078,15 +3109,15 @@ export default function DashboardConsole({
     if (!hasSelectedPatient) {
       setSelectedPatientId(String(patients[0].id));
     }
-  }, [patients, selectedPatientId]);
+  }, [activeSection, patients, selectedPatientId]);
 
   useEffect(() => {
-    if (patientPageMode) {
+    if (patientPageMode && patientPageOverride !== false) {
       setActiveSection("inpatients");
       setInpatientOverviewMode(requestedInpatientMode);
       setPatientView(requestedPatientView);
       setPatientDetailsOpen(true);
-      if (searchPatientId) {
+      if (searchPatientId && searchPatientId !== selectedPatientId) {
         setSelectedPatientId(searchPatientId);
       }
       return;
@@ -3108,6 +3139,8 @@ export default function DashboardConsole({
     requestedInpatientMode,
     requestedPatientView,
     requestedSection,
+    patientPageOverride,
+    selectedPatientId,
     searchParams,
     searchPatientId,
     searchPatientView
@@ -5505,6 +5538,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   }
 
   function openDashboardSection(sectionId: DashboardSectionId): void {
+    setPatientPageOverride(false);
     setActiveSection(sectionId);
     setPatientDetailsOpen(false);
     setSelectedPrescriptionMedicationHistory(null);
@@ -5512,6 +5546,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   }
 
   function openInpatientOverview(mode: InpatientOverviewMode): void {
+    setPatientPageOverride(false);
     setActiveSection("inpatients");
     setInpatientOverviewMode(mode);
     setPatientDetailsOpen(false);
@@ -5865,13 +5900,28 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   async function handlePatientSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setPatientFeedback(null);
+
+    const normalizedBirthDate = patientForm.birthDate.trim()
+      ? normalizeAdmissionDateValue(patientForm.birthDate)
+      : null;
+    if (patientForm.birthDate.trim() && !normalizedBirthDate) {
+      setPatientFeedback({
+        type: "error",
+        message: "Informe a data de nascimento no formato DD/MM/AAAA."
+      });
+      return;
+    }
+
     setPatientLoading(true);
 
     try {
       const response = await fetch("/api/patients", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patientForm)
+        body: JSON.stringify({
+          ...patientForm,
+          birthDate: normalizedBirthDate ?? ""
+        })
       });
 
       const result = (await response.json()) as {
@@ -7890,10 +7940,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
                     <div className="dashboard-two-columns">
                       <input
-                        type="date"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="Data de nascimento (DD/MM/AAAA)"
                         value={patientForm.birthDate}
                         onChange={(event) =>
-                          setPatientForm((current) => ({ ...current, birthDate: event.target.value }))
+                          setPatientForm((current) => ({
+                            ...current,
+                            birthDate: formatEditableDateInput(event.target.value)
+                          }))
                         }
                         required
                       />
@@ -8642,7 +8697,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   onChange={(event) =>
                                     setSelectedPatientProfileForm((current) => ({
                                       ...current,
-                                      birthDate: event.target.value
+                                      birthDate: formatEditableDateInput(event.target.value)
                                     }))
                                   }
                                 />
@@ -9705,11 +9760,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     <th>Lote</th>
                                     <th>Validade</th>
                                     <th>Laboratório/Marca</th>
-                                    <th>Não trouxe</th>
-                                    <th>Nota</th>
                                     <th>Consumo/dia</th>
                                     <th>Duração</th>
                                     <th>Prescrição</th>
+                                    <th>Nota</th>
+                                    <th>Não trouxe</th>
                                     <th>Ações</th>
                                   </tr>
                                 </thead>
@@ -9785,19 +9840,19 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                           />
                                         </td>
                                         <td>
-                                          <label className="dashboard-inline-toggle">
-                                            <input
-                                              type="checkbox"
-                                              checked={row.formState.patientDidNotBring}
-                                              onChange={(event) =>
-                                                toggleMedicationDidNotBring(
-                                                  row.prescription.id,
-                                                  event.target.checked
-                                                )
-                                              }
-                                            />
-                                            Não trouxe
-                                          </label>
+                                          {row.dailyTabletUse !== null
+                                            ? `${formatNumber(row.dailyTabletUse)} comp/dia`
+                                            : "-"}
+                                        </td>
+                                        <td>
+                                          {row.formState.patientDidNotBring
+                                            ? "Paciente não trouxe"
+                                            : formatDurationDays(row.currentDurationDays)}
+                                        </td>
+                                        <td>
+                                          {row.prescription.validationStartAt
+                                            ? formatTimestamp(row.prescription.validationStartAt)
+                                            : formatTimestamp(row.prescription.createdAt)}
                                         </td>
                                         <td>
                                           <input
@@ -9813,19 +9868,19 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                           />
                                         </td>
                                         <td>
-                                          {row.dailyTabletUse !== null
-                                            ? `${formatNumber(row.dailyTabletUse)} comp/dia`
-                                            : "-"}
-                                        </td>
-                                        <td>
-                                          {row.formState.patientDidNotBring
-                                            ? "Paciente não trouxe"
-                                            : formatDurationDays(row.currentDurationDays)}
-                                        </td>
-                                        <td>
-                                          {row.prescription.validationStartAt
-                                            ? formatTimestamp(row.prescription.validationStartAt)
-                                            : formatTimestamp(row.prescription.createdAt)}
+                                          <label className="dashboard-inline-toggle">
+                                            <input
+                                              type="checkbox"
+                                              checked={row.formState.patientDidNotBring}
+                                              onChange={(event) =>
+                                                toggleMedicationDidNotBring(
+                                                  row.prescription.id,
+                                                  event.target.checked
+                                                )
+                                              }
+                                            />
+                                            Não trouxe
+                                          </label>
                                         </td>
                                         <td>
                                           <button
