@@ -228,15 +228,6 @@ body {
   object-fit: contain;
 }
 
-.dashboard-intro-kicker {
-  margin: 0 0 14px;
-  color: #103b73;
-  font-size: clamp(1.1rem, 2vw, 1.45rem);
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
 .dashboard-intro-card h1 {
   margin: 0;
   color: #163b67;
@@ -432,22 +423,15 @@ body {
 }
 
 .dashboard-empty-state {
-  max-width: 520px;
+  max-width: 760px;
   text-align: center;
 }
 
 .dashboard-empty-logo {
-  margin: 0 auto 16px;
+  width: min(100%, 520px);
+  height: auto;
+  margin: 0 auto 24px;
   object-fit: contain;
-}
-
-.dashboard-empty-kicker {
-  margin: 0 0 12px;
-  color: #103b73;
-  font-size: 1.02rem;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 .dashboard-empty-state h2 {

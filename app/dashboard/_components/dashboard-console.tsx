@@ -251,6 +251,15 @@ type RawPrescriptionDraft = {
   shouldAddToPriorMedicationValidation: boolean;
 };
 
+type RawPrescriptionParsedBlock = {
+  lineNumber: number;
+  rawLine: string;
+  prescriptionContent: string;
+  validationStartRaw: string;
+  validationEndRaw: string;
+  validationStatus: string;
+};
+
 type SummaryMedicationCandidate = {
   medicationId: number | null;
   medicationName: string;
@@ -2168,6 +2177,129 @@ function normalizeHospitalDateTime(input: string): string | null {
   }
 
   return null;
+}
+
+function isRawPrescriptionStatusLine(input: string): boolean {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  if (normalizeHospitalDateTime(trimmed)) {
+    return false;
+  }
+
+  return (
+    !trimmed.includes(" - Administrar ") &&
+    !trimmed.includes(";") &&
+    !trimmed.includes("|") &&
+    !/\d/.test(trimmed) &&
+    trimmed.length <= 40
+  );
+}
+
+function parseRawPrescriptionBlocks(rawInput: string): RawPrescriptionParsedBlock[] {
+  const lines = rawInput
+    .split("\n")
+    .map((line, index) => ({
+      lineNumber: index + 1,
+      value: line.trim()
+    }))
+    .filter((line) => line.value.length > 0);
+
+  const blocks: RawPrescriptionParsedBlock[] = [];
+  let currentBlock: RawPrescriptionParsedBlock | null = null;
+
+  const commitCurrentBlock = () => {
+    if (!currentBlock) {
+      return;
+    }
+
+    blocks.push(currentBlock);
+    currentBlock = null;
+  };
+
+  for (const line of lines) {
+    const tabParts = line.value
+      .split("\t")
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    const isDateLine = Boolean(normalizeHospitalDateTime(line.value));
+    const isStatusLine = isRawPrescriptionStatusLine(line.value);
+
+    if (tabParts.length >= 4) {
+      commitCurrentBlock();
+      blocks.push({
+        lineNumber: line.lineNumber,
+        rawLine: line.value,
+        prescriptionContent: tabParts[0] ?? line.value,
+        validationStartRaw: tabParts[1] ?? "",
+        validationEndRaw: tabParts[2] ?? "",
+        validationStatus: tabParts[3] ?? "Validado"
+      });
+      continue;
+    }
+
+    if (!currentBlock && (isDateLine || isStatusLine)) {
+      continue;
+    }
+
+    if (currentBlock) {
+      if (!currentBlock.validationStartRaw && isDateLine) {
+        currentBlock.validationStartRaw = line.value;
+        currentBlock.rawLine = `${currentBlock.rawLine}\n${line.value}`;
+        continue;
+      }
+
+      if (!currentBlock.validationEndRaw && isDateLine) {
+        currentBlock.validationEndRaw = line.value;
+        currentBlock.rawLine = `${currentBlock.rawLine}\n${line.value}`;
+        continue;
+      }
+
+      if (!currentBlock.validationStatus && isStatusLine) {
+        currentBlock.validationStatus = line.value;
+        currentBlock.rawLine = `${currentBlock.rawLine}\n${line.value}`;
+        continue;
+      }
+
+      if (isDateLine || isStatusLine) {
+        continue;
+      }
+    }
+
+    commitCurrentBlock();
+    currentBlock = {
+      lineNumber: line.lineNumber,
+      rawLine: line.value,
+      prescriptionContent: line.value,
+      validationStartRaw: "",
+      validationEndRaw: "",
+      validationStatus: ""
+    };
+  }
+
+  commitCurrentBlock();
+  return blocks;
+}
+
+function inferRawPrescriptionSharedSet(
+  blocks: RawPrescriptionParsedBlock[]
+): { startAt: string; endAt: string; status: string } {
+  const collectUniqueValues = (values: string[]): string[] => Array.from(new Set(values.filter(Boolean)));
+
+  const starts = collectUniqueValues(blocks.map((block) => block.validationStartRaw.trim()));
+  const ends = collectUniqueValues(blocks.map((block) => block.validationEndRaw.trim()));
+  const statuses = collectUniqueValues(blocks.map((block) => block.validationStatus.trim()));
+
+  return {
+    startAt: starts.length === 1 && blocks.every((block) => block.validationStartRaw.trim()) ? starts[0] ?? "" : "",
+    endAt: ends.length === 1 && blocks.every((block) => block.validationEndRaw.trim()) ? ends[0] ?? "" : "",
+    status:
+      statuses.length === 1 && blocks.every((block) => block.validationStatus.trim())
+        ? (statuses[0] ?? "")
+        : ""
+  };
 }
 
 function isWithinPrescriptionValidity(startAt: string | null, endAt: string | null): boolean {
@@ -5145,19 +5277,17 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   function buildRawPrescriptionDrafts(
     rawInput: string,
     sharedSet: { startAt: string; endAt: string; status: string }
-  ): RawPrescriptionDraft[] {
-    const lines = rawInput
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+  ): {
+    drafts: RawPrescriptionDraft[];
+    detectedSet: { startAt: string; endAt: string; status: string };
+  } {
+    const blocks = parseRawPrescriptionBlocks(rawInput);
+    const detectedSet = inferRawPrescriptionSharedSet(blocks);
 
-    return lines.map((line, index) => {
-      const tabParts = line.split("\t").map((part) => part.trim()).filter((part) => part.length > 0);
-      const prescriptionContent = tabParts[0] ?? line;
-      const hasInlineSet = tabParts.length >= 4;
-      const validationStartRaw = hasInlineSet ? (tabParts[1] ?? "") : sharedSet.startAt;
-      const validationEndRaw = hasInlineSet ? (tabParts[2] ?? "") : sharedSet.endAt;
-      const validationStatus = (hasInlineSet ? tabParts[3] : sharedSet.status).trim() || "Validado";
+    const drafts = blocks.map((block) => {
+      const validationStartRaw = block.validationStartRaw || sharedSet.startAt;
+      const validationEndRaw = block.validationEndRaw || sharedSet.endAt;
+      const validationStatus = (block.validationStatus || sharedSet.status).trim() || "Validado";
       const validationStartAt = normalizeHospitalDateTime(validationStartRaw);
       const validationEndAt = normalizeHospitalDateTime(validationEndRaw);
 
@@ -5168,7 +5298,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       let shifts = "";
       let notes = "";
 
-      const hospitalPattern = prescriptionContent.match(/^(.*?)\s+-\s+Administrar\s+(.+)$/i);
+      const hospitalPattern = block.prescriptionContent.match(/^(.*?)\s+-\s+Administrar\s+(.+)$/i);
       if (hospitalPattern) {
         medicationName = hospitalPattern[1].replace(/^\([^)]*\)\s*/, "").trim();
         const administrationParts = hospitalPattern[2]
@@ -5182,11 +5312,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         shifts = administrationParts[3] ?? "";
         notes = administrationParts.slice(4).join("; ");
       } else {
-        const splitParts = prescriptionContent.includes(";")
-          ? prescriptionContent.split(";")
-          : prescriptionContent.includes("|")
-            ? prescriptionContent.split("|")
-            : prescriptionContent.split(/\s+-\s+/);
+        const splitParts = block.prescriptionContent.includes(";")
+          ? block.prescriptionContent.split(";")
+          : block.prescriptionContent.includes("|")
+            ? block.prescriptionContent.split("|")
+            : block.prescriptionContent.split(/\s+-\s+/);
         const parts = splitParts.map((part) => part.trim()).filter((part) => part.length > 0);
         medicationName = (parts[0] ?? "").replace(/^\([^)]*\)\s*/, "").trim();
         parsedDose = parseDosePart(parts[1] ?? "");
@@ -5228,8 +5358,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       }
 
       return {
-        lineNumber: index + 1,
-        rawLine: line,
+        lineNumber: block.lineNumber,
+        rawLine: block.rawLine,
         medicationId: matchedMedication?.id ?? null,
         medicationName: storedMedicationName,
         dose: parsedDose.dose,
@@ -5248,11 +5378,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         shouldAddToPriorMedicationValidation: sanitizedMedication.isNonCatalog
       };
     });
+
+    return { drafts, detectedSet };
   }
 
   function handleProcessRawPrescription(): void {
     setRawPrescriptionFeedback(null);
-    const drafts = buildRawPrescriptionDrafts(rawPrescriptionInput, prescriptionSetForm);
+    const { drafts, detectedSet } = buildRawPrescriptionDrafts(rawPrescriptionInput, prescriptionSetForm);
 
     if (drafts.length === 0) {
       setRawPrescriptionFeedback({
@@ -5261,6 +5393,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       });
       setRawPrescriptionDrafts([]);
       return;
+    }
+
+    if (detectedSet.startAt || detectedSet.endAt || detectedSet.status) {
+      setPrescriptionSetForm((current) => ({
+        startAt: current.startAt || detectedSet.startAt,
+        endAt: current.endAt || detectedSet.endAt,
+        status: current.status === "Validado" && detectedSet.status ? detectedSet.status : current.status
+      }));
     }
 
     const validCount = drafts.filter((draft) => draft.isValid).length;
@@ -7225,12 +7365,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                     <Image
                       src="/coreclin.png"
                       alt="CoreClin"
-                      width={156}
-                      height={156}
+                      width={624}
+                      height={624}
                       priority
                       className="dashboard-empty-logo"
                     />
-                    <p className="dashboard-empty-kicker">Use Coreclin!</p>
                     <h2>A sua ferramenta de auxílio à decisão terapêutica.</h2>
                     <p>Escolha uma opção na barra lateral para abrir um módulo.</p>
                   </div>
@@ -9559,7 +9698,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   `Medicamento - Administrar Dose Unidade; Via; Frequência; Obs;`.
                                 </p>
                                 <p className="dashboard-muted">
-                                  A vigência do conjunto (início, fim e status) é aplicada uma única vez para todos.
+                                  Se você colar também as linhas de início, fim e status logo abaixo de cada
+                                  medicamento, o sistema agrupa esse bloco automaticamente.
                                 </p>
                                 <p className="dashboard-muted">
                                   Vigência atual:

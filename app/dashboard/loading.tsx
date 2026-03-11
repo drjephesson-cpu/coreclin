@@ -14,7 +14,6 @@ export default function DashboardLoading() {
           priority
           className="dashboard-intro-logo"
         />
-        <p className="dashboard-intro-kicker">Use Coreclin!</p>
         <h1>A sua ferramenta de auxílio à decisão terapêutica.</h1>
       </section>
     </main>
