@@ -141,6 +141,15 @@ const PRIOR_MEDICATION_FREQUENCY_OPTIONS = [
 
 const INPATIENT_STATUS_OPTIONS = ["Visitado", "Pendente", "Alta", "Concluído"] as const;
 const INPATIENT_WORKFLOW_STORAGE_KEY = "coreclin.inpatient-workflow.v1";
+const TEAM_GROUP_RULES = [
+  { key: "clinica-medica-1", label: "Clínica médica 1", aliases: ["cm1", "clinica medica 1"] },
+  { key: "clinica-medica-2", label: "Clínica médica 2", aliases: ["cm2", "clinica medica 2"] },
+  { key: "clinica-cirurgica", label: "Clínica cirúrgica", aliases: ["cirurgia", "clinica cirurgica"] },
+  { key: "clinica-pediatrica", label: "Clínica pediátrica", aliases: ["pediatria", "clinica pediatrica"] },
+  { key: "obstetricia", label: "Obstetrícia", aliases: ["obstetricia", "obstetra"] },
+  { key: "pneumologia", label: "Pneumologia", aliases: ["pneumo", "pneumologia"] },
+  { key: "oncologia", label: "Oncologia", aliases: ["onco", "oncologia"] }
+] as const;
 const INTERVIEW_INFORMATION_QUALITY_LABELS: Record<InterviewInformationQuality, string> = {
   baixa: "Baixa",
   media: "Média",
@@ -221,6 +230,13 @@ type PatientViewId = (typeof PATIENT_VIEW_ITEMS)[number]["id"];
 type PrescriptionMode = "view" | "raw";
 type InpatientOverviewMode = (typeof INPATIENT_SIDEBAR_ITEMS)[number]["id"];
 type FeedbackType = "success" | "error";
+
+type TeamGroupOption = {
+  key: string;
+  label: string;
+  representativeTeamId: number;
+  memberTeamIds: number[];
+};
 
 type FeedbackState = {
   type: FeedbackType;
@@ -1708,6 +1724,36 @@ function normalizeSearchValue(input: string): string {
     .replace(/[\u0300-\u036f]/g, "")
     .trim()
     .toLocaleLowerCase();
+}
+
+function normalizeTeamAlias(input: string): string {
+  return normalizeSearchValue(input).replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function resolveTeamGroupIdentity(teamName: string | null | undefined): { key: string; label: string } | null {
+  const rawName = typeof teamName === "string" ? teamName.trim() : "";
+  if (!rawName) {
+    return null;
+  }
+
+  const normalizedName = normalizeTeamAlias(rawName);
+  const matchedRule = TEAM_GROUP_RULES.find((rule) =>
+    rule.aliases.some((alias) => normalizeTeamAlias(alias) === normalizedName)
+  );
+
+  if (matchedRule) {
+    return { key: matchedRule.key, label: matchedRule.label };
+  }
+
+  return {
+    key: normalizedName.replace(/\s+/g, "-"),
+    label: rawName
+  };
+}
+
+function formatCanonicalTeamName(teamName: string | null | undefined): string {
+  const identity = resolveTeamGroupIdentity(teamName);
+  return identity?.label ?? "-";
 }
 
 function normalizeMandatoryBedLabel(input: string): string {
@@ -3500,13 +3546,70 @@ export default function DashboardConsole({
     }
   }, [inpatients, selectedPatientId, trackedInpatientEntries]);
 
-  const teamNameById = useMemo(() => {
-    const lookup = new Map<number, string>();
+  const groupedTeamOptions = useMemo<TeamGroupOption[]>(() => {
+    const groups = new Map<
+      string,
+      {
+        key: string;
+        label: string;
+        records: TeamRecord[];
+      }
+    >();
+
     for (const team of teams) {
-      lookup.set(team.id, team.name);
+      const identity = resolveTeamGroupIdentity(team.name);
+      if (!identity) {
+        continue;
+      }
+
+      const currentGroup = groups.get(identity.key);
+      if (currentGroup) {
+        currentGroup.records.push(team);
+      } else {
+        groups.set(identity.key, {
+          key: identity.key,
+          label: identity.label,
+          records: [team]
+        });
+      }
+    }
+
+    return Array.from(groups.values())
+      .map((group) => {
+        const normalizedLabel = normalizeTeamAlias(group.label);
+        const representativeRecord =
+          group.records.find((record) => normalizeTeamAlias(record.name) === normalizedLabel) ??
+          [...group.records].sort((first, second) => first.id - second.id)[0];
+
+        return {
+          key: group.key,
+          label: group.label,
+          representativeTeamId: representativeRecord.id,
+          memberTeamIds: group.records.map((record) => record.id)
+        };
+      })
+      .sort((first, second) => first.label.localeCompare(second.label, "pt-BR"));
+  }, [teams]);
+
+  const teamGroupById = useMemo(() => {
+    const lookup = new Map<number, TeamGroupOption>();
+    for (const group of groupedTeamOptions) {
+      for (const teamId of group.memberTeamIds) {
+        lookup.set(teamId, group);
+      }
     }
     return lookup;
-  }, [teams]);
+  }, [groupedTeamOptions]);
+
+  const canonicalTeamIdById = useMemo(() => {
+    const lookup = new Map<number, number>();
+    for (const group of groupedTeamOptions) {
+      for (const teamId of group.memberTeamIds) {
+        lookup.set(teamId, group.representativeTeamId);
+      }
+    }
+    return lookup;
+  }, [groupedTeamOptions]);
 
   useEffect(() => {
     setWorkflowByInpatientKey((current) => {
@@ -3535,6 +3638,17 @@ export default function DashboardConsole({
       return hasChanges ? nextEntries : current;
     });
   }, [currentWorkflowEditorLogin, currentWorkflowEditorName]);
+
+  useEffect(() => {
+    if (inpatientTeamFilter === "all" || inpatientTeamFilter === "without-team") {
+      return;
+    }
+
+    const hasMatchingGroup = groupedTeamOptions.some((group) => group.key === inpatientTeamFilter);
+    if (!hasMatchingGroup) {
+      setInpatientTeamFilter("all");
+    }
+  }, [groupedTeamOptions, inpatientTeamFilter]);
 
   function resolveInpatientWorkflow(entry: InpatientEntry): InpatientWorkflowState {
     const workflow = workflowByInpatientKey[entry.key];
@@ -3604,18 +3718,21 @@ export default function DashboardConsole({
     () =>
       inpatientEntries.map((entry) => {
         const workflow = resolveInpatientWorkflow(entry);
+        const assignedTeamGroup =
+          workflow.assignedTeamId !== null ? teamGroupById.get(workflow.assignedTeamId) ?? null : null;
         const assignedTeamName =
-          workflow.assignedTeamId !== null ? teamNameById.get(workflow.assignedTeamId) ?? null : null;
-        const isPriorityTeam =
-          workflow.assignedTeamId !== null && priorityTeamIds.includes(workflow.assignedTeamId);
+          assignedTeamGroup?.label ??
+          (entry.teamName && entry.teamName.trim().length > 0
+            ? formatCanonicalTeamName(entry.teamName)
+            : null);
         return {
           entry,
           workflow,
           assignedTeamName,
-          isPriorityTeam
+          assignedTeamGroupKey: assignedTeamGroup?.key ?? null
         };
       }),
-    [inpatientEntries, workflowByInpatientKey, teamNameById, priorityTeamIds]
+    [inpatientEntries, teamGroupById, workflowByInpatientKey]
   );
 
   const selectedInpatientEntry = useMemo(
@@ -3629,27 +3746,17 @@ export default function DashboardConsole({
   const teamOverviewRows = useMemo(() => {
     const filtered = inpatientEntriesWithWorkflow
       .filter(({ workflow }) => workflow.status !== "Alta")
-      .filter(({ workflow }) => {
+      .filter(({ workflow, assignedTeamGroupKey }) => {
         if (inpatientTeamFilter === "all") {
           return true;
         }
         if (inpatientTeamFilter === "without-team") {
           return workflow.assignedTeamId === null;
         }
-        const teamId = Number(inpatientTeamFilter);
-        if (!Number.isInteger(teamId)) {
-          return true;
-        }
-        return workflow.assignedTeamId === teamId;
+        return assignedTeamGroupKey === inpatientTeamFilter;
       });
 
     return filtered.sort((first, second) => {
-      const firstPriority = first.isPriorityTeam ? 0 : 1;
-      const secondPriority = second.isPriorityTeam ? 0 : 1;
-      if (firstPriority !== secondPriority) {
-        return firstPriority - secondPriority;
-      }
-
       const firstTeam = first.assignedTeamName ?? "Sem equipe";
       const secondTeam = second.assignedTeamName ?? "Sem equipe";
       const teamComparison = firstTeam.localeCompare(secondTeam, "pt-BR");
@@ -3766,9 +3873,11 @@ export default function DashboardConsole({
       interviewPlan: latestAdmission?.interviewPlan ?? "",
       teamId:
         latestAdmission?.teamId !== null && latestAdmission?.teamId !== undefined
-          ? String(latestAdmission.teamId)
+          ? String(canonicalTeamIdById.get(latestAdmission.teamId) ?? latestAdmission.teamId)
           : selectedInpatientEntry?.teamId !== null && selectedInpatientEntry?.teamId !== undefined
-            ? String(selectedInpatientEntry.teamId)
+            ? String(
+                canonicalTeamIdById.get(selectedInpatientEntry.teamId) ?? selectedInpatientEntry.teamId
+              )
             : "",
       weightKg:
         latestMeasurement?.weightKg !== null && latestMeasurement?.weightKg !== undefined
@@ -3784,7 +3893,7 @@ export default function DashboardConsole({
     setShowAdmissionSummaryComposer(false);
     setShowAdmissionSummaryPreview(Boolean(latestAdmission?.admissionSummary?.trim()));
     setAdmissionSummarySelection("");
-  }, [selectedInpatientEntry, selectedPatient, selectedPatientAdmissions]);
+  }, [canonicalTeamIdById, selectedInpatientEntry, selectedPatient, selectedPatientAdmissions]);
 
   const medicationDescriptors = useMemo(
     () =>
@@ -7294,12 +7403,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     });
   }
 
-  function togglePriorityTeam(teamId: number): void {
-    setPriorityTeamIds((current) =>
-      current.includes(teamId) ? current.filter((existingId) => existingId !== teamId) : [...current, teamId]
-    );
-  }
-
   async function handleMandatoryRawImport(): Promise<void> {
     setMandatoryFeedback(null);
 
@@ -7901,8 +8004,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                         <p className="dashboard-muted">Nenhuma equipe cadastrada.</p>
                       ) : (
                         <ul className="dashboard-chip-list">
-                          {teams.map((team) => (
-                            <li key={team.id}>{team.name}</li>
+                          {groupedTeamOptions.map((group) => (
+                            <li key={group.key}>{group.label}</li>
                           ))}
                         </ul>
                       )
@@ -8150,19 +8253,19 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                             <button
                                               type="button"
                                               className="dashboard-link-button"
-                                              onClick={() => {
-                                                if (inpatient.patientId !== null) {
-                                                  openPatientDetails(inpatient.patientId, "admission-info");
-                                                }
-                                              }}
-                                            >
-                                              {inpatient.patientName}
+                                            onClick={() => {
+                                              if (inpatient.patientId !== null) {
+                                                openPatientDetails(inpatient.patientId, "admission-info");
+                                              }
+                                            }}
+                                          >
+                                            {inpatient.patientName}
                                             </button>
                                           </td>
                                           <td>{inpatient.chartNumber}</td>
                                           <td>{formatAdmissionDate(inpatient.admissionDate)}</td>
                                           <td>{inpatient.bed}</td>
-                                          <td>{inpatient.teamName ?? "-"}</td>
+                                          <td>{formatCanonicalTeamName(inpatient.teamName)}</td>
                                         </tr>
                                       ))}
                                     </tbody>
@@ -8179,48 +8282,48 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                           <div className="dashboard-subsection-block">
                             <h3>Pacientes por equipe</h3>
                             <p className="dashboard-muted">
-                              Defina equipe, status e equipes prioritárias. O paciente permanece em equipe até
-                              status Alta.
+                              Filtre pelos cards de equipe. O paciente permanece em equipe até status Alta.
                             </p>
 
-                            <div className="dashboard-two-columns">
-                              <select
-                                value={inpatientTeamFilter}
-                                onChange={(event) => setInpatientTeamFilter(event.target.value)}
-                              >
-                                <option value="all">Todas as equipes</option>
-                                <option value="without-team">Sem equipe</option>
-                                {teams.map((team) => (
-                                  <option key={team.id} value={team.id}>
-                                    {team.name}
-                                  </option>
-                                ))}
-                              </select>
-                              <input
-                                value={`Equipes prioritárias: ${priorityTeamIds.length}`}
-                                disabled
-                                aria-label="Quantidade de equipes prioritárias"
-                              />
-                            </div>
-
                             <div className="dashboard-inline-actions">
-                              {teams.length === 0 ? (
-                                <p className="dashboard-muted">Cadastre equipes para definir prioridades.</p>
-                              ) : (
-                                teams.map((team) => (
-                                  <button
-                                    key={team.id}
-                                    type="button"
-                                    className={`dashboard-mini-button ${
-                                      priorityTeamIds.includes(team.id) ? "is-active" : ""
-                                    }`}
-                                    onClick={() => togglePriorityTeam(team.id)}
-                                  >
-                                    {priorityTeamIds.includes(team.id) ? "Prioritária: " : ""}
-                                    {team.name}
-                                  </button>
-                                ))
-                              )}
+                              <button
+                                type="button"
+                                className={`dashboard-mini-button ${
+                                  inpatientTeamFilter === "all" ? "is-active" : ""
+                                }`}
+                                onClick={() => setInpatientTeamFilter("all")}
+                              >
+                                Todas as equipes
+                              </button>
+                              {groupedTeamOptions.map((group) => (
+                                <button
+                                  key={group.key}
+                                  type="button"
+                                  className={`dashboard-mini-button ${
+                                    inpatientTeamFilter === group.key ? "is-active" : ""
+                                  }`}
+                                  onClick={() =>
+                                    setInpatientTeamFilter((current) =>
+                                      current === group.key ? "all" : group.key
+                                    )
+                                  }
+                                >
+                                  {group.label}
+                                </button>
+                              ))}
+                              <button
+                                type="button"
+                                className={`dashboard-mini-button ${
+                                  inpatientTeamFilter === "without-team" ? "is-active" : ""
+                                }`}
+                                onClick={() =>
+                                  setInpatientTeamFilter((current) =>
+                                    current === "without-team" ? "all" : "without-team"
+                                  )
+                                }
+                              >
+                                Sem equipe
+                              </button>
                             </div>
 
                             <div className="dashboard-table-wrap">
@@ -8242,7 +8345,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                       <td colSpan={7}>Nenhum paciente encontrado para este filtro.</td>
                                     </tr>
                                   ) : (
-                                    teamOverviewRows.map(({ entry, workflow, isPriorityTeam }) => (
+                                    teamOverviewRows.map(({ entry, workflow }) => (
                                       <tr key={entry.key}>
                                         <td>{entry.patientName}</td>
                                         <td>{entry.chartNumber || "-"}</td>
@@ -8250,21 +8353,25 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         <td>
                                           <select
                                             className="dashboard-table-select"
-                                            value={workflow.assignedTeamId ?? ""}
+                                            value={
+                                              workflow.assignedTeamId !== null
+                                                ? String(
+                                                    canonicalTeamIdById.get(workflow.assignedTeamId) ??
+                                                      workflow.assignedTeamId
+                                                  )
+                                                : ""
+                                            }
                                             onChange={(event) =>
                                               handleInpatientTeamChange(entry.key, event.target.value)
                                             }
                                           >
                                             <option value="">Sem equipe</option>
-                                            {teams.map((team) => (
-                                              <option key={team.id} value={team.id}>
-                                                {team.name}
+                                            {groupedTeamOptions.map((group) => (
+                                              <option key={group.key} value={group.representativeTeamId}>
+                                                {group.label}
                                               </option>
                                             ))}
                                           </select>
-                                          {isPriorityTeam ? (
-                                            <span className="dashboard-status-pill is-valid">Prioritária</span>
-                                          ) : null}
                                         </td>
                                         <td>
                                           <select
@@ -8361,7 +8468,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         <td>{entry.chartNumber || "-"}</td>
                                         <td>{formatAdmissionDate(entry.admissionDate)}</td>
                                         <td>{entry.bed || "-"}</td>
-                                        <td>{assignedTeamName ?? entry.teamName ?? "Pendente"}</td>
+                                        <td>{assignedTeamName ?? formatCanonicalTeamName(entry.teamName)}</td>
                                         <td>
                                           <select
                                             className="dashboard-table-select"
@@ -8459,7 +8566,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                       <tr key={entry.key}>
                                         <td>{entry.patientName}</td>
                                         <td>{entry.chartNumber || "-"}</td>
-                                        <td>{assignedTeamName ?? entry.teamName ?? "-"}</td>
+                                        <td>{assignedTeamName ?? formatCanonicalTeamName(entry.teamName)}</td>
                                         <td>{workflow.status}</td>
                                         <td>{formatWorkflowEditorLabel(workflow)}</td>
                                         <td>{formatTimestamp(workflow.updatedAt)}</td>
@@ -8795,9 +8902,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 required
                               >
                                 <option value="">Selecione a equipe</option>
-                                {teams.map((team) => (
-                                  <option key={team.id} value={team.id}>
-                                    {team.name}
+                                {groupedTeamOptions.map((group) => (
+                                  <option key={group.key} value={group.representativeTeamId}>
+                                    {group.label}
                                   </option>
                                 ))}
                               </select>
