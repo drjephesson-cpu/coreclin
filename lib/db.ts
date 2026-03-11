@@ -3380,18 +3380,18 @@ export async function getDashboardData(
       ? Number(options?.selectedPatientId)
       : null;
   const section = normalizeDashboardSection(options?.section);
-  const inpatientMode = normalizeDashboardInpatientMode(options?.inpatientMode);
   const isPatientDetailsPage = section === "inpatients" && selectedPatientId !== null;
-  const shouldLoadProfessionals = true;
-  const shouldLoadTeams = true;
-  const shouldLoadPatients = true;
-  const shouldLoadInpatientOverviewEntries = true;
+  const shouldLoadProfessionals = section === "professional";
+  const shouldLoadTeams = section === "team" || section === "patient" || section === "inpatients";
+  const shouldLoadPatients = section === "patient" || section === "inpatients";
+  const shouldLoadInpatientOverviewEntries = section === "inpatients";
   const shouldLoadRecentAdmissions = isPatientDetailsPage;
-  const shouldLoadMedications = true;
+  const shouldLoadMedications =
+    section === "medication" || section === "patient" || isPatientDetailsPage;
   const shouldLoadPatientAllergies = isPatientDetailsPage;
   const shouldLoadPriorMedications = isPatientDetailsPage;
   const shouldLoadExamImports = isPatientDetailsPage;
-  const shouldLoadWorkflow = true;
+  const shouldLoadWorkflow = section === "inpatients";
   const shouldLoadPrescriptions = isPatientDetailsPage;
 
   const [
