@@ -223,6 +223,11 @@ body {
   animation: reveal-card 0.6s ease-out both;
 }
 
+.dashboard-intro-logo {
+  margin: 0 auto 16px;
+  object-fit: contain;
+}
+
 .dashboard-intro-kicker {
   margin: 0 0 14px;
   color: #103b73;
@@ -429,6 +434,11 @@ body {
 .dashboard-empty-state {
   max-width: 520px;
   text-align: center;
+}
+
+.dashboard-empty-logo {
+  margin: 0 auto 16px;
+  object-fit: contain;
 }
 
 .dashboard-empty-kicker {

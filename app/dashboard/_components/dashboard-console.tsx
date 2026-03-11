@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, Fragment, memo, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import LogoutButton from "@/app/_components/logout-button";
@@ -7221,6 +7222,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
               {!effectivePatientPageMode && activeSection === null ? (
                 <section className="dashboard-card dashboard-empty-card">
                   <div className="dashboard-empty-state">
+                    <Image
+                      src="/coreclin.png"
+                      alt="CoreClin"
+                      width={156}
+                      height={156}
+                      priority
+                      className="dashboard-empty-logo"
+                    />
                     <p className="dashboard-empty-kicker">Use Coreclin!</p>
                     <h2>A sua ferramenta de auxílio à decisão terapêutica.</h2>
                     <p>Escolha uma opção na barra lateral para abrir um módulo.</p>
