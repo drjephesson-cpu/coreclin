@@ -41,6 +41,14 @@ function normalizeWorkflowByKey(value: unknown): Record<string, InpatientWorkflo
               typeof workflow.firstVisitCompletedAt === "string" ? workflow.firstVisitCompletedAt : null,
             evolutionGeneratedAt:
               typeof workflow.evolutionGeneratedAt === "string" ? workflow.evolutionGeneratedAt : null,
+            updatedByProfessionalName:
+              typeof workflow.updatedByProfessionalName === "string"
+                ? workflow.updatedByProfessionalName
+                : null,
+            updatedByProfessionalLogin:
+              typeof workflow.updatedByProfessionalLogin === "string"
+                ? workflow.updatedByProfessionalLogin
+                : null,
             updatedAt: typeof workflow.updatedAt === "string" ? workflow.updatedAt : new Date().toISOString()
           } satisfies InpatientWorkflowState
         ]

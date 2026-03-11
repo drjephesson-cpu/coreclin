@@ -202,6 +202,8 @@ export type UpdateMedicalPrescriptionValidationInput = {
   lotNumber?: string | null;
   expirationDate?: string | null;
   manufacturer?: string | null;
+  patientDidNotBring?: boolean | null;
+  stockValidationNote?: string | null;
   interventionNotes?: string | null;
   interventionRequestedToPrescriber?: boolean | null;
   interventionResponse?: MedicalPrescriptionInterventionResponse | null;
@@ -584,6 +586,9 @@ function mapMedicalPrescription(row: DbRow): MedicalPrescriptionRecord {
     lotNumber: row.lot_number === null ? null : String(row.lot_number ?? ""),
     expirationDate: row.expiration_date === null ? null : String(row.expiration_date),
     manufacturer: row.manufacturer === null ? null : String(row.manufacturer ?? ""),
+    patientDidNotBring: Boolean(row.patient_did_not_bring),
+    stockValidationNote:
+      row.stock_validation_note === null ? null : String(row.stock_validation_note ?? ""),
     interventionNotes:
       row.intervention_notes === null ? null : String(row.intervention_notes ?? ""),
     interventionRequestedToPrescriber:
@@ -956,6 +961,8 @@ async function setupDatabase(): Promise<void> {
       lot_number TEXT,
       expiration_date DATE,
       manufacturer TEXT,
+      patient_did_not_bring BOOLEAN NOT NULL DEFAULT FALSE,
+      stock_validation_note TEXT,
       intervention_notes TEXT,
       intervention_requested_to_prescriber BOOLEAN,
       intervention_response TEXT,
@@ -1090,6 +1097,12 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE medical_prescriptions
     ADD COLUMN IF NOT EXISTS manufacturer TEXT;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS patient_did_not_bring BOOLEAN NOT NULL DEFAULT FALSE;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS stock_validation_note TEXT;
   `);
 
   await pool.query(`
@@ -2580,13 +2593,15 @@ export async function addMedicalPrescription(
           lot_number,
           expiration_date,
           manufacturer,
+          patient_did_not_bring,
+          stock_validation_note,
           intervention_notes,
           intervention_requested_to_prescriber,
           intervention_response
         )
         VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-          NULL, NULL, NULL, NULL, NULL, NULL, NULL
+          NULL, NULL, NULL, NULL, FALSE, NULL, NULL, NULL, NULL
         )
         RETURNING id
       `,
@@ -2634,6 +2649,8 @@ export async function addMedicalPrescription(
           mp.lot_number,
           mp.expiration_date::text AS expiration_date,
           mp.manufacturer,
+          mp.patient_did_not_bring,
+          mp.stock_validation_note,
           mp.intervention_notes,
           mp.intervention_requested_to_prescriber,
           mp.intervention_response,
@@ -2692,6 +2709,18 @@ export async function updateMedicalPrescriptionValidation(
     if ("manufacturer" in input) {
       assignments.push(
         `manufacturer = $${values.push(input.manufacturer?.trim() ? input.manufacturer.trim() : null)}`
+      );
+    }
+
+    if ("patientDidNotBring" in input) {
+      assignments.push(`patient_did_not_bring = $${values.push(Boolean(input.patientDidNotBring))}`);
+    }
+
+    if ("stockValidationNote" in input) {
+      assignments.push(
+        `stock_validation_note = $${values.push(
+          input.stockValidationNote?.trim() ? input.stockValidationNote.trim() : null
+        )}`
       );
     }
 
@@ -2761,6 +2790,8 @@ export async function updateMedicalPrescriptionValidation(
           mp.lot_number,
           mp.expiration_date::text AS expiration_date,
           mp.manufacturer,
+          mp.patient_did_not_bring,
+          mp.stock_validation_note,
           mp.intervention_notes,
           mp.intervention_requested_to_prescriber,
           mp.intervention_response,
@@ -3349,6 +3380,8 @@ export async function listMedicalPrescriptions(
       mp.lot_number,
       mp.expiration_date::text AS expiration_date,
       mp.manufacturer,
+      mp.patient_did_not_bring,
+      mp.stock_validation_note,
       mp.intervention_notes,
       mp.intervention_requested_to_prescriber,
       mp.intervention_response,

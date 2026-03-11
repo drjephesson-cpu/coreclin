@@ -86,6 +86,8 @@ export type InpatientWorkflowState = {
   mandatory: boolean;
   firstVisitCompletedAt: string | null;
   evolutionGeneratedAt: string | null;
+  updatedByProfessionalName?: string | null;
+  updatedByProfessionalLogin?: string | null;
   updatedAt: string;
 };
 
@@ -262,6 +264,8 @@ export type MedicalPrescriptionRecord = {
   lotNumber: string | null;
   expirationDate: string | null;
   manufacturer: string | null;
+  patientDidNotBring: boolean;
+  stockValidationNote: string | null;
   interventionNotes: string | null;
   interventionRequestedToPrescriber: boolean | null;
   interventionResponse: MedicalPrescriptionInterventionResponse | null;

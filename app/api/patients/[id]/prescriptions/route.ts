@@ -201,6 +201,14 @@ export async function PUT(
     typeof body.expirationDate === "string" ? body.expirationDate.trim() : "";
   const hasManufacturer = hasOwnProperty(body, "manufacturer");
   const manufacturer = typeof body.manufacturer === "string" ? body.manufacturer.trim() : "";
+  const hasPatientDidNotBring = hasOwnProperty(body, "patientDidNotBring");
+  const patientDidNotBring =
+    body.patientDidNotBring === true ||
+    body.patientDidNotBring === "true" ||
+    body.patientDidNotBring === "sim";
+  const hasStockValidationNote = hasOwnProperty(body, "stockValidationNote");
+  const stockValidationNote =
+    typeof body.stockValidationNote === "string" ? body.stockValidationNote.trim() : "";
   const hasInterventionNotes = hasOwnProperty(body, "interventionNotes");
   const interventionNotes =
     typeof body.interventionNotes === "string" ? body.interventionNotes.trim() : "";
@@ -281,6 +289,8 @@ export async function PUT(
       ...(hasLotNumber ? { lotNumber } : {}),
       ...(hasExpirationDate ? { expirationDate } : {}),
       ...(hasManufacturer ? { manufacturer } : {}),
+      ...(hasPatientDidNotBring ? { patientDidNotBring } : {}),
+      ...(hasStockValidationNote ? { stockValidationNote } : {}),
       ...(hasInterventionNotes ? { interventionNotes } : {}),
       ...(hasInterventionRequestedToPrescriber
         ? { interventionRequestedToPrescriber: safeInterventionRequestedToPrescriber }

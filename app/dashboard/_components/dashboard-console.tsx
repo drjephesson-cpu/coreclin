@@ -103,6 +103,10 @@ function formatPatientSexLabel(sex: PatientSex | null | undefined): string {
   return "Não informado";
 }
 
+function formatWorkflowEditorLabel(workflow: InpatientWorkflowState): string {
+  return workflow.updatedByProfessionalName ?? workflow.updatedByProfessionalLogin ?? "-";
+}
+
 const INPATIENT_SIDEBAR_ITEMS = [
   { id: "all", label: "Todos" },
   { id: "team", label: "Por equipe" },
@@ -284,6 +288,16 @@ type SummaryMedicationCandidate = {
   shifts: string;
 };
 
+type MedicalPrescriptionGroup = {
+  key: string;
+  admissionDate: string | null;
+  bed: string | null;
+  validationStartAt: string | null;
+  validationEndAt: string | null;
+  validationStatus: string | null;
+  prescriptions: MedicalPrescriptionRecord[];
+};
+
 type ExtractedExamImportResult = {
   fileName: string;
   pageCount: number;
@@ -297,6 +311,8 @@ type StockValidationFormState = {
   lotNumber: string;
   expirationDate: string;
   manufacturer: string;
+  patientDidNotBring: boolean;
+  stockValidationNote: string;
 };
 
 type PriorMedicationReconciliationFormState = {
@@ -338,7 +354,9 @@ function createEmptyStockValidationFormState(): StockValidationFormState {
     quantityTablets: "",
     lotNumber: "",
     expirationDate: "",
-    manufacturer: ""
+    manufacturer: "",
+    patientDidNotBring: false,
+    stockValidationNote: ""
   };
 }
 
@@ -466,49 +484,182 @@ function stripEvolutionTitles(input: string): string {
     .trim();
 }
 
-function groupPrescriptionRecordsBySet(prescriptions: MedicalPrescriptionRecord[]): Array<{
-  key: string;
-  validationStartAt: string | null;
-  validationEndAt: string | null;
-  prescriptions: MedicalPrescriptionRecord[];
-}> {
+function getPrescriptionReferenceDateKey(prescription: MedicalPrescriptionRecord): string {
+  return normalizeDateOnlyKey(
+    prescription.validationEndAt ?? prescription.validationStartAt ?? prescription.createdAt
+  );
+}
+
+function getPrescriptionRecordSortTime(prescription: MedicalPrescriptionRecord): number {
+  return new Date(
+    prescription.validationStartAt ?? prescription.validationEndAt ?? prescription.createdAt
+  ).getTime();
+}
+
+function chooseEarlierPrescriptionDate(
+  current: string | null,
+  next: string | null
+): string | null {
+  if (!current) {
+    return next;
+  }
+
+  if (!next) {
+    return current;
+  }
+
+  return new Date(next).getTime() < new Date(current).getTime() ? next : current;
+}
+
+function chooseLaterPrescriptionDate(current: string | null, next: string | null): string | null {
+  if (!current) {
+    return next;
+  }
+
+  if (!next) {
+    return current;
+  }
+
+  return new Date(next).getTime() > new Date(current).getTime() ? next : current;
+}
+
+function buildPrescriptionLineDedupKey(prescription: MedicalPrescriptionRecord): string {
+  return [
+    prescription.medicationId ?? "sem-medicamento",
+    normalizeMedicationName(prescription.medicationName),
+    prescription.dose,
+    normalizeMedicationName(prescription.doseUnit),
+    normalizeMedicationName(prescription.administrationRoute ?? ""),
+    normalizeMedicationName(prescription.frequency),
+    normalizeMedicationName(prescription.shifts),
+    normalizeMedicationName(prescription.notes ?? ""),
+    prescription.externalValidationCandidate ? "externo" : "catalogo"
+  ].join("|");
+}
+
+function pickMostRecentPrescription(
+  current: MedicalPrescriptionRecord,
+  next: MedicalPrescriptionRecord
+): MedicalPrescriptionRecord {
+  const currentScore = [
+    current.patientDidNotBring,
+    current.stockValidationNote?.trim(),
+    current.quantityTablets !== null,
+    current.lotNumber?.trim(),
+    current.expirationDate,
+    current.manufacturer?.trim(),
+    current.interventionNotes?.trim(),
+    current.interventionRequestedToPrescriber !== null,
+    current.interventionResponse
+  ].filter(Boolean).length;
+  const nextScore = [
+    next.patientDidNotBring,
+    next.stockValidationNote?.trim(),
+    next.quantityTablets !== null,
+    next.lotNumber?.trim(),
+    next.expirationDate,
+    next.manufacturer?.trim(),
+    next.interventionNotes?.trim(),
+    next.interventionRequestedToPrescriber !== null,
+    next.interventionResponse
+  ].filter(Boolean).length;
+
+  if (nextScore !== currentScore) {
+    return nextScore > currentScore ? next : current;
+  }
+
+  const currentTime = getPrescriptionRecordSortTime(current);
+  const nextTime = getPrescriptionRecordSortTime(next);
+  if (nextTime !== currentTime) {
+    return nextTime > currentTime ? next : current;
+  }
+
+  const currentCreatedAt = new Date(current.createdAt).getTime();
+  const nextCreatedAt = new Date(next.createdAt).getTime();
+  if (nextCreatedAt !== currentCreatedAt) {
+    return nextCreatedAt > currentCreatedAt ? next : current;
+  }
+
+  return next.id > current.id ? next : current;
+}
+
+function groupPrescriptionRecordsBySet(
+  prescriptions: MedicalPrescriptionRecord[]
+): MedicalPrescriptionGroup[] {
   const groups = new Map<
     string,
-    {
-      key: string;
-      validationStartAt: string | null;
-      validationEndAt: string | null;
-      prescriptions: MedicalPrescriptionRecord[];
+    Omit<MedicalPrescriptionGroup, "prescriptions"> & {
+      prescriptionsByKey: Map<string, MedicalPrescriptionRecord>;
     }
   >();
 
   for (const prescription of prescriptions) {
     const key = [
       prescription.admissionId ?? "sem-admissao",
-      normalizeDateOnlyKey(prescription.validationStartAt),
-      normalizeDateOnlyKey(prescription.validationEndAt),
+      getPrescriptionReferenceDateKey(prescription),
       prescription.validationStatus ?? "sem-status"
     ].join("|");
 
     const currentGroup = groups.get(key);
     if (currentGroup) {
-      currentGroup.prescriptions.push(prescription);
+      if (!currentGroup.admissionDate && prescription.admissionDate) {
+        currentGroup.admissionDate = prescription.admissionDate;
+      }
+
+      if (!currentGroup.bed && prescription.bed) {
+        currentGroup.bed = prescription.bed;
+      }
+
+      currentGroup.validationStartAt = chooseEarlierPrescriptionDate(
+        currentGroup.validationStartAt,
+        prescription.validationStartAt
+      );
+      currentGroup.validationEndAt = chooseLaterPrescriptionDate(
+        currentGroup.validationEndAt,
+        prescription.validationEndAt
+      );
+
+      const lineKey = buildPrescriptionLineDedupKey(prescription);
+      const currentPrescription = currentGroup.prescriptionsByKey.get(lineKey);
+      currentGroup.prescriptionsByKey.set(
+        lineKey,
+        currentPrescription ? pickMostRecentPrescription(currentPrescription, prescription) : prescription
+      );
       continue;
     }
 
     groups.set(key, {
       key,
+      admissionDate: prescription.admissionDate,
+      bed: prescription.bed,
       validationStartAt: prescription.validationStartAt,
       validationEndAt: prescription.validationEndAt,
-      prescriptions: [prescription]
+      validationStatus: prescription.validationStatus,
+      prescriptionsByKey: new Map([[buildPrescriptionLineDedupKey(prescription), prescription]])
     });
   }
 
-  return Array.from(groups.values()).sort((firstGroup, secondGroup) => {
-    const firstTime = getPrescriptionValiditySortTime(firstGroup.validationStartAt);
-    const secondTime = getPrescriptionValiditySortTime(secondGroup.validationStartAt);
-    return secondTime - firstTime;
-  });
+  return Array.from(groups.values())
+    .map((group) => ({
+      key: group.key,
+      admissionDate: group.admissionDate,
+      bed: group.bed,
+      validationStartAt: group.validationStartAt,
+      validationEndAt: group.validationEndAt,
+      validationStatus: group.validationStatus,
+      prescriptions: Array.from(group.prescriptionsByKey.values()).sort(
+        (first, second) => getPrescriptionRecordSortTime(second) - getPrescriptionRecordSortTime(first)
+      )
+    }))
+    .sort((firstGroup, secondGroup) => {
+      const firstTime = getPrescriptionValiditySortTime(
+        firstGroup.validationEndAt ?? firstGroup.validationStartAt
+      );
+      const secondTime = getPrescriptionValiditySortTime(
+        secondGroup.validationEndAt ?? secondGroup.validationStartAt
+      );
+      return secondTime - firstTime;
+    });
 }
 
 function buildMandatoryEvolutionPreviewText(payload: MandatoryEvolutionPreviewPayload): string {
@@ -652,23 +803,20 @@ function buildMandatoryEvolutionPreviewText(payload: MandatoryEvolutionPreviewPa
           frequency: prescription.frequency,
           shifts: prescription.shifts
         });
-        const durationDays = calculateDurationDays(prescription.quantityTablets, dailyTabletUse);
-        const details = [
-          prescription.quantityTablets !== null ? `${prescription.quantityTablets} comp` : "",
-          prescription.lotNumber?.trim() ? `Lote ${prescription.lotNumber.trim()}` : "",
-          prescription.expirationDate
-            ? `Validade ${formatAdmissionDateValue(prescription.expirationDate)}`
-            : "",
-          prescription.manufacturer?.trim()
-            ? `Marca/Laboratório ${prescription.manufacturer.trim()}`
-            : "",
-          durationDays !== null ? `Duração estimada ${formatDurationDays(durationDays)}` : ""
-        ].filter((part) => part.length > 0);
-
         const displayMedicationName = getMedicationReferenceName(prescription.medicationName);
-        return details.length > 0
-          ? `${displayMedicationName} | ${details.join(" | ")}`
-          : displayMedicationName;
+        const durationDays = prescription.patientDidNotBring
+          ? null
+          : calculateDurationDays(prescription.quantityTablets, dailyTabletUse);
+        return buildMedicationValidationSummary({
+          displayMedicationName,
+          quantityTablets: prescription.quantityTablets,
+          lotNumber: prescription.lotNumber,
+          expirationDate: prescription.expirationDate,
+          manufacturer: prescription.manufacturer,
+          durationDays,
+          patientDidNotBring: prescription.patientDidNotBring,
+          stockValidationNote: prescription.stockValidationNote
+        });
       })
   );
 
@@ -833,6 +981,8 @@ function areStockValidationFormsEqual(
     lotNumber: string | null;
     expirationDate: string | null;
     manufacturer: string | null;
+    patientDidNotBring: boolean;
+    stockValidationNote: string | null;
   }
 ): boolean {
   return (
@@ -840,7 +990,9 @@ function areStockValidationFormsEqual(
       (reference.quantityTablets === null ? "" : String(reference.quantityTablets)) &&
     formState.lotNumber.trim() === (reference.lotNumber ?? "") &&
     formState.expirationDate.trim() === (reference.expirationDate ?? "") &&
-    formState.manufacturer.trim() === (reference.manufacturer ?? "")
+    formState.manufacturer.trim() === (reference.manufacturer ?? "") &&
+    formState.patientDidNotBring === reference.patientDidNotBring &&
+    formState.stockValidationNote.trim() === (reference.stockValidationNote ?? "")
   );
 }
 
@@ -900,6 +1052,14 @@ function normalizeInpatientWorkflowStoragePayload(
                   mandatory: shouldRemainMandatory(status, evolutionGeneratedAt),
                   firstVisitCompletedAt,
                   evolutionGeneratedAt,
+                  updatedByProfessionalName:
+                    typeof workflow.updatedByProfessionalName === "string"
+                      ? workflow.updatedByProfessionalName
+                      : null,
+                  updatedByProfessionalLogin:
+                    typeof workflow.updatedByProfessionalLogin === "string"
+                      ? workflow.updatedByProfessionalLogin
+                      : null,
                   updatedAt:
                     typeof workflow.updatedAt === "string" ? workflow.updatedAt : new Date().toISOString()
                 } satisfies InpatientWorkflowState
@@ -949,7 +1109,9 @@ function normalizeInpatientWorkflowStoragePayload(
 function mergeMandatoryEntriesIntoPayload(
   payload: InpatientWorkflowStoragePayload,
   manualEntries: InpatientEntry[],
-  entriesToPending: Map<string, number | null>
+  entriesToPending: Map<string, number | null>,
+  updatedByProfessionalName: string,
+  updatedByProfessionalLogin: string
 ): InpatientWorkflowStoragePayload {
   const nextTrackedEntriesByKey = new Map(payload.trackedEntries.map((entry) => [entry.key, entry]));
   for (const manualEntry of manualEntries) {
@@ -965,6 +1127,8 @@ function mergeMandatoryEntriesIntoPayload(
       mandatory: true,
       firstVisitCompletedAt: null,
       evolutionGeneratedAt: null,
+      updatedByProfessionalName: null,
+      updatedByProfessionalLogin: null,
       updatedAt: new Date().toISOString()
     };
 
@@ -975,6 +1139,8 @@ function mergeMandatoryEntriesIntoPayload(
       assignedTeamId: assignedTeamId ?? null,
       firstVisitCompletedAt: null,
       evolutionGeneratedAt: null,
+      updatedByProfessionalName,
+      updatedByProfessionalLogin,
       updatedAt: new Date().toISOString()
     };
   }
@@ -1314,6 +1480,33 @@ function formatDurationDays(durationDays: number | null): string {
   }
 
   return `${formatNumber(durationDays)} dias`;
+}
+
+function buildMedicationValidationSummary(input: {
+  displayMedicationName: string;
+  quantityTablets: number | null;
+  lotNumber: string | null | undefined;
+  expirationDate: string | null | undefined;
+  manufacturer: string | null | undefined;
+  durationDays: number | null;
+  patientDidNotBring: boolean;
+  stockValidationNote: string | null | undefined;
+}): string {
+  const details = [
+    input.patientDidNotBring ? "Paciente não trouxe" : "",
+    input.quantityTablets !== null ? `${input.quantityTablets} comp` : "",
+    input.lotNumber?.trim() ? `Lote ${input.lotNumber.trim()}` : "",
+    input.expirationDate ? `Validade ${formatAdmissionDateValue(input.expirationDate)}` : "",
+    input.manufacturer?.trim() ? `Marca/Laboratório ${input.manufacturer.trim()}` : "",
+    !input.patientDidNotBring && input.durationDays !== null
+      ? `Duração estimada ${formatDurationDays(input.durationDays)}`
+      : "",
+    input.stockValidationNote?.trim() ? `Nota: ${input.stockValidationNote.trim()}` : ""
+  ].filter((part) => part.length > 0);
+
+  return details.length > 0
+    ? `${input.displayMedicationName} | ${details.join(" | ")}`
+    : input.displayMedicationName;
 }
 
 function isLikelyExamResultValue(input: string): boolean {
@@ -2645,6 +2838,8 @@ export default function DashboardConsole({
   );
   const loadedPatientDetailsId = data?.loadedPatientDetailsId ?? null;
   const currentProfessional = data?.currentProfessional ?? null;
+  const currentWorkflowEditorName = currentProfessional?.fullName ?? currentLogin;
+  const currentWorkflowEditorLogin = currentProfessional?.login ?? currentLogin;
   const searchPatientId = searchParams.get("patientId");
   const searchPatientView = searchParams.get("patientView");
   const searchSection = searchParams.get("section");
@@ -3288,6 +3483,8 @@ export default function DashboardConsole({
         mandatory: true,
         firstVisitCompletedAt: null,
         evolutionGeneratedAt: null,
+        updatedByProfessionalName: null,
+        updatedByProfessionalLogin: null,
         updatedAt: entry.createdAt
       }
     );
@@ -4546,7 +4743,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
               row.prescription.quantityTablets === null ? "" : String(row.prescription.quantityTablets),
             lotNumber: row.prescription.lotNumber ?? "",
             expirationDate: row.prescription.expirationDate ?? "",
-            manufacturer: row.prescription.manufacturer ?? ""
+            manufacturer: row.prescription.manufacturer ?? "",
+            patientDidNotBring: row.prescription.patientDidNotBring,
+            stockValidationNote: row.prescription.stockValidationNote ?? ""
           } satisfies StockValidationFormState
         ])
       )
@@ -4557,51 +4756,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setPrescriptionInterventionOpenId(null);
   }, [selectedPatientPrescriptions]);
 
-  const selectedPatientPrescriptionGroups = useMemo(() => {
-    const groups = new Map<
-      string,
-      {
-        key: string;
-        admissionDate: string | null;
-        bed: string | null;
-        validationStartAt: string | null;
-        validationEndAt: string | null;
-        validationStatus: string | null;
-        prescriptions: typeof selectedPatientPrescriptions;
-      }
-    >();
-
-    for (const prescription of selectedPatientPrescriptions) {
-      const key = [
-        prescription.admissionId ?? "sem-admissao",
-        normalizeDateOnlyKey(prescription.validationStartAt),
-        normalizeDateOnlyKey(prescription.validationEndAt),
-        prescription.validationStatus ?? "sem-status"
-      ].join("|");
-
-      const currentGroup = groups.get(key);
-      if (currentGroup) {
-        currentGroup.prescriptions.push(prescription);
-        continue;
-      }
-
-      groups.set(key, {
-        key,
-        admissionDate: prescription.admissionDate,
-        bed: prescription.bed,
-        validationStartAt: prescription.validationStartAt,
-        validationEndAt: prescription.validationEndAt,
-        validationStatus: prescription.validationStatus,
-        prescriptions: [prescription]
-      });
-    }
-
-    return Array.from(groups.values()).sort((firstGroup, secondGroup) => {
-      const firstTime = getPrescriptionValiditySortTime(firstGroup.validationStartAt);
-      const secondTime = getPrescriptionValiditySortTime(secondGroup.validationStartAt);
-      return secondTime - firstTime;
-    });
-  }, [selectedPatientPrescriptions]);
+  const selectedPatientPrescriptionGroups = useMemo(
+    () => groupPrescriptionRecordsBySet(selectedPatientPrescriptions),
+    [selectedPatientPrescriptions]
+  );
 
   const recentPrescriptionGroups = useMemo(
     () => selectedPatientPrescriptionGroups.slice(0, 3),
@@ -4704,7 +4862,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           ...row,
           formState,
           currentQuantityTablets,
-          currentDurationDays: calculateDurationDays(currentQuantityTablets, row.dailyTabletUse),
+          currentDurationDays: formState.patientDidNotBring
+            ? null
+            : calculateDurationDays(currentQuantityTablets, row.dailyTabletUse),
           isDirty: !areStockValidationFormsEqual(formState, row.prescription)
         };
       }),
@@ -4843,22 +5003,16 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     pushSection(
       "#VALIDAÇÃO DE MEDICAMENTOS",
       medicationValidationEditableRows.map((row) => {
-        const details = [
-          row.currentQuantityTablets !== null ? `${row.currentQuantityTablets} comp` : "",
-          row.formState.lotNumber.trim() ? `Lote ${row.formState.lotNumber.trim()}` : "",
-          row.formState.expirationDate
-            ? `Validade ${formatAdmissionDateValue(row.formState.expirationDate)}`
-            : "",
-          row.formState.manufacturer.trim()
-            ? `Marca/Laboratório ${row.formState.manufacturer.trim()}`
-            : "",
-          row.currentDurationDays !== null
-            ? `Duração estimada ${formatDurationDays(row.currentDurationDays)}`
-            : ""
-        ].filter((part) => part.length > 0);
-        return details.length > 0
-          ? `${row.displayMedicationName} | ${details.join(" | ")}`
-          : row.displayMedicationName;
+        return buildMedicationValidationSummary({
+          displayMedicationName: row.displayMedicationName,
+          quantityTablets: row.currentQuantityTablets,
+          lotNumber: row.formState.lotNumber,
+          expirationDate: row.formState.expirationDate,
+          manufacturer: row.formState.manufacturer,
+          durationDays: row.currentDurationDays,
+          patientDidNotBring: row.formState.patientDidNotBring,
+          stockValidationNote: row.formState.stockValidationNote
+        });
       })
     );
 
@@ -5283,7 +5437,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   function updateMedicationValidationField(
     prescriptionId: number,
     field: keyof StockValidationFormState,
-    value: string
+    value: StockValidationFormState[keyof StockValidationFormState]
   ): void {
     setMedicationValidationForm((current) => ({
       ...current,
@@ -5292,6 +5446,27 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         [field]: value
       }
     }));
+  }
+
+  function toggleMedicationDidNotBring(prescriptionId: number, checked: boolean): void {
+    setMedicationValidationForm((current) => {
+      const nextState = {
+        ...(current[prescriptionId] ?? createEmptyStockValidationFormState()),
+        patientDidNotBring: checked
+      };
+
+      if (checked) {
+        nextState.quantityTablets = "";
+        nextState.lotNumber = "";
+        nextState.expirationDate = "";
+        nextState.manufacturer = "";
+      }
+
+      return {
+        ...current,
+        [prescriptionId]: nextState
+      };
+    });
   }
 
   function openDashboardSection(sectionId: DashboardSectionId): void {
@@ -5864,6 +6039,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
               mandatory: true,
               firstVisitCompletedAt: null,
               evolutionGeneratedAt: null,
+              updatedByProfessionalName: currentWorkflowEditorName,
+              updatedByProfessionalLogin: currentWorkflowEditorLogin,
               updatedAt: now
             }
           };
@@ -5878,6 +6055,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           [trackedInpatientEntry.key]: {
             ...currentWorkflow,
             assignedTeamId,
+            updatedByProfessionalName: currentWorkflowEditorName,
+            updatedByProfessionalLogin: currentWorkflowEditorLogin,
             updatedAt: now
           }
         };
@@ -6461,7 +6640,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           quantityTablets: formState.quantityTablets,
           lotNumber: formState.lotNumber,
           expirationDate: formState.expirationDate,
-          manufacturer: formState.manufacturer
+          manufacturer: formState.manufacturer,
+          patientDidNotBring: formState.patientDidNotBring,
+          stockValidationNote: formState.stockValidationNote
         })
       });
 
@@ -6831,6 +7012,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         mandatory: true,
         firstVisitCompletedAt: null,
         evolutionGeneratedAt: null,
+        updatedByProfessionalName: null,
+        updatedByProfessionalLogin: null,
         updatedAt: now
       };
       const currentWorkflow = current[inpatientKey] ?? fallbackWorkflow;
@@ -6848,6 +7031,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         mandatory: shouldRemainMandatory(nextStatus, nextEvolutionGeneratedAt),
         firstVisitCompletedAt: nextFirstVisitCompletedAt,
         evolutionGeneratedAt: nextEvolutionGeneratedAt,
+        updatedByProfessionalName: currentWorkflowEditorName,
+        updatedByProfessionalLogin: currentWorkflowEditorLogin,
         updatedAt: now
       };
 
@@ -6929,6 +7114,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         mandatory: true,
         firstVisitCompletedAt: now,
         evolutionGeneratedAt: null,
+        updatedByProfessionalName: null,
+        updatedByProfessionalLogin: null,
         updatedAt: now
       };
       const baseWorkflow = current[entry.key] ?? fallbackWorkflow;
@@ -6941,6 +7128,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           mandatory: false,
           firstVisitCompletedAt: baseWorkflow.firstVisitCompletedAt ?? now,
           evolutionGeneratedAt: now,
+          updatedByProfessionalName: currentWorkflowEditorName,
+          updatedByProfessionalLogin: currentWorkflowEditorLogin,
           updatedAt: now
         }
       };
@@ -6998,6 +7187,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         mandatory: true,
         firstVisitCompletedAt: null,
         evolutionGeneratedAt: null,
+        updatedByProfessionalName: null,
+        updatedByProfessionalLogin: null,
         updatedAt: now
       };
       const currentWorkflow = current[inpatientKey] ?? fallbackWorkflow;
@@ -7010,6 +7201,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         [inpatientKey]: {
           ...currentWorkflow,
           assignedTeamId: nextTeamId,
+          updatedByProfessionalName: currentWorkflowEditorName,
+          updatedByProfessionalLogin: currentWorkflowEditorLogin,
           updatedAt: now
         }
       };
@@ -7218,7 +7411,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             priorityTeamIds
           },
           manualEntries,
-          entriesToPending
+          entriesToPending,
+          currentWorkflowEditorName,
+          currentWorkflowEditorLogin
         );
 
         setTrackedInpatientEntries(mergedPayload.trackedEntries);
@@ -7947,13 +8142,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     <th>Leito</th>
                                     <th>Equipe</th>
                                     <th>Status</th>
+                                    <th>Último farmacêutico</th>
                                     <th>Detalhes</th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {teamOverviewRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={6}>Nenhum paciente encontrado para este filtro.</td>
+                                      <td colSpan={7}>Nenhum paciente encontrado para este filtro.</td>
                                     </tr>
                                   ) : (
                                     teamOverviewRows.map(({ entry, workflow, isPriorityTeam }) => (
@@ -7998,6 +8194,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                             ))}
                                           </select>
                                         </td>
+                                        <td>{formatWorkflowEditorLabel(workflow)}</td>
                                         <td>
                                           {entry.patientId ? (
                                             <button
@@ -8025,15 +8222,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                         <section className="dashboard-subsection">
                           <div className="dashboard-subsection-block">
                             <h3>Lista diária</h3>
-                            <p className="dashboard-muted">
-                              Cole a lista do sistema no formato `Leito | Nome | Prontuário | Admissão` ou
-                              `Leito | Nome | Idade | Prontuário | Admissão`.
-                            </p>
-                            <p className="dashboard-muted">
-                              Todos os pacientes internados entram nesta lista e permanecem aqui enquanto o
-                              status for `Visitado`, `Pendente` ou `Alta`. Eles só saem quando você marcar
-                              `Concluído`.
-                            </p>
 
                             <div className="dashboard-form">
                               <textarea
@@ -8067,13 +8255,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     <th>1ª visita</th>
                                     <th>Evolução</th>
                                     <th>Origem</th>
+                                    <th>Último farmacêutico</th>
                                     <th>Detalhes</th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {mandatoryOverviewRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={10}>Nenhum paciente na sua lista diária.</td>
+                                      <td colSpan={11}>Nenhum paciente na sua lista diária.</td>
                                     </tr>
                                   ) : (
                                     mandatoryOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
@@ -8126,6 +8315,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                           )}
                                         </td>
                                         <td>{entry.source === "active" ? "Internado ativo" : "Dados brutos"}</td>
+                                        <td>{formatWorkflowEditorLabel(workflow)}</td>
                                         <td>
                                           {entry.patientId ? (
                                             <button
@@ -8164,6 +8354,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     <th>Prontuário</th>
                                     <th>Equipe</th>
                                     <th>Status</th>
+                                    <th>Último farmacêutico</th>
                                     <th>Atualização</th>
                                     <th>Detalhes</th>
                                   </tr>
@@ -8171,7 +8362,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 <tbody>
                                   {dischargedOverviewRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={6}>Nenhum paciente de alta ou concluído.</td>
+                                      <td colSpan={7}>Nenhum paciente de alta ou concluído.</td>
                                     </tr>
                                   ) : (
                                     dischargedOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
@@ -8180,6 +8371,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         <td>{entry.chartNumber || "-"}</td>
                                         <td>{assignedTeamName ?? entry.teamName ?? "-"}</td>
                                         <td>{workflow.status}</td>
+                                        <td>{formatWorkflowEditorLabel(workflow)}</td>
                                         <td>{formatTimestamp(workflow.updatedAt)}</td>
                                         <td>
                                           {entry.patientId ? (
@@ -9478,6 +9670,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     <th>Lote</th>
                                     <th>Validade</th>
                                     <th>Laboratório/Marca</th>
+                                    <th>Não trouxe</th>
+                                    <th>Nota</th>
                                     <th>Consumo/dia</th>
                                     <th>Duração</th>
                                     <th>Prescrição</th>
@@ -9487,7 +9681,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 <tbody>
                                   {medicationValidationEditableRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={12}>
+                                      <td colSpan={14}>
                                         Nenhum medicamento não cadastrado encontrado na prescrição.
                                       </td>
                                     </tr>
@@ -9505,6 +9699,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                             type="number"
                                             min="0"
                                             value={row.formState.quantityTablets}
+                                            disabled={row.formState.patientDidNotBring}
                                             onChange={(event) =>
                                               updateMedicationValidationField(
                                                 row.prescription.id,
@@ -9517,6 +9712,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         <td>
                                           <input
                                             value={row.formState.lotNumber}
+                                            disabled={row.formState.patientDidNotBring}
                                             onChange={(event) =>
                                               updateMedicationValidationField(
                                                 row.prescription.id,
@@ -9530,6 +9726,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                           <input
                                             type="date"
                                             value={row.formState.expirationDate}
+                                            disabled={row.formState.patientDidNotBring}
                                             onChange={(event) =>
                                               updateMedicationValidationField(
                                                 row.prescription.id,
@@ -9542,6 +9739,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         <td>
                                           <input
                                             value={row.formState.manufacturer}
+                                            disabled={row.formState.patientDidNotBring}
                                             onChange={(event) =>
                                               updateMedicationValidationField(
                                                 row.prescription.id,
@@ -9552,11 +9750,43 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                           />
                                         </td>
                                         <td>
+                                          <label className="dashboard-inline-toggle">
+                                            <input
+                                              type="checkbox"
+                                              checked={row.formState.patientDidNotBring}
+                                              onChange={(event) =>
+                                                toggleMedicationDidNotBring(
+                                                  row.prescription.id,
+                                                  event.target.checked
+                                                )
+                                              }
+                                            />
+                                            Não trouxe
+                                          </label>
+                                        </td>
+                                        <td>
+                                          <input
+                                            placeholder="Observação"
+                                            value={row.formState.stockValidationNote}
+                                            onChange={(event) =>
+                                              updateMedicationValidationField(
+                                                row.prescription.id,
+                                                "stockValidationNote",
+                                                event.target.value
+                                              )
+                                            }
+                                          />
+                                        </td>
+                                        <td>
                                           {row.dailyTabletUse !== null
                                             ? `${formatNumber(row.dailyTabletUse)} comp/dia`
                                             : "-"}
                                         </td>
-                                        <td>{formatDurationDays(row.currentDurationDays)}</td>
+                                        <td>
+                                          {row.formState.patientDidNotBring
+                                            ? "Paciente não trouxe"
+                                            : formatDurationDays(row.currentDurationDays)}
+                                        </td>
                                         <td>
                                           {row.prescription.validationStartAt
                                             ? formatTimestamp(row.prescription.validationStartAt)
@@ -9621,6 +9851,12 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   <div className="dashboard-subtle-picker-actions">
                                     {recentPrescriptionGroups.map((group) => {
                                       const referenceDate =
+                                        group.validationEndAt ??
+                                        group.validationStartAt ??
+                                        group.prescriptions[0]?.createdAt ??
+                                        "";
+
+                                      const titleStartDate =
                                         group.validationStartAt ??
                                         group.validationEndAt ??
                                         group.prescriptions[0]?.createdAt ??
@@ -9635,8 +9871,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                           }`}
                                           onClick={() => setSelectedPrescriptionGroupKey(group.key)}
                                           title={`Vigência: ${
-                                            group.validationStartAt
-                                              ? formatPrescriptionValidityDate(group.validationStartAt)
+                                            titleStartDate
+                                              ? formatPrescriptionValidityDate(titleStartDate)
                                               : "não definida"
                                           } até ${
                                             group.validationEndAt
