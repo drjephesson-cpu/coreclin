@@ -1045,6 +1045,30 @@ function getMedicationReferenceName(input: string): string {
   return sanitizedMedication.medicationName || input.trim();
 }
 
+function collectMedicationMatchTerms(input: string): string[] {
+  const referenceName = getMedicationReferenceName(input)
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!referenceName) {
+    return [];
+  }
+
+  const terms = new Set<string>();
+  const normalizedReference = normalizeMedicationName(referenceName);
+  if (normalizedReference) {
+    terms.add(normalizedReference);
+  }
+
+  const identityLabel = extractMedicationIdentityLabel(referenceName);
+  const normalizedIdentity = normalizeMedicationName(identityLabel);
+  if (normalizedIdentity) {
+    terms.add(normalizedIdentity);
+  }
+
+  return Array.from(terms);
+}
+
 function getPrescriptionMedicationDisplayName(
   medicationName: string,
   externalValidationCandidate: boolean
@@ -1795,10 +1819,10 @@ function parseMandatoryAdmissionDate(input: string): string {
 }
 
 function shouldRemainMandatory(
-  _status: InpatientWorkflowStatus,
-  evolutionGeneratedAt: string | null
+  status: InpatientWorkflowStatus,
+  _evolutionGeneratedAt: string | null
 ): boolean {
-  return !evolutionGeneratedAt;
+  return status === "Pendente";
 }
 
 function escapeRegExp(input: string): string {
@@ -2320,7 +2344,7 @@ export default function DashboardConsole({
     : "admission-info";
   const requestedSection = DASHBOARD_SECTION_IDS.has(searchSection ?? "")
     ? (searchSection as DashboardSectionId)
-    : "professional";
+    : null;
   const requestedInpatientMode = INPATIENT_OVERVIEW_IDS.has(searchInpatientMode ?? "")
     ? (searchInpatientMode as InpatientOverviewMode)
     : "all";
@@ -2369,7 +2393,7 @@ export default function DashboardConsole({
     setPrescriptions(data?.prescriptions ?? []);
   }, [data?.prescriptions]);
 
-  const [activeSection, setActiveSection] = useState<DashboardSectionId>(
+  const [activeSection, setActiveSection] = useState<DashboardSectionId | null>(
     patientPageMode ? "inpatients" : requestedSection
   );
   const [listVisibility, setListVisibility] = useState<Record<DashboardSectionId, boolean>>({
@@ -3537,37 +3561,49 @@ function resolveAllergyConflict(medicationName: string): AllergyConflictResult |
   );
 
   function findCatalogMedicationMatchByName(medicationName: string) {
-    const normalizedName = normalizeMedicationName(medicationName);
-    if (!normalizedName) {
+    const searchTerms = collectMedicationMatchTerms(medicationName);
+    if (searchTerms.length === 0) {
       return null;
     }
 
-    const directMatch = medicationDescriptors.find((descriptor) => {
-      if (descriptor.normalizedName === normalizedName) {
-        return true;
-      }
+    const scoredMatches = medicationDescriptors
+      .map((descriptor) => {
+        let score = 0;
 
-      if (isMedicationNameCompatible(descriptor.medication.name, medicationName)) {
-        return true;
-      }
+        const matchTerms = (candidate: string, candidateScore: number) => {
+          const candidateTerms = collectMedicationMatchTerms(candidate);
+          if (candidateTerms.some((candidateTerm) => searchTerms.includes(candidateTerm))) {
+            score = Math.max(score, candidateScore);
+          }
+        };
 
-      return descriptor.aliasTerms.some((aliasTerm) =>
-        hasConceptTermMatch(aliasTerm.normalized, normalizedName)
-      );
-    });
+        matchTerms(descriptor.medication.name, 120);
+        descriptor.aliasTerms.forEach((aliasTerm) => {
+          matchTerms(aliasTerm.raw, 110);
+        });
+        descriptor.activeIngredientTerms.forEach((ingredientTerm) => {
+          matchTerms(ingredientTerm.raw, 100);
+        });
 
-    if (directMatch) {
-      return directMatch.medication;
+        return score > 0 ? { descriptor, score } : null;
+      })
+      .filter((item): item is { descriptor: (typeof medicationDescriptors)[number]; score: number } => item !== null)
+      .sort((first, second) => {
+        if (second.score !== first.score) {
+          return second.score - first.score;
+        }
+
+        return first.descriptor.medication.name.length - second.descriptor.medication.name.length;
+      });
+
+    const bestMatch = scoredMatches[0] ?? null;
+    if (!bestMatch) {
+      return null;
     }
 
-    const ingredientMatches = medicationDescriptors.filter((descriptor) =>
-      descriptor.activeIngredientTerms.some((ingredientTerm) =>
-        hasConceptTermMatch(ingredientTerm.normalized, normalizedName)
-      )
-    );
-
-    if (ingredientMatches.length === 1) {
-      return ingredientMatches[0].medication;
+    const competingBestMatches = scoredMatches.filter((item) => item.score === bestMatch.score);
+    if (competingBestMatches.length === 1 || bestMatch.score >= 120) {
+      return bestMatch.descriptor.medication;
     }
 
     return null;
@@ -3655,60 +3691,7 @@ function isLikelySummaryMedicationLabel(input: string): boolean {
       }
     }
 
-    const normalizedLabel = normalizeMedicationName(searchCandidates[0] ?? "");
-    if (!normalizedLabel) {
-      return null;
-    }
-
-    const scoredMatches = medicationDescriptors
-      .map((descriptor) => {
-        let score = 0;
-
-        if (descriptor.normalizedName === normalizedLabel) {
-          score = 100;
-        } else if (descriptor.aliasTerms.some((aliasTerm) => aliasTerm.normalized === normalizedLabel)) {
-          score = 95;
-        } else if (
-          descriptor.activeIngredientTerms.some((ingredientTerm) => ingredientTerm.normalized === normalizedLabel)
-        ) {
-          score = 85;
-        } else if (
-          hasTokenBoundaryMatch(descriptor.normalizedName, normalizedLabel) ||
-          hasTokenBoundaryMatch(normalizedLabel, descriptor.normalizedName)
-        ) {
-          score = 70;
-        } else if (
-          descriptor.aliasTerms.some(
-            (aliasTerm) =>
-              hasTokenBoundaryMatch(aliasTerm.normalized, normalizedLabel) ||
-              hasTokenBoundaryMatch(normalizedLabel, aliasTerm.normalized)
-          )
-        ) {
-          score = 65;
-        }
-
-        return score > 0 ? { descriptor, score } : null;
-      })
-      .filter((item): item is { descriptor: (typeof medicationDescriptors)[number]; score: number } => item !== null)
-      .sort((first, second) => {
-        if (second.score !== first.score) {
-          return second.score - first.score;
-        }
-
-        return first.descriptor.medication.name.length - second.descriptor.medication.name.length;
-      });
-
-    const bestMatch = scoredMatches[0] ?? null;
-    if (!bestMatch) {
-      return null;
-    }
-
-    const competingBestMatches = scoredMatches.filter((item) => item.score === bestMatch.score);
-    if (competingBestMatches.length > 1 && bestMatch.score < 100) {
-      return null;
-    }
-
-    return bestMatch.descriptor.medication;
+    return null;
   }
 
 function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicationCandidate[] {
@@ -5569,7 +5552,59 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           (shouldUpdateAdmission ? "Internação atualizada com sucesso." : "Internação cadastrada com sucesso.")
         }${autofillDetails ? ` Trecho de MUC analisado: ${autofillDetails}.` : ""}`
       });
-      upsertAdmissionRecordLocally(result.admission, selectedPatient);
+      const savedAdmission = result.admission;
+      const trackedInpatientEntry = buildInpatientEntryFromAdmission(
+        mergePatientWithAdmission(selectedPatient, savedAdmission),
+        savedAdmission,
+        selectedInpatientEntry
+      );
+      setTrackedInpatientEntries((current) => {
+        const existingEntry = current.find((entry) => entry.key === trackedInpatientEntry.key) ?? null;
+        if (!existingEntry) {
+          return [trackedInpatientEntry, ...current];
+        }
+
+        if (areInpatientEntriesEquivalent(existingEntry, trackedInpatientEntry)) {
+          return current;
+        }
+
+        return current.map((entry) =>
+          entry.key === trackedInpatientEntry.key ? trackedInpatientEntry : entry
+        );
+      });
+      setWorkflowByInpatientKey((current) => {
+        const now = new Date().toISOString();
+        const currentWorkflow = current[trackedInpatientEntry.key] ?? null;
+        const assignedTeamId = savedAdmission.teamId ?? trackedInpatientEntry.teamId ?? null;
+
+        if (!currentWorkflow || !shouldUpdateAdmission) {
+          return {
+            ...current,
+            [trackedInpatientEntry.key]: {
+              status: "Pendente",
+              assignedTeamId,
+              mandatory: true,
+              firstVisitCompletedAt: null,
+              evolutionGeneratedAt: null,
+              updatedAt: now
+            }
+          };
+        }
+
+        if (currentWorkflow.assignedTeamId === assignedTeamId) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [trackedInpatientEntry.key]: {
+            ...currentWorkflow,
+            assignedTeamId,
+            updatedAt: now
+          }
+        };
+      });
+      upsertAdmissionRecordLocally(savedAdmission, selectedPatient);
       setAdmissionForm(createEmptyAdmissionFormState());
     } catch {
       setAdmissionFeedback({
@@ -7183,6 +7218,16 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             ) : null}
 
             <div className={`dashboard-content ${effectivePatientPageMode ? "is-patient-page" : ""}`}>
+              {!effectivePatientPageMode && activeSection === null ? (
+                <section className="dashboard-card dashboard-empty-card">
+                  <div className="dashboard-empty-state">
+                    <p className="dashboard-empty-kicker">Use Coreclin!</p>
+                    <h2>A sua ferramenta de auxílio à decisão terapêutica.</h2>
+                    <p>Escolha uma opção na barra lateral para abrir um módulo.</p>
+                  </div>
+                </section>
+              ) : null}
+
               {activeSection === "professional" ? (
                 <section className="dashboard-card">
                   <h2>Cadastrar Profissional</h2>
@@ -7753,7 +7798,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                             </p>
                             <p className="dashboard-muted">
                               Aqui aparecem apenas os pacientes adicionados por você. O paciente só sai desta
-                              lista após `Concluído` e `Gerar evolução`; depois disso, ele permanece em `Por equipe`
+                              lista quando você marcar `Concluído`; depois disso, ele permanece em `Por equipe`
                               e `Todos`.
                             </p>
 
@@ -8826,7 +8871,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   type="number"
                                   step="0.01"
                                   min="0"
-                                  placeholder="Dose"
+                                  placeholder="Dose (opcional)"
                                   value={priorMedicationForm.dose}
                                   onChange={(event) =>
                                     setPriorMedicationForm((current) => ({
@@ -8834,10 +8879,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                       dose: event.target.value
                                     }))
                                   }
-                                  required
                                 />
                                 <input
-                                  placeholder="Unidade da dose"
+                                  placeholder="Unidade da dose (opcional)"
                                   value={priorMedicationForm.doseUnit}
                                   onChange={(event) =>
                                     setPriorMedicationForm((current) => ({
@@ -8845,7 +8889,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                       doseUnit: event.target.value
                                     }))
                                   }
-                                  required
                                 />
                               </div>
 
@@ -8858,9 +8901,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                       frequency: event.target.value
                                     }))
                                   }
-                                  required
                                 >
-                                  <option value="">Selecione a frequência</option>
+                                  <option value="">Selecione a frequência (opcional)</option>
                                   {PRIOR_MEDICATION_FREQUENCY_OPTIONS.map((frequencyOption) => (
                                     <option key={frequencyOption} value={frequencyOption}>
                                       {frequencyOption}
@@ -8876,9 +8918,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                       shifts: event.target.value
                                     }))
                                   }
-                                  required
                                 />
                               </div>
+
+                              <p className="dashboard-muted">
+                                Se não tiver dose, frequência ou quantidade por horário, você pode salvar apenas
+                                o nome do medicamento.
+                              </p>
 
                               <p className="dashboard-muted">
                                 Para esquema semanal (ex.: 3 vezes por semana), selecione a frequência e informe a
