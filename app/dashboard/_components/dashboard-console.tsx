@@ -3250,37 +3250,8 @@ export default function DashboardConsole({
 
   const mandatoryOverviewRows = useMemo(
     () => {
-      const trackedKeys = new Set(trackedInpatientEntries.map((entry) => entry.key));
-      const explicitMandatoryWorkflowKeys = new Set(
-        Object.entries(workflowByInpatientKey)
-          .filter(([, workflow]) => workflow.mandatory)
-          .map(([entryKey]) => entryKey)
-      );
-
       return inpatientEntriesWithWorkflow
-        .filter(({ entry, workflow, assignedTeamName }) => {
-          const isExplicitDailyEntry =
-            trackedKeys.has(entry.key) || explicitMandatoryWorkflowKeys.has(entry.key);
-          const hasAssignedTeam =
-            workflow.assignedTeamId !== null ||
-            assignedTeamName !== null ||
-            entry.teamId !== null ||
-            entry.teamName !== null;
-
-          if (workflow.status === "Alta") {
-            return false;
-          }
-
-          if (isExplicitDailyEntry) {
-            return workflow.mandatory;
-          }
-
-          if (hasAssignedTeam) {
-            return workflow.status === "Pendente";
-          }
-
-          return false;
-        })
+        .filter(({ workflow }) => workflow.status === "Pendente")
         .sort((first, second) => {
           const firstPriority = first.workflow.firstVisitCompletedAt ? 1 : 0;
           const secondPriority = second.workflow.firstVisitCompletedAt ? 1 : 0;
@@ -3291,7 +3262,7 @@ export default function DashboardConsole({
           return first.entry.patientName.localeCompare(second.entry.patientName, "pt-BR");
         });
     },
-    [inpatientEntriesWithWorkflow, trackedInpatientEntries]
+    [inpatientEntriesWithWorkflow]
   );
 
   const dischargedOverviewRows = useMemo(
@@ -7986,9 +7957,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               `Leito | Nome | Idade | Prontuário | Admissão`.
                             </p>
                             <p className="dashboard-muted">
-                              Aqui aparecem os pacientes adicionados por você e também os internados que já
-                              estão vinculados a uma equipe. Eles só saem desta lista quando você marcar
-                              `Concluído`; depois disso, permanecem em `Por equipe` e `Todos`.
+                              Aqui aparecem todos os pacientes internados com status `Pendente`. Eles só saem
+                              desta lista quando você marcar `Concluído` ou `Alta`.
                             </p>
 
                             <div className="dashboard-form">
