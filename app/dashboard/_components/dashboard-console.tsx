@@ -3475,19 +3475,54 @@ export default function DashboardConsole({
     return lookup;
   }, [teams]);
 
+  useEffect(() => {
+    setWorkflowByInpatientKey((current) => {
+      let hasChanges = false;
+      const nextEntries = Object.fromEntries(
+        Object.entries(current).map(([entryKey, workflow]) => {
+          const nextWorkflow: InpatientWorkflowState =
+            workflow.updatedByProfessionalName && workflow.updatedByProfessionalLogin
+              ? workflow
+              : {
+                  ...workflow,
+                  updatedByProfessionalName:
+                    workflow.updatedByProfessionalName ?? currentWorkflowEditorName,
+                  updatedByProfessionalLogin:
+                    workflow.updatedByProfessionalLogin ?? currentWorkflowEditorLogin
+                };
+
+          if (nextWorkflow !== workflow) {
+            hasChanges = true;
+          }
+
+          return [entryKey, nextWorkflow];
+        })
+      );
+
+      return hasChanges ? nextEntries : current;
+    });
+  }, [currentWorkflowEditorLogin, currentWorkflowEditorName]);
+
   function resolveInpatientWorkflow(entry: InpatientEntry): InpatientWorkflowState {
-    return (
-      workflowByInpatientKey[entry.key] ?? {
-        status: "Pendente",
-        assignedTeamId: entry.teamId ?? null,
-        mandatory: true,
-        firstVisitCompletedAt: null,
-        evolutionGeneratedAt: null,
-        updatedByProfessionalName: null,
-        updatedByProfessionalLogin: null,
-        updatedAt: entry.createdAt
-      }
-    );
+    const workflow = workflowByInpatientKey[entry.key];
+    if (workflow) {
+      return {
+        ...workflow,
+        updatedByProfessionalName: workflow.updatedByProfessionalName ?? currentWorkflowEditorName,
+        updatedByProfessionalLogin: workflow.updatedByProfessionalLogin ?? currentWorkflowEditorLogin
+      };
+    }
+
+    return {
+      status: "Pendente",
+      assignedTeamId: entry.teamId ?? null,
+      mandatory: true,
+      firstVisitCompletedAt: null,
+      evolutionGeneratedAt: null,
+      updatedByProfessionalName: currentWorkflowEditorName,
+      updatedByProfessionalLogin: currentWorkflowEditorLogin,
+      updatedAt: entry.createdAt
+    };
   }
 
   const inpatientEntries = useMemo(() => {
