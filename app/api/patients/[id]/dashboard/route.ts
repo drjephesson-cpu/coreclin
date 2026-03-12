@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
 import {
+  listAdmissionRoundNotes,
   listMedicalPrescriptions,
   listPatientAllergies,
   listPatientExamImports,
@@ -29,14 +30,16 @@ export async function GET(
   }
 
   try {
-    const [patients, admissions, allergies, priorMedications, examImports, prescriptions] = await Promise.all([
+    const [patients, admissions, allergies, priorMedications, examImports, roundNotes, prescriptions] =
+      await Promise.all([
       listPatients(patientId, { includeLatestDetails: true }),
       listRecentAdmissions(200, patientId),
       listPatientAllergies(patientId),
       listPriorMedications(patientId),
       listPatientExamImports(patientId, { includeRawText: "latest" }),
+      listAdmissionRoundNotes(patientId),
       listMedicalPrescriptions(patientId)
-    ]);
+      ]);
 
     const patient = patients[0] ?? null;
     if (!patient) {
@@ -49,6 +52,7 @@ export async function GET(
       allergies,
       priorMedications,
       examImports,
+      roundNotes,
       prescriptions
     };
 

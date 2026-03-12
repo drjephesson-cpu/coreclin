@@ -8,6 +8,7 @@ import LogoutButton from "@/app/_components/logout-button";
 import { calculateClinicalIndexes } from "@/lib/clinical";
 import {
   type AdmissionRecord,
+  type AdmissionRoundNoteRecord,
   BSA_FORMULA_OPTIONS,
   BMI_FORMULA_OPTIONS,
   INTERVIEW_INFORMATION_QUALITY_OPTIONS,
@@ -15,6 +16,8 @@ import {
   COUNCIL_OPTIONS,
   MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS,
   PATIENT_SEX_OPTIONS,
+  PRESCRIPTION_INTERVENTION_CONTACT_OPTIONS,
+  PRESCRIPTION_INTERVENTION_ERROR_TYPE_OPTIONS,
   PROFESSION_OPTIONS,
   type BmiFormulaId,
   type BsaFormulaId,
@@ -35,6 +38,8 @@ import {
   type PatientAllergyRecord,
   type PatientRecord,
   type PatientSex,
+  type PrescriptionInterventionContactStatus,
+  type PrescriptionInterventionErrorType,
   type PriorMedicationRecord,
   type ProfessionalRecord,
   type ProfessionOption,
@@ -81,6 +86,7 @@ const DASHBOARD_NAV_ITEMS = [
   { id: "team", label: "Cadastrar equipe" },
   { id: "patient", label: "Cadastrar pacientes" },
   { id: "medication", label: "Cadastrar medicamentos" },
+  { id: "interventions", label: "Intervenções" },
   { id: "inpatients", label: "Pacientes internados" }
 ] as const;
 
@@ -88,7 +94,13 @@ const DASHBOARD_NAV_GROUPS = [
   { label: "Profissionais", items: [{ id: "professional", label: "Cadastrar profissional" }] },
   { label: "Equipe", items: [{ id: "team", label: "Cadastrar equipe" }] },
   { label: "Paciente", items: [{ id: "patient", label: "Cadastrar pacientes" }] },
-  { label: "Medicamentos", items: [{ id: "medication", label: "Cadastrar medicamentos" }] }
+  {
+    label: "Medicamentos",
+    items: [
+      { id: "medication", label: "Cadastrar medicamentos" },
+      { id: "interventions", label: "Intervenções" }
+    ]
+  }
 ] as const;
 
 function formatPatientSexLabel(sex: PatientSex | null | undefined): string {
@@ -340,8 +352,15 @@ type PriorMedicationReconciliationFormState = {
 
 type PrescriptionInterventionFormState = {
   interventionNotes: string;
+  interventionErrorType: "" | PrescriptionInterventionErrorType;
+  interventionContactStatus: "" | PrescriptionInterventionContactStatus;
   interventionRequestedToPrescriber: "" | "sim" | "nao";
   interventionResponse: "" | MedicalPrescriptionInterventionResponse;
+};
+
+type InterventionReportFormState = {
+  startDate: string;
+  endDate: string;
 };
 
 type MandatoryEvolutionPreviewPayload = {
@@ -436,11 +455,23 @@ function arePriorMedicationReconciliationFormsEqual(
 function createPrescriptionInterventionFormState(
   prescription?: Pick<
     MedicalPrescriptionRecord,
-    "interventionNotes" | "interventionRequestedToPrescriber" | "interventionResponse"
+    | "interventionNotes"
+    | "interventionErrorType"
+    | "interventionContactStatus"
+    | "interventionRequestedToPrescriber"
+    | "interventionResponse"
   >
 ): PrescriptionInterventionFormState {
   return {
     interventionNotes: prescription?.interventionNotes ?? "",
+    interventionErrorType: prescription?.interventionErrorType ?? "",
+    interventionContactStatus:
+      prescription?.interventionContactStatus ??
+      (prescription?.interventionRequestedToPrescriber === true
+        ? "Realizado"
+        : prescription?.interventionRequestedToPrescriber === false
+          ? "Não realizado"
+          : ""),
     interventionRequestedToPrescriber:
       prescription?.interventionRequestedToPrescriber === true
         ? "sim"
@@ -454,11 +485,17 @@ function createPrescriptionInterventionFormState(
 function hasPrescriptionIntervention(
   prescription: Pick<
     MedicalPrescriptionRecord,
-    "interventionNotes" | "interventionRequestedToPrescriber" | "interventionResponse"
+    | "interventionNotes"
+    | "interventionErrorType"
+    | "interventionContactStatus"
+    | "interventionRequestedToPrescriber"
+    | "interventionResponse"
   >
 ): boolean {
   return Boolean(
     prescription.interventionNotes?.trim() ||
+      prescription.interventionErrorType ||
+      prescription.interventionContactStatus ||
       prescription.interventionRequestedToPrescriber !== null ||
       prescription.interventionResponse
   );
@@ -467,7 +504,11 @@ function hasPrescriptionIntervention(
 function formatPrescriptionInterventionSummary(
   prescription: Pick<
     MedicalPrescriptionRecord,
-    "interventionNotes" | "interventionRequestedToPrescriber" | "interventionResponse"
+    | "interventionNotes"
+    | "interventionErrorType"
+    | "interventionContactStatus"
+    | "interventionRequestedToPrescriber"
+    | "interventionResponse"
   >
 ): string {
   if (!hasPrescriptionIntervention(prescription)) {
@@ -477,6 +518,14 @@ function formatPrescriptionInterventionSummary(
   const parts = [];
   if (prescription.interventionNotes?.trim()) {
     parts.push(prescription.interventionNotes.trim());
+  }
+
+  if (prescription.interventionErrorType) {
+    parts.push(`Tipo de erro: ${prescription.interventionErrorType}`);
+  }
+
+  if (prescription.interventionContactStatus) {
+    parts.push(`Contato: ${prescription.interventionContactStatus}`);
   }
 
   if (prescription.interventionRequestedToPrescriber !== null) {
@@ -873,7 +922,12 @@ function buildMandatoryEvolutionPreviewText(payload: MandatoryEvolutionPreviewPa
 type PrescriptionInterventionEditorProps = {
   prescription: Pick<
     MedicalPrescriptionRecord,
-    "id" | "interventionNotes" | "interventionRequestedToPrescriber" | "interventionResponse"
+    | "id"
+    | "interventionNotes"
+    | "interventionErrorType"
+    | "interventionContactStatus"
+    | "interventionRequestedToPrescriber"
+    | "interventionResponse"
   >;
   isSaving: boolean;
   onSave: (prescriptionId: number, formState: PrescriptionInterventionFormState) => Promise<void>;
@@ -893,6 +947,8 @@ const PrescriptionInterventionEditor = memo(function PrescriptionInterventionEdi
   }, [
     prescription.id,
     prescription.interventionNotes,
+    prescription.interventionErrorType,
+    prescription.interventionContactStatus,
     prescription.interventionRequestedToPrescriber,
     prescription.interventionResponse
   ]);
@@ -913,19 +969,59 @@ const PrescriptionInterventionEditor = memo(function PrescriptionInterventionEdi
       />
       <div className="dashboard-two-columns">
         <select
-          value={formState.interventionRequestedToPrescriber}
+          value={formState.interventionErrorType}
           onChange={(event) =>
             setFormState((current) => ({
               ...current,
-              interventionRequestedToPrescriber:
-                event.target.value as PrescriptionInterventionFormState["interventionRequestedToPrescriber"]
+              interventionErrorType:
+                event.target.value as PrescriptionInterventionFormState["interventionErrorType"]
             }))
           }
         >
-          <option value="">Solicitado ao prescritor?</option>
-          <option value="sim">Sim</option>
-          <option value="nao">Não</option>
+          <option value="">Tipo de erro</option>
+          {PRESCRIPTION_INTERVENTION_ERROR_TYPE_OPTIONS.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
         </select>
+        <select
+          value={formState.interventionContactStatus}
+          onChange={(event) =>
+            setFormState((current) => ({
+              ...current,
+              interventionContactStatus:
+                event.target.value as PrescriptionInterventionFormState["interventionContactStatus"],
+              interventionRequestedToPrescriber:
+                event.target.value === ""
+                  ? ""
+                  : event.target.value === "Realizado" ||
+                      event.target.value === "Contato realizado anteriormente"
+                    ? "sim"
+                    : "nao"
+            }))
+          }
+        >
+          <option value="">Contato</option>
+          {PRESCRIPTION_INTERVENTION_CONTACT_OPTIONS.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="dashboard-two-columns">
+        <input
+          value={
+            formState.interventionRequestedToPrescriber === "sim"
+              ? "Solicitado ao prescritor: Sim"
+              : formState.interventionRequestedToPrescriber === "nao"
+                ? "Solicitado ao prescritor: Não"
+                : "Solicitado ao prescritor: não informado"
+          }
+          disabled
+          aria-label="Solicitado ao prescritor"
+        />
         <select
           value={formState.interventionResponse}
           onChange={(event) =>
@@ -936,7 +1032,7 @@ const PrescriptionInterventionEditor = memo(function PrescriptionInterventionEdi
             }))
           }
         >
-          <option value="">Resposta</option>
+          <option value="">Intervenção</option>
           {MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS.map((option) => (
             <option key={option} value={option}>
               {option}
@@ -1759,6 +1855,29 @@ function formatCanonicalTeamName(teamName: string | null | undefined): string {
   return identity?.label ?? "-";
 }
 
+function formatInterventionUnitLabel(teamName: string | null | undefined): string {
+  const normalizedTeamName = typeof teamName === "string" ? normalizeTeamAlias(teamName) : "";
+  if (!normalizedTeamName) {
+    return "-";
+  }
+
+  const teamGroupIdentity = resolveTeamGroupIdentity(teamName);
+  switch (teamGroupIdentity?.key ?? normalizedTeamName) {
+    case "clinica-medica-1":
+    case "clinica-medica-2":
+    case "cm3":
+      return "Clínica Médica";
+    case "clinica-cirurgica":
+      return "Cirurgia";
+    case "obstetricia":
+      return "Obstetrícia";
+    case "clinica-pediatrica":
+      return "Pediatria";
+    default:
+      return teamGroupIdentity?.label ?? teamName?.trim() ?? "-";
+  }
+}
+
 function normalizeMandatoryBedLabel(input: string): string {
   const sanitized = input.trim().toUpperCase().replace(/^L:/, "");
   if (!sanitized) {
@@ -1867,6 +1986,16 @@ function getCurrentFormattedDateValue(): string {
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const year = String(now.getFullYear());
   return `${day}/${month}/${year}`;
+}
+
+function getCurrentMonthStartFormattedDateValue(): string {
+  const now = new Date();
+  return `01/${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getFullYear())}`;
+}
+
+function escapeCsvCell(input: string): string {
+  const normalized = input.replace(/"/g, "\"\"");
+  return /[",;\n]/.test(normalized) ? `"${normalized}"` : normalized;
 }
 
 function scoreExamDateCandidateLine(line: string): number {
@@ -2293,7 +2422,7 @@ function shouldRemainMandatory(
   status: InpatientWorkflowStatus,
   _evolutionGeneratedAt: string | null
 ): boolean {
-  return status !== "Concluído";
+  return status !== "Concluído" && status !== "Alta";
 }
 
 function escapeRegExp(input: string): string {
@@ -2923,6 +3052,7 @@ export default function DashboardConsole({
     () => data?.priorMedications ?? []
   );
   const [examImports, setExamImports] = useState<PatientExamImportRecord[]>(() => data?.examImports ?? []);
+  const [roundNotes, setRoundNotes] = useState<AdmissionRoundNoteRecord[]>(() => data?.roundNotes ?? []);
   const [prescriptions, setPrescriptions] = useState<MedicalPrescriptionRecord[]>(
     () => data?.prescriptions ?? []
   );
@@ -2986,8 +3116,20 @@ export default function DashboardConsole({
   }, [data?.examImports]);
 
   useEffect(() => {
+    setRoundNotes(data?.roundNotes ?? []);
+  }, [data?.roundNotes]);
+
+  useEffect(() => {
     setPrescriptions(data?.prescriptions ?? []);
   }, [data?.prescriptions]);
+
+  useEffect(() => {
+    if (requestedSection !== "interventions" || data?.loadedPatientDetailsId !== null) {
+      return;
+    }
+
+    setInterventionReportPrescriptions(data?.prescriptions ?? []);
+  }, [data?.loadedPatientDetailsId, data?.prescriptions, requestedSection]);
 
   const [activeSection, setActiveSection] = useState<DashboardSectionId | null>(
     patientPageMode ? "inpatients" : requestedSection
@@ -2996,6 +3138,7 @@ export default function DashboardConsole({
     professional: false,
     team: false,
     patient: false,
+    interventions: false,
     inpatients: true,
     medication: false
   });
@@ -3034,6 +3177,8 @@ export default function DashboardConsole({
   const [admissionForm, setAdmissionForm] = useState(createEmptyAdmissionFormState);
   const [admissionFeedback, setAdmissionFeedback] = useState<FeedbackState>(null);
   const [admissionLoading, setAdmissionLoading] = useState(false);
+  const [roundSummaryFeedback, setRoundSummaryFeedback] = useState<FeedbackState>(null);
+  const [roundSummaryLoading, setRoundSummaryLoading] = useState(false);
   const [evolutionFeedback, setEvolutionFeedback] = useState<FeedbackState>(null);
 
   const [medicationForm, setMedicationForm] = useState({
@@ -3079,6 +3224,24 @@ export default function DashboardConsole({
     patientPageMode ? requestedPatientView : "allergies"
   );
   const effectivePatientPageMode = patientPageOverride ?? patientPageMode;
+  const [interventionReportForm, setInterventionReportForm] = useState<InterventionReportFormState>({
+    startDate: getCurrentMonthStartFormattedDateValue(),
+    endDate: getCurrentFormattedDateValue()
+  });
+  const [appliedInterventionReportRange, setAppliedInterventionReportRange] =
+    useState<InterventionReportFormState>({
+      startDate: getCurrentMonthStartFormattedDateValue(),
+      endDate: getCurrentFormattedDateValue()
+    });
+  const [interventionReportPrescriptions, setInterventionReportPrescriptions] = useState<
+    MedicalPrescriptionRecord[]
+  >(() =>
+    data?.loadedPatientDetailsId === null && requestedSection === "interventions"
+      ? data?.prescriptions ?? []
+      : []
+  );
+  const [interventionReportFeedback, setInterventionReportFeedback] = useState<FeedbackState>(null);
+  const [interventionReportLoading, setInterventionReportLoading] = useState(false);
   const [selectedPatientProfileForm, setSelectedPatientProfileForm] = useState({
     birthDate: "",
     sex: "" as PatientSex | ""
@@ -3302,6 +3465,7 @@ export default function DashboardConsole({
         allergies: patientAllergies,
         priorMedications,
         examImports,
+        roundNotes,
         prescriptions
       }
     }));
@@ -3312,12 +3476,60 @@ export default function DashboardConsole({
     patients,
     prescriptions,
     priorMedications,
+    roundNotes,
     recentAdmissions
   ]);
 
   useEffect(() => {
     setPatientDetailsError(null);
   }, [selectedPatientId]);
+
+  useEffect(() => {
+    if (activeSection !== "interventions") {
+      return;
+    }
+
+    let isCancelled = false;
+    setInterventionReportLoading(true);
+    setInterventionReportFeedback(null);
+
+    void fetch("/api/interventions")
+      .then(async (response) => {
+        const result = (await response.json()) as {
+          message?: string;
+          prescriptions?: MedicalPrescriptionRecord[];
+        };
+
+        if (!response.ok || !Array.isArray(result.prescriptions)) {
+          throw new Error(result.message ?? "Falha ao carregar as intervenções.");
+        }
+
+        if (isCancelled) {
+          return;
+        }
+
+        setInterventionReportPrescriptions(result.prescriptions);
+      })
+      .catch((error) => {
+        if (isCancelled) {
+          return;
+        }
+
+        setInterventionReportFeedback({
+          type: "error",
+          message: error instanceof Error ? error.message : "Falha ao carregar as intervenções."
+        });
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setInterventionReportLoading(false);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeSection]);
 
   useEffect(() => {
     if (!patientDetailsOpen || !Number.isInteger(selectedPatientNumericId) || selectedPatientNumericId <= 0) {
@@ -3791,7 +4003,7 @@ export default function DashboardConsole({
   const mandatoryOverviewRows = useMemo(
     () => {
       return inpatientEntriesWithWorkflow
-        .filter(({ workflow }) => workflow.status !== "Concluído")
+        .filter(({ workflow }) => workflow.mandatory && workflow.status !== "Alta")
         .sort((first, second) => {
           const firstPriority = first.workflow.firstVisitCompletedAt ? 1 : 0;
           const secondPriority = second.workflow.firstVisitCompletedAt ? 1 : 0;
@@ -3815,6 +4027,56 @@ export default function DashboardConsole({
           return secondUpdated - firstUpdated;
         }),
     [inpatientEntriesWithWorkflow]
+  );
+
+  const inpatientSidebarIndicators = useMemo(
+    () => ({
+      all: inpatients.length,
+      team: teamOverviewRows.length,
+      mandatory: mandatoryOverviewRows.length,
+      discharged: dischargedOverviewRows.length
+    }),
+    [dischargedOverviewRows.length, inpatients.length, mandatoryOverviewRows.length, teamOverviewRows.length]
+  );
+
+  const interventionReportRows = useMemo(() => {
+    const startDate = normalizeAdmissionDateValue(appliedInterventionReportRange.startDate);
+    const endDate = normalizeAdmissionDateValue(appliedInterventionReportRange.endDate);
+    if (!startDate || !endDate) {
+      return [];
+    }
+
+    const rangeStart = new Date(`${startDate}T00:00:00`).getTime();
+    const rangeEnd = new Date(`${endDate}T23:59:59`).getTime();
+
+    return interventionReportPrescriptions
+      .filter((prescription) => hasPrescriptionIntervention(prescription))
+      .filter((prescription) => {
+        const referenceTimestamp = new Date(
+          prescription.interventionRecordedAt ?? prescription.createdAt
+        ).getTime();
+        return referenceTimestamp >= rangeStart && referenceTimestamp <= rangeEnd;
+      })
+      .sort((first, second) => {
+        const firstTimestamp = new Date(
+          first.interventionRecordedAt ?? first.createdAt
+        ).getTime();
+        const secondTimestamp = new Date(
+          second.interventionRecordedAt ?? second.createdAt
+        ).getTime();
+        return secondTimestamp - firstTimestamp;
+      });
+  }, [
+    appliedInterventionReportRange.endDate,
+    appliedInterventionReportRange.startDate,
+    interventionReportPrescriptions
+  ]);
+
+  const interventionSidebarIndicator = useMemo(
+    () =>
+      interventionReportPrescriptions.filter((prescription) => hasPrescriptionIntervention(prescription))
+        .length,
+    [interventionReportPrescriptions]
   );
 
   const selectedPatientAdmissions = useMemo(
@@ -3855,6 +4117,8 @@ export default function DashboardConsole({
     setAllergyUpdatingId(null);
     setAllergyFeedback(null);
     setEvolutionFeedback(null);
+    setRoundSummaryLoading(false);
+    setRoundSummaryFeedback(null);
     setExamImportFeedback(null);
     setExamImportResult(null);
     setExamRecordRemovingKey(null);
@@ -3883,9 +4147,8 @@ export default function DashboardConsole({
           ? latestAdmission.admissionReason
           : "",
       admissionSummary: latestAdmission?.admissionSummary ?? "",
-      roundSummary: latestAdmission?.roundSummary ?? "",
-      roundSummaryDate:
-        formatAdmissionDateValue(latestAdmission?.roundSummaryDate ?? "") || getCurrentFormattedDateValue(),
+      roundSummary: "",
+      roundSummaryDate: getCurrentFormattedDateValue(),
       admissionImportExcerpt: latestAdmission?.admissionImportExcerpt ?? "",
       interviewInformationQuality: latestAdmission?.interviewInformationQuality ?? "",
       interviewInformationSourceType: latestAdmission?.interviewInformationSourceType ?? "",
@@ -4756,6 +5019,59 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     [examImports, selectedPatient, selectedPatientCachedDetails]
   );
 
+  const selectedPatientRoundNotes = useMemo(
+    () =>
+      selectedPatientCachedDetails?.roundNotes ??
+      roundNotes.filter(
+        (roundNote) => selectedPatient !== null && roundNote.patientId === selectedPatient.id
+      ),
+    [roundNotes, selectedPatient, selectedPatientCachedDetails]
+  );
+
+  const selectedCurrentAdmissionRoundNotes = useMemo(() => {
+    if (!selectedCurrentAdmission) {
+      return [];
+    }
+
+    const admissionNotes = selectedPatientRoundNotes.filter(
+      (roundNote) => roundNote.admissionId === selectedCurrentAdmission.id
+    );
+    const legacyNote =
+      selectedCurrentAdmission.roundSummary?.trim()
+        ? {
+            id: -selectedCurrentAdmission.id,
+            patientId: selectedCurrentAdmission.patientId,
+            patientName: selectedCurrentAdmission.patientName,
+            admissionId: selectedCurrentAdmission.id,
+            roundDate:
+              selectedCurrentAdmission.roundSummaryDate ?? selectedCurrentAdmission.admissionDate,
+            note: selectedCurrentAdmission.roundSummary.trim(),
+            responsibleProfessionalId: selectedCurrentAdmission.responsibleProfessionalId,
+            responsibleProfessionalName: selectedCurrentAdmission.responsibleProfessionalName,
+            createdAt: selectedCurrentAdmission.createdAt
+          }
+        : null;
+    const hasEquivalentLegacyNote =
+      legacyNote !== null &&
+      admissionNotes.some(
+        (roundNote) =>
+          roundNote.roundDate === legacyNote.roundDate && roundNote.note.trim() === legacyNote.note
+      );
+    const nextNotes =
+      legacyNote && !hasEquivalentLegacyNote ? [legacyNote, ...admissionNotes] : admissionNotes;
+
+    return [...nextNotes].sort((first, second) => {
+      const firstKey = `${first.roundDate}|${first.createdAt}`;
+      const secondKey = `${second.roundDate}|${second.createdAt}`;
+      const dateCompare = secondKey.localeCompare(firstKey);
+      if (dateCompare !== 0) {
+        return dateCompare;
+      }
+
+      return second.id - first.id;
+    });
+  }, [selectedCurrentAdmission, selectedPatientRoundNotes]);
+
   useEffect(() => {
     if (selectedPatientExamImports.length === 0) {
       setSelectedExamImportId("");
@@ -5541,6 +5857,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }));
   }
 
+  function appendAdmissionRoundNoteLocally(nextRoundNote: AdmissionRoundNoteRecord): void {
+    setRoundNotes((current) => upsertRecordById(current, nextRoundNote));
+    mutateCachedPatientDetails(nextRoundNote.patientId, (details) => ({
+      ...details,
+      roundNotes: upsertRecordById(details.roundNotes, nextRoundNote)
+    }));
+  }
+
   function removeExamImportLocally(patientId: number, examImportId: number): void {
     setExamImports((current) => removeRecordById(current, examImportId));
     mutateCachedPatientDetails(patientId, (details) => ({
@@ -5582,11 +5906,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   }
 
   function pushDashboardUrl(url: string): void {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.history.pushState(window.history.state, "", url);
+    startDashboardTransition(() => {
+      router.push(url, { scroll: false });
+    });
   }
 
   function refreshDashboard(label = "Atualizando painel..."): void {
@@ -5626,11 +5948,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   }
 
   function replaceDashboardUrl(url: string): void {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.history.replaceState(window.history.state, "", url);
+    startDashboardTransition(() => {
+      router.replace(url, { scroll: false });
+    });
   }
 
   function toggleList(sectionId: DashboardSectionId): void {
@@ -6158,19 +6478,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       return;
     }
 
-    const normalizedRoundSummaryDate = admissionForm.roundSummaryDate.trim()
-      ? normalizeAdmissionDateValue(admissionForm.roundSummaryDate)
-      : admissionForm.roundSummary.trim()
-        ? normalizeAdmissionDateValue(getCurrentFormattedDateValue())
-        : null;
-    if (admissionForm.roundSummaryDate.trim() && !normalizedRoundSummaryDate) {
-      setAdmissionFeedback({
-        type: "error",
-        message: "Informe a data do round no formato DD/MM/AAAA."
-      });
-      return;
-    }
-
     setAdmissionLoading(true);
 
     try {
@@ -6213,7 +6520,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         body: JSON.stringify({
           ...admissionForm,
           admissionDate: normalizedAdmissionDate,
-          roundSummaryDate: normalizedRoundSummaryDate ?? undefined,
+          roundSummary: undefined,
+          roundSummaryDate: undefined,
           admissionId: shouldUpdateAdmission ? Number(admissionForm.admissionId) : undefined,
           patientId: selectedPatient.id,
           teamId: admissionForm.teamId ? Number(admissionForm.teamId) : undefined,
@@ -6338,14 +6646,87 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
   async function handleRoundSummarySubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    await persistAdmissionForm({
-      analyzeSummary: false,
-      requireExistingAdmission: true,
-      missingAdmissionMessage:
-        "Salve primeiro as informações da internação para registrar o resumo do round.",
-      successMessage: "Resumo do round salvo com sucesso.",
-      connectionErrorMessage: "Erro de conexão ao salvar resumo do round."
-    });
+    setRoundSummaryFeedback(null);
+
+    if (!selectedPatient) {
+      setRoundSummaryFeedback({
+        type: "error",
+        message: "Selecione um paciente internado para registrar o resumo do round."
+      });
+      return;
+    }
+
+    const admissionId = Number(admissionForm.admissionId);
+    if (!Number.isInteger(admissionId) || admissionId <= 0) {
+      setRoundSummaryFeedback({
+        type: "error",
+        message: "Salve primeiro as informações da internação para registrar o resumo do round."
+      });
+      return;
+    }
+
+    const note = admissionForm.roundSummary.trim();
+    if (!note) {
+      setRoundSummaryFeedback({
+        type: "error",
+        message: "Escreva o comentário do round antes de salvar."
+      });
+      return;
+    }
+
+    const normalizedRoundSummaryDate = admissionForm.roundSummaryDate.trim()
+      ? normalizeAdmissionDateValue(admissionForm.roundSummaryDate)
+      : normalizeAdmissionDateValue(getCurrentFormattedDateValue());
+    if (!normalizedRoundSummaryDate) {
+      setRoundSummaryFeedback({
+        type: "error",
+        message: "Informe a data do round no formato DD/MM/AAAA."
+      });
+      return;
+    }
+
+    setRoundSummaryLoading(true);
+
+    try {
+      const response = await fetch(`/api/admissions/${admissionId}/round-notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          note,
+          roundDate: normalizedRoundSummaryDate
+        })
+      });
+      const result = (await response.json()) as {
+        message?: string;
+        roundNote?: AdmissionRoundNoteRecord;
+      };
+
+      if (!response.ok || !result.roundNote) {
+        setRoundSummaryFeedback({
+          type: "error",
+          message: result.message ?? "Falha ao salvar o resumo do round."
+        });
+        return;
+      }
+
+      appendAdmissionRoundNoteLocally(result.roundNote);
+      setAdmissionForm((current) => ({
+        ...current,
+        roundSummary: "",
+        roundSummaryDate: getCurrentFormattedDateValue()
+      }));
+      setRoundSummaryFeedback({
+        type: "success",
+        message: "Resumo do round salvo com sucesso."
+      });
+    } catch {
+      setRoundSummaryFeedback({
+        type: "error",
+        message: "Erro de conexão ao salvar resumo do round."
+      });
+    } finally {
+      setRoundSummaryLoading(false);
+    }
   }
 
   async function handleCopyEvolution(): Promise<void> {
@@ -6987,6 +7368,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         body: JSON.stringify({
           prescriptionId,
           interventionNotes: formState.interventionNotes,
+          interventionErrorType: formState.interventionErrorType || null,
+          interventionContactStatus: formState.interventionContactStatus || null,
           interventionRequestedToPrescriber:
             formState.interventionRequestedToPrescriber === ""
               ? null
@@ -7013,6 +7396,110 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         message: "Erro de conexão ao salvar a intervenção."
       };
     }
+  }
+
+  function handleApplyInterventionReportRange(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    const normalizedStart = normalizeAdmissionDateValue(interventionReportForm.startDate);
+    const normalizedEnd = normalizeAdmissionDateValue(interventionReportForm.endDate);
+
+    if (!normalizedStart || !normalizedEnd) {
+      setInterventionReportFeedback({
+        type: "error",
+        message: "Informe o período no formato DD/MM/AAAA."
+      });
+      return;
+    }
+
+    if (normalizedStart > normalizedEnd) {
+      setInterventionReportFeedback({
+        type: "error",
+        message: "A data inicial não pode ser maior que a data final."
+      });
+      return;
+    }
+
+    setAppliedInterventionReportRange({
+      startDate: formatAdmissionDateValue(normalizedStart),
+      endDate: formatAdmissionDateValue(normalizedEnd)
+    });
+    setInterventionReportFeedback({
+      type: "success",
+      message: "Período das intervenções atualizado."
+    });
+  }
+
+  function handleExportInterventionReport(): void {
+    if (interventionReportRows.length === 0) {
+      setInterventionReportFeedback({
+        type: "error",
+        message: "Não há intervenções no período selecionado para exportar."
+      });
+      return;
+    }
+
+    const headers = [
+      "Data",
+      "N° Prontuário",
+      "Leito",
+      "Unidade",
+      "Medicamento",
+      "Tipo de Erro",
+      "Contato",
+      "Intervenção",
+      "Realizada por"
+    ];
+    const lines = interventionReportRows.map((prescription) => {
+      const contactValue =
+        prescription.interventionContactStatus ??
+        (prescription.interventionRequestedToPrescriber === true
+          ? "Realizado"
+          : prescription.interventionRequestedToPrescriber === false
+            ? "Não realizado"
+            : "");
+
+      return [
+        formatAdmissionDateValue(prescription.interventionRecordedAt ?? prescription.createdAt),
+        prescription.chartNumber,
+        prescription.bed ?? "",
+        formatInterventionUnitLabel(prescription.teamName),
+        getPrescriptionMedicationDisplayName(
+          prescription.medicationName,
+          prescription.externalValidationCandidate
+        ),
+        prescription.interventionErrorType ?? "",
+        contactValue,
+        prescription.interventionResponse ?? "",
+        prescription.interventionProfessionalName ?? ""
+      ];
+    });
+
+    const csvContent = [headers, ...lines]
+      .map((columns) => columns.map((value) => escapeCsvCell(value)).join(";"))
+      .join("\n");
+    const blob = new Blob([`\uFEFF${csvContent}`], {
+      type: "text/csv;charset=utf-8;"
+    });
+    const downloadUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const startLabel =
+      formatAdmissionDateValue(normalizeAdmissionDateValue(appliedInterventionReportRange.startDate)) ||
+      "inicio";
+    const endLabel =
+      formatAdmissionDateValue(normalizeAdmissionDateValue(appliedInterventionReportRange.endDate)) ||
+      "fim";
+
+    anchor.href = downloadUrl;
+    anchor.download = `intervencoes-${startLabel.replaceAll("/", "-")}-${endLabel.replaceAll("/", "-")}.csv`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(downloadUrl);
+
+    setInterventionReportFeedback({
+      type: "success",
+      message: "Planilha exportada com sucesso."
+    });
   }
 
   async function handleSavePrescriptionIntervention(
@@ -7878,15 +8365,20 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                       {group.items.map((item) => (
                         <button
                           key={item.id}
-                          type="button"
-                          className={`dashboard-sidebar-link ${activeSection === item.id ? "is-active" : ""}`}
-                          onClick={() => openDashboardSection(item.id)}
-                        >
-                          {item.label}
-                        </button>
-                      ))}
-                    </section>
-                  ))}
+                        type="button"
+                        className={`dashboard-sidebar-link ${activeSection === item.id ? "is-active" : ""}`}
+                        onClick={() => openDashboardSection(item.id)}
+                      >
+                        <span>{item.label}</span>
+                        {item.id === "interventions" && interventionSidebarIndicator > 0 ? (
+                          <span className="dashboard-sidebar-indicator">
+                            {interventionSidebarIndicator}
+                          </span>
+                        ) : null}
+                      </button>
+                    ))}
+                  </section>
+                ))}
 
                   <div className="dashboard-sidebar-separator" />
 
@@ -7903,7 +8395,12 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                         }`}
                         onClick={() => openInpatientOverview(item.id)}
                       >
-                        {item.label}
+                        <span>{item.label}</span>
+                        {inpatientSidebarIndicators[item.id] > 0 ? (
+                          <span className="dashboard-sidebar-indicator">
+                            {inpatientSidebarIndicators[item.id]}
+                          </span>
+                        ) : null}
                       </button>
                     ))}
                   </section>
@@ -10695,21 +11192,52 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 </p>
                               ) : null}
 
-                              {admissionFeedback ? (
-                                <p className={`dashboard-feedback dashboard-feedback-${admissionFeedback.type}`}>
-                                  {admissionFeedback.message}
+                              {roundSummaryFeedback ? (
+                                <p
+                                  className={`dashboard-feedback dashboard-feedback-${roundSummaryFeedback.type}`}
+                                >
+                                  {roundSummaryFeedback.message}
                                 </p>
                               ) : null}
 
                               <div className="dashboard-inline-actions">
                                 <button
                                   type="submit"
-                                  disabled={admissionLoading || !admissionForm.admissionId.trim()}
+                                  disabled={roundSummaryLoading || !admissionForm.admissionId.trim()}
                                 >
-                                  {admissionLoading ? "Salvando..." : "Salvar resumo do round"}
+                                  {roundSummaryLoading ? "Salvando..." : "Salvar resumo do round"}
                                 </button>
                               </div>
                             </form>
+
+                            <div className="dashboard-list-box">
+                              <h3>Histórico do round</h3>
+                              {!admissionForm.admissionId.trim() ? (
+                                <p className="dashboard-muted">
+                                  O histórico aparece depois que a internação estiver salva.
+                                </p>
+                              ) : selectedCurrentAdmissionRoundNotes.length === 0 ? (
+                                <p className="dashboard-muted">
+                                  Nenhum comentário do round salvo para esta internação.
+                                </p>
+                              ) : (
+                                selectedCurrentAdmissionRoundNotes.map((roundNote) => (
+                                  <div
+                                    key={`${roundNote.admissionId}-${roundNote.id}`}
+                                    className="dashboard-subsection-block"
+                                  >
+                                    <p className="dashboard-muted">
+                                      {formatAdmissionDate(roundNote.roundDate)}
+                                      {" "}
+                                      | {roundNote.responsibleProfessionalName}
+                                      {" "}
+                                      | {formatTimestamp(roundNote.createdAt)}
+                                    </p>
+                                    <p style={{ whiteSpace: "pre-wrap" }}>{roundNote.note}</p>
+                                  </div>
+                                ))
+                              )}
+                            </div>
                           </div>
                         ) : null}
 
@@ -10765,6 +11293,124 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                       ) : null}
                     </>
                   ) : null}
+                </section>
+              ) : null}
+
+              {activeSection === "interventions" ? (
+                <section className="dashboard-card">
+                  <h2>Intervenções</h2>
+                  <p className="dashboard-muted">
+                    Escolha o período para listar as intervenções farmacêuticas registradas e exportar
+                    a planilha para Excel.
+                  </p>
+
+                  <form className="dashboard-form" onSubmit={handleApplyInterventionReportRange}>
+                    <div className="dashboard-two-columns">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="Data inicial (DD/MM/AAAA)"
+                        value={interventionReportForm.startDate}
+                        onChange={(event) =>
+                          setInterventionReportForm((current) => ({
+                            ...current,
+                            startDate: formatEditableDateInput(event.target.value)
+                          }))
+                        }
+                      />
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="Data final (DD/MM/AAAA)"
+                        value={interventionReportForm.endDate}
+                        onChange={(event) =>
+                          setInterventionReportForm((current) => ({
+                            ...current,
+                            endDate: formatEditableDateInput(event.target.value)
+                          }))
+                        }
+                      />
+                    </div>
+
+                    {interventionReportFeedback ? (
+                      <p className={`dashboard-feedback dashboard-feedback-${interventionReportFeedback.type}`}>
+                        {interventionReportFeedback.message}
+                      </p>
+                    ) : null}
+
+                    <div className="dashboard-inline-actions">
+                      <button type="submit" disabled={interventionReportLoading}>
+                        {interventionReportLoading ? "Atualizando..." : "Puxar intervenções"}
+                      </button>
+                      <button
+                        type="button"
+                        className="dashboard-mini-button"
+                        onClick={handleExportInterventionReport}
+                        disabled={interventionReportLoading}
+                      >
+                        Exportar Excel
+                      </button>
+                    </div>
+                  </form>
+
+                  <div className="dashboard-table-wrap">
+                    <table className="dashboard-table">
+                      <thead>
+                        <tr>
+                          <th>Data</th>
+                          <th>N° Prontuário</th>
+                          <th>Leito</th>
+                          <th>Unidade</th>
+                          <th>Medicamento</th>
+                          <th>Tipo de erro</th>
+                          <th>Contato</th>
+                          <th>Intervenção</th>
+                          <th>Realizada por</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {interventionReportLoading ? (
+                          <tr>
+                            <td colSpan={9}>Carregando intervenções...</td>
+                          </tr>
+                        ) : interventionReportRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={9}>Nenhuma intervenção encontrada no período selecionado.</td>
+                          </tr>
+                        ) : (
+                          interventionReportRows.map((prescription) => (
+                            <tr key={`intervention-${prescription.id}`}>
+                              <td>
+                                {formatTimestamp(
+                                  prescription.interventionRecordedAt ?? prescription.createdAt
+                                )}
+                              </td>
+                              <td>{prescription.chartNumber}</td>
+                              <td>{prescription.bed ?? "-"}</td>
+                              <td>{formatInterventionUnitLabel(prescription.teamName)}</td>
+                              <td>
+                                {getPrescriptionMedicationDisplayName(
+                                  prescription.medicationName,
+                                  prescription.externalValidationCandidate
+                                )}
+                              </td>
+                              <td>{prescription.interventionErrorType ?? "-"}</td>
+                              <td>
+                                {prescription.interventionContactStatus ??
+                                  (prescription.interventionRequestedToPrescriber === true
+                                    ? "Realizado"
+                                    : prescription.interventionRequestedToPrescriber === false
+                                      ? "Não realizado"
+                                      : "-")}
+                              </td>
+                              <td>{prescription.interventionResponse ?? "-"}</td>
+                              <td>{prescription.interventionProfessionalName ?? "-"}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </section>
               ) : null}
 

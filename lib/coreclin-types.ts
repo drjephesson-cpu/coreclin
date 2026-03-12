@@ -40,9 +40,39 @@ export const BSA_FORMULA_OPTIONS = [
 ] as const;
 
 export const MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS = [
-  "Aceito",
-  "Recusado",
-  "Pendente"
+  "Aceita",
+  "Não aceita",
+  "Não se aplica",
+  "Não informado"
+] as const;
+export const PRESCRIPTION_INTERVENTION_CONTACT_OPTIONS = [
+  "Realizado",
+  "Não realizado",
+  "Prescritor não localizado",
+  "Contato realizado anteriormente"
+] as const;
+export const PRESCRIPTION_INTERVENTION_ERROR_TYPE_OPTIONS = [
+  "Dose incorreta",
+  "Forma farmacêutica",
+  "Posologia",
+  "Aprazamento",
+  "Via incorreta",
+  "Diluição",
+  "Reconstituição",
+  "Incompatibilidade",
+  "Interações",
+  "Legibilidade",
+  "Abreviaturas",
+  "Duplicidade",
+  "Reação alérgica ao medicamento (FC)",
+  "Reação adversa ao medicamento (FC)",
+  "Medicamento de uso prévio (FC)",
+  "Inclusão de medicamento na prescrição (FC)",
+  "Medicamento substituído (FC)",
+  "Descalonamento de antimicrobiano (FC)",
+  "Exclusão de item da prescrição",
+  "Escalonamento de antimicrobiano",
+  "Outros"
 ] as const;
 export const INTERVIEW_INFORMATION_QUALITY_OPTIONS = ["baixa", "media", "alta"] as const;
 export const INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS = ["patient", "informant"] as const;
@@ -54,6 +84,10 @@ export type BmiFormulaId = (typeof BMI_FORMULA_OPTIONS)[number]["id"];
 export type BsaFormulaId = (typeof BSA_FORMULA_OPTIONS)[number]["id"];
 export type MedicalPrescriptionInterventionResponse =
   (typeof MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS)[number];
+export type PrescriptionInterventionContactStatus =
+  (typeof PRESCRIPTION_INTERVENTION_CONTACT_OPTIONS)[number];
+export type PrescriptionInterventionErrorType =
+  (typeof PRESCRIPTION_INTERVENTION_ERROR_TYPE_OPTIONS)[number];
 export type InterviewInformationQuality =
   (typeof INTERVIEW_INFORMATION_QUALITY_OPTIONS)[number];
 export type InterviewInformationSourceType =
@@ -243,13 +277,27 @@ export type PatientExamImportRecord = {
   createdAt: string;
 };
 
+export type AdmissionRoundNoteRecord = {
+  id: number;
+  patientId: number;
+  patientName: string;
+  admissionId: number;
+  roundDate: string;
+  note: string;
+  responsibleProfessionalId: number;
+  responsibleProfessionalName: string;
+  createdAt: string;
+};
+
 export type MedicalPrescriptionRecord = {
   id: number;
   patientId: number;
   patientName: string;
+  chartNumber: string;
   admissionId: number | null;
   admissionDate: string | null;
   bed: string | null;
+  teamName: string | null;
   medicationId: number | null;
   medicationName: string;
   dose: number;
@@ -269,8 +317,13 @@ export type MedicalPrescriptionRecord = {
   patientDidNotBring: boolean;
   stockValidationNote: string | null;
   interventionNotes: string | null;
+  interventionErrorType: PrescriptionInterventionErrorType | null;
+  interventionContactStatus: PrescriptionInterventionContactStatus | null;
   interventionRequestedToPrescriber: boolean | null;
   interventionResponse: MedicalPrescriptionInterventionResponse | null;
+  interventionRecordedAt: string | null;
+  interventionProfessionalId: number | null;
+  interventionProfessionalName: string | null;
   createdAt: string;
 };
 
@@ -285,6 +338,7 @@ export type DashboardData = {
   patientAllergies: PatientAllergyRecord[];
   priorMedications: PriorMedicationRecord[];
   examImports: PatientExamImportRecord[];
+  roundNotes: AdmissionRoundNoteRecord[];
   inpatientWorkflowSnapshot: InpatientWorkflowStoragePayload | null;
   prescriptions: MedicalPrescriptionRecord[];
   loadedPatientDetailsId: number | null;
@@ -296,5 +350,6 @@ export type PatientDashboardDetails = {
   allergies: PatientAllergyRecord[];
   priorMedications: PriorMedicationRecord[];
   examImports: PatientExamImportRecord[];
+  roundNotes: AdmissionRoundNoteRecord[];
   prescriptions: MedicalPrescriptionRecord[];
 };

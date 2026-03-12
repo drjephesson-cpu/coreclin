@@ -3,6 +3,8 @@ import { Pool, PoolClient } from "pg";
 import { calculateClinicalIndexes } from "@/lib/clinical";
 import {
   MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS,
+  PRESCRIPTION_INTERVENTION_CONTACT_OPTIONS,
+  PRESCRIPTION_INTERVENTION_ERROR_TYPE_OPTIONS,
   COUNCIL_OPTIONS,
   INTERVIEW_INFORMATION_QUALITY_OPTIONS,
   INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS,
@@ -18,6 +20,7 @@ import {
   type InpatientWorkflowStoragePayload,
   type InterviewInformationQuality,
   type InterviewInformationSourceType,
+  type AdmissionRoundNoteRecord,
   type PatientExamImportRecord,
   type PatientExamResultRecord,
   type MedicalPrescriptionRecord,
@@ -26,6 +29,8 @@ import {
   type MeasurementHistoryRecord,
   type PatientRecord,
   type PatientAllergyRecord,
+  type PrescriptionInterventionContactStatus,
+  type PrescriptionInterventionErrorType,
   type PatientSex,
   type PriorMedicationRecord,
   type ProfessionOption,
@@ -133,6 +138,13 @@ export type RemovePatientAllergyInput = {
   allergyId: number;
 };
 
+export type CreateAdmissionRoundNoteInput = {
+  admissionId: number;
+  roundDate: string;
+  note: string;
+  responsibleLogin: string;
+};
+
 export type RemovePriorMedicationInput = {
   patientId: number;
   priorMedicationId: number;
@@ -215,8 +227,11 @@ export type UpdateMedicalPrescriptionValidationInput = {
   patientDidNotBring?: boolean | null;
   stockValidationNote?: string | null;
   interventionNotes?: string | null;
+  interventionErrorType?: PrescriptionInterventionErrorType | null;
+  interventionContactStatus?: PrescriptionInterventionContactStatus | null;
   interventionRequestedToPrescriber?: boolean | null;
   interventionResponse?: MedicalPrescriptionInterventionResponse | null;
+  responsibleLogin?: string | null;
 };
 
 type GlobalDbState = typeof globalThis & {
@@ -552,6 +567,20 @@ function mapPatientExamImport(row: DbRow): PatientExamImportRecord {
   };
 }
 
+function mapAdmissionRoundNote(row: DbRow): AdmissionRoundNoteRecord {
+  return {
+    id: toNumber(row.id),
+    patientId: toNumber(row.patient_id),
+    patientName: String(row.patient_name ?? ""),
+    admissionId: toNumber(row.admission_id),
+    roundDate: String(row.round_date ?? ""),
+    note: String(row.note ?? ""),
+    responsibleProfessionalId: toNumber(row.responsible_professional_id),
+    responsibleProfessionalName: String(row.responsible_professional_name ?? ""),
+    createdAt: toIso(row.created_at)
+  };
+}
+
 function mapInpatientWorkflowSnapshot(row: DbRow): InpatientWorkflowStoragePayload {
   const priorityTeamIds = parseJsonValue<unknown[]>(row.priority_team_ids, []).filter(
     (teamId): teamId is number => typeof teamId === "number" && Number.isInteger(teamId)
@@ -564,22 +593,85 @@ function mapInpatientWorkflowSnapshot(row: DbRow): InpatientWorkflowStoragePaylo
   };
 }
 
-function mapMedicalPrescription(row: DbRow): MedicalPrescriptionRecord {
-  const interventionResponseRaw =
-    row.intervention_response === null ? null : String(row.intervention_response ?? "").trim();
-  const interventionResponse = MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS.includes(
-    interventionResponseRaw as MedicalPrescriptionInterventionResponse
+function normalizeMedicalPrescriptionInterventionResponse(
+  value: unknown
+): MedicalPrescriptionInterventionResponse | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized === "aceito" || normalized === "aceita") {
+    return "Aceita";
+  }
+
+  if (normalized === "recusado" || normalized === "não aceita" || normalized === "nao aceita") {
+    return "Não aceita";
+  }
+
+  if (normalized === "não se aplica" || normalized === "nao se aplica") {
+    return "Não se aplica";
+  }
+
+  if (normalized === "pendente" || normalized === "não informado" || normalized === "nao informado") {
+    return "Não informado";
+  }
+
+  return MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS.includes(
+    String(value).trim() as MedicalPrescriptionInterventionResponse
   )
-    ? (interventionResponseRaw as MedicalPrescriptionInterventionResponse)
+    ? (String(value).trim() as MedicalPrescriptionInterventionResponse)
     : null;
+}
+
+function normalizePrescriptionInterventionContactStatus(
+  value: unknown
+): PrescriptionInterventionContactStatus | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  return PRESCRIPTION_INTERVENTION_CONTACT_OPTIONS.includes(
+    normalized as PrescriptionInterventionContactStatus
+  )
+    ? (normalized as PrescriptionInterventionContactStatus)
+    : null;
+}
+
+function normalizePrescriptionInterventionErrorType(
+  value: unknown
+): PrescriptionInterventionErrorType | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  return PRESCRIPTION_INTERVENTION_ERROR_TYPE_OPTIONS.includes(
+    normalized as PrescriptionInterventionErrorType
+  )
+    ? (normalized as PrescriptionInterventionErrorType)
+    : null;
+}
+
+function mapMedicalPrescription(row: DbRow): MedicalPrescriptionRecord {
+  const interventionResponse = normalizeMedicalPrescriptionInterventionResponse(
+    row.intervention_response
+  );
 
   return {
     id: toNumber(row.id),
     patientId: toNumber(row.patient_id),
     patientName: String(row.patient_name ?? ""),
+    chartNumber: String(row.chart_number ?? ""),
     admissionId: row.admission_id === null ? null : toNumber(row.admission_id),
     admissionDate: row.admission_date === null ? null : String(row.admission_date),
     bed: row.bed === null ? null : String(row.bed),
+    teamName: row.team_name === null ? null : String(row.team_name ?? ""),
     medicationId: row.medication_id === null ? null : toNumber(row.medication_id),
     medicationName: String(row.medication_name ?? ""),
     dose: toNumber(row.dose),
@@ -603,11 +695,23 @@ function mapMedicalPrescription(row: DbRow): MedicalPrescriptionRecord {
       row.stock_validation_note === null ? null : String(row.stock_validation_note ?? ""),
     interventionNotes:
       row.intervention_notes === null ? null : String(row.intervention_notes ?? ""),
+    interventionErrorType: normalizePrescriptionInterventionErrorType(row.intervention_error_type),
+    interventionContactStatus: normalizePrescriptionInterventionContactStatus(
+      row.intervention_contact_status
+    ),
     interventionRequestedToPrescriber:
       row.intervention_requested_to_prescriber === null
         ? null
         : Boolean(row.intervention_requested_to_prescriber),
     interventionResponse,
+    interventionRecordedAt:
+      row.intervention_recorded_at === null ? null : toIso(row.intervention_recorded_at),
+    interventionProfessionalId:
+      row.intervention_professional_id === null ? null : toNumber(row.intervention_professional_id),
+    interventionProfessionalName:
+      row.intervention_professional_name === null
+        ? null
+        : String(row.intervention_professional_name ?? ""),
     createdAt: toIso(row.created_at)
   };
 }
@@ -986,8 +1090,12 @@ async function setupDatabase(): Promise<void> {
       patient_did_not_bring BOOLEAN NOT NULL DEFAULT FALSE,
       stock_validation_note TEXT,
       intervention_notes TEXT,
+      intervention_error_type TEXT,
+      intervention_contact_status TEXT,
       intervention_requested_to_prescriber BOOLEAN,
       intervention_response TEXT,
+      intervention_recorded_at TIMESTAMPTZ,
+      intervention_professional_id INTEGER REFERENCES professionals(id),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -999,6 +1107,16 @@ async function setupDatabase(): Promise<void> {
       page_count INTEGER NOT NULL,
       raw_text TEXT NOT NULL,
       extracted_records JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS admission_round_notes (
+      id SERIAL PRIMARY KEY,
+      admission_id INTEGER NOT NULL REFERENCES admissions(id) ON DELETE CASCADE,
+      patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+      responsible_professional_id INTEGER NOT NULL REFERENCES professionals(id),
+      round_date DATE NOT NULL,
+      note TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -1025,6 +1143,8 @@ async function setupDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_exam_imports_patient_id ON patient_exam_imports (patient_id);
     CREATE INDEX IF NOT EXISTS idx_exam_imports_created_at ON patient_exam_imports (created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_exam_imports_patient_latest ON patient_exam_imports (patient_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_round_notes_admission_id ON admission_round_notes (admission_id, round_date DESC, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_round_notes_patient_id ON admission_round_notes (patient_id, round_date DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_inpatient_workflow_updated_at ON inpatient_workflow_snapshots (updated_at DESC);
   `);
 
@@ -1090,10 +1210,22 @@ async function setupDatabase(): Promise<void> {
     ADD COLUMN IF NOT EXISTS intervention_notes TEXT;
 
     ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS intervention_error_type TEXT;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS intervention_contact_status TEXT;
+
+    ALTER TABLE medical_prescriptions
     ADD COLUMN IF NOT EXISTS intervention_requested_to_prescriber BOOLEAN;
 
     ALTER TABLE medical_prescriptions
     ADD COLUMN IF NOT EXISTS intervention_response TEXT;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS intervention_recorded_at TIMESTAMPTZ;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS intervention_professional_id INTEGER REFERENCES professionals(id);
   `);
 
   await pool.query(`
@@ -1574,6 +1706,28 @@ async function ensurePatientExists(client: PoolClient, patientId: number): Promi
   if (result.rows.length === 0) {
     throw new Error("Paciente não encontrado.");
   }
+}
+
+async function ensureAdmissionExists(
+  client: PoolClient,
+  admissionId: number
+): Promise<{ patientId: number }> {
+  const result = await client.query(
+    `
+      SELECT patient_id
+      FROM admissions
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [admissionId]
+  );
+  if (result.rows.length === 0) {
+    throw new Error("Internação não encontrada.");
+  }
+
+  return {
+    patientId: toNumber((result.rows[0] as DbRow).patient_id)
+  };
 }
 
 async function resolveMedicationData(
@@ -2237,6 +2391,71 @@ export async function updatePatientAllergy(
   }
 }
 
+export async function addAdmissionRoundNote(
+  input: CreateAdmissionRoundNoteInput
+): Promise<AdmissionRoundNoteRecord> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const { patientId } = await ensureAdmissionExists(client, input.admissionId);
+    const responsibleProfessionalId = await findProfessionalIdByLogin(client, input.responsibleLogin);
+
+    const inserted = await client.query(
+      `
+        INSERT INTO admission_round_notes (
+          admission_id,
+          patient_id,
+          responsible_professional_id,
+          round_date,
+          note
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id
+      `,
+      [
+        input.admissionId,
+        patientId,
+        responsibleProfessionalId,
+        input.roundDate,
+        input.note.trim()
+      ]
+    );
+
+    const roundNoteId = toNumber((inserted.rows[0] as DbRow).id);
+    const result = await client.query(
+      `
+        SELECT
+          arn.id,
+          arn.patient_id,
+          p.full_name AS patient_name,
+          arn.admission_id,
+          arn.round_date::text AS round_date,
+          arn.note,
+          arn.responsible_professional_id,
+          prof.full_name AS responsible_professional_name,
+          arn.created_at
+        FROM admission_round_notes arn
+        INNER JOIN patients p ON p.id = arn.patient_id
+        INNER JOIN professionals prof ON prof.id = arn.responsible_professional_id
+        WHERE arn.id = $1
+        LIMIT 1
+      `,
+      [roundNoteId]
+    );
+
+    await client.query("COMMIT");
+    return mapAdmissionRoundNote(result.rows[0] as DbRow);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function addPriorMedication(
   input: AddPriorMedicationInput
 ): Promise<PriorMedicationRecord> {
@@ -2688,12 +2907,16 @@ export async function addMedicalPrescription(
           patient_did_not_bring,
           stock_validation_note,
           intervention_notes,
+          intervention_error_type,
+          intervention_contact_status,
           intervention_requested_to_prescriber,
-          intervention_response
+          intervention_response,
+          intervention_recorded_at,
+          intervention_professional_id
         )
         VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-          NULL, NULL, NULL, NULL, FALSE, NULL, NULL, NULL, NULL
+          NULL, NULL, NULL, NULL, FALSE, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
         )
         RETURNING id
       `,
@@ -2722,9 +2945,11 @@ export async function addMedicalPrescription(
           mp.id,
           mp.patient_id,
           p.full_name AS patient_name,
+          p.chart_number,
           mp.admission_id,
           a.admission_date::text AS admission_date,
           a.bed,
+          t.name AS team_name,
           mp.medication_id,
           mp.medication_name,
           mp.dose::float8 AS dose,
@@ -2744,12 +2969,19 @@ export async function addMedicalPrescription(
           mp.patient_did_not_bring,
           mp.stock_validation_note,
           mp.intervention_notes,
+          mp.intervention_error_type,
+          mp.intervention_contact_status,
           mp.intervention_requested_to_prescriber,
           mp.intervention_response,
+          mp.intervention_recorded_at,
+          mp.intervention_professional_id,
+          prof.full_name AS intervention_professional_name,
           mp.created_at
         FROM medical_prescriptions mp
         INNER JOIN patients p ON p.id = mp.patient_id
         LEFT JOIN admissions a ON a.id = mp.admission_id
+        LEFT JOIN teams t ON t.id = a.team_id
+        LEFT JOIN professionals prof ON prof.id = mp.intervention_professional_id
         WHERE mp.id = $1
         LIMIT 1
       `,
@@ -2783,6 +3015,21 @@ export async function updateMedicalPrescriptionValidation(
 
     const assignments: string[] = [];
     const values: unknown[] = [];
+    const hasInterventionField =
+      "interventionNotes" in input ||
+      "interventionErrorType" in input ||
+      "interventionContactStatus" in input ||
+      "interventionRequestedToPrescriber" in input ||
+      "interventionResponse" in input;
+    const normalizedInterventionNotes = input.interventionNotes?.trim()
+      ? input.interventionNotes.trim()
+      : null;
+    const normalizedInterventionErrorType = input.interventionErrorType?.trim()
+      ? input.interventionErrorType.trim()
+      : null;
+    const normalizedInterventionContactStatus = input.interventionContactStatus?.trim()
+      ? input.interventionContactStatus.trim()
+      : null;
 
     if ("quantityTablets" in input) {
       assignments.push(`quantity_tablets = $${values.push(input.quantityTablets ?? null)}`);
@@ -2818,9 +3065,19 @@ export async function updateMedicalPrescriptionValidation(
 
     if ("interventionNotes" in input) {
       assignments.push(
-        `intervention_notes = $${values.push(
-          input.interventionNotes?.trim() ? input.interventionNotes.trim() : null
-        )}`
+        `intervention_notes = $${values.push(normalizedInterventionNotes)}`
+      );
+    }
+
+    if ("interventionErrorType" in input) {
+      assignments.push(
+        `intervention_error_type = $${values.push(normalizedInterventionErrorType)}`
+      );
+    }
+
+    if ("interventionContactStatus" in input) {
+      assignments.push(
+        `intervention_contact_status = $${values.push(normalizedInterventionContactStatus)}`
       );
     }
 
@@ -2835,6 +3092,29 @@ export async function updateMedicalPrescriptionValidation(
     if ("interventionResponse" in input) {
       assignments.push(
         `intervention_response = $${values.push(input.interventionResponse ?? null)}`
+      );
+    }
+
+    if (hasInterventionField) {
+      const hasPersistedIntervention =
+        Boolean(normalizedInterventionNotes) ||
+        Boolean(normalizedInterventionErrorType) ||
+        Boolean(normalizedInterventionContactStatus) ||
+        input.interventionRequestedToPrescriber !== null &&
+          input.interventionRequestedToPrescriber !== undefined ||
+        Boolean(input.interventionResponse);
+      const interventionProfessionalId =
+        hasPersistedIntervention && input.responsibleLogin?.trim()
+          ? await findProfessionalIdByLogin(client, input.responsibleLogin)
+          : null;
+
+      assignments.push(
+        `intervention_recorded_at = $${values.push(
+          hasPersistedIntervention ? new Date().toISOString() : null
+        )}`
+      );
+      assignments.push(
+        `intervention_professional_id = $${values.push(interventionProfessionalId)}`
       );
     }
 
@@ -2863,9 +3143,11 @@ export async function updateMedicalPrescriptionValidation(
           mp.id,
           mp.patient_id,
           p.full_name AS patient_name,
+          p.chart_number,
           mp.admission_id,
           a.admission_date::text AS admission_date,
           a.bed,
+          t.name AS team_name,
           mp.medication_id,
           mp.medication_name,
           mp.dose::float8 AS dose,
@@ -2885,12 +3167,19 @@ export async function updateMedicalPrescriptionValidation(
           mp.patient_did_not_bring,
           mp.stock_validation_note,
           mp.intervention_notes,
+          mp.intervention_error_type,
+          mp.intervention_contact_status,
           mp.intervention_requested_to_prescriber,
           mp.intervention_response,
+          mp.intervention_recorded_at,
+          mp.intervention_professional_id,
+          prof.full_name AS intervention_professional_name,
           mp.created_at
         FROM medical_prescriptions mp
         INNER JOIN patients p ON p.id = mp.patient_id
         LEFT JOIN admissions a ON a.id = mp.admission_id
+        LEFT JOIN teams t ON t.id = a.team_id
+        LEFT JOIN professionals prof ON prof.id = mp.intervention_professional_id
         WHERE mp.id = $1
         LIMIT 1
       `,
@@ -3347,6 +3636,51 @@ export async function listPatientAllergies(patientId?: number | null): Promise<P
   return result.rows.map((row) => mapPatientAllergy(row as DbRow));
 }
 
+export async function listAdmissionRoundNotes(
+  patientId?: number | null,
+  options?: {
+    admissionId?: number | null;
+  }
+): Promise<AdmissionRoundNoteRecord[]> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const filterValues: number[] = [];
+  const whereClauses: string[] = [];
+
+  if (Number.isInteger(patientId) && Number(patientId) > 0) {
+    filterValues.push(Number(patientId));
+    whereClauses.push(`arn.patient_id = $${filterValues.length}`);
+  }
+
+  if (Number.isInteger(options?.admissionId) && Number(options?.admissionId) > 0) {
+    filterValues.push(Number(options?.admissionId));
+    whereClauses.push(`arn.admission_id = $${filterValues.length}`);
+  }
+
+  const result = await pool.query(
+    `
+      SELECT
+        arn.id,
+        arn.patient_id,
+        p.full_name AS patient_name,
+        arn.admission_id,
+        arn.round_date::text AS round_date,
+        arn.note,
+        arn.responsible_professional_id,
+        prof.full_name AS responsible_professional_name,
+        arn.created_at
+      FROM admission_round_notes arn
+      INNER JOIN patients p ON p.id = arn.patient_id
+      INNER JOIN professionals prof ON prof.id = arn.responsible_professional_id
+      ${whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : ""}
+      ORDER BY arn.round_date DESC, arn.created_at DESC, arn.id DESC
+    `,
+    filterValues
+  );
+
+  return result.rows.map((row) => mapAdmissionRoundNote(row as DbRow));
+}
+
 export async function listPriorMedications(patientId?: number | null): Promise<PriorMedicationRecord[]> {
   await ensureDatabaseReady();
   const pool = getPool();
@@ -3463,9 +3797,11 @@ export async function listMedicalPrescriptions(
       mp.id,
       mp.patient_id,
       p.full_name AS patient_name,
+      p.chart_number,
       mp.admission_id,
       a.admission_date::text AS admission_date,
       a.bed,
+      t.name AS team_name,
       mp.medication_id,
       mp.medication_name,
       mp.dose::float8 AS dose,
@@ -3485,12 +3821,19 @@ export async function listMedicalPrescriptions(
       mp.patient_did_not_bring,
       mp.stock_validation_note,
       mp.intervention_notes,
+      mp.intervention_error_type,
+      mp.intervention_contact_status,
       mp.intervention_requested_to_prescriber,
       mp.intervention_response,
+      mp.intervention_recorded_at,
+      mp.intervention_professional_id,
+      prof.full_name AS intervention_professional_name,
       mp.created_at
     FROM medical_prescriptions mp
     INNER JOIN patients p ON p.id = mp.patient_id
     LEFT JOIN admissions a ON a.id = mp.admission_id
+    LEFT JOIN teams t ON t.id = a.team_id
+    LEFT JOIN professionals prof ON prof.id = mp.intervention_professional_id
     ${shouldFilterByPatientId ? "WHERE mp.patient_id = $1" : ""}
     ORDER BY mp.created_at DESC, mp.id DESC
   `,
@@ -3502,11 +3845,12 @@ export async function listMedicalPrescriptions(
 
 function normalizeDashboardSection(
   section?: string | null
-): "professional" | "team" | "patient" | "medication" | "inpatients" {
+): "professional" | "team" | "patient" | "medication" | "interventions" | "inpatients" {
   switch (section) {
     case "team":
     case "patient":
     case "medication":
+    case "interventions":
     case "inpatients":
       return section;
     default:
@@ -3553,8 +3897,9 @@ export async function getDashboardData(
   const shouldLoadPatientAllergies = isPatientDetailsPage;
   const shouldLoadPriorMedications = isPatientDetailsPage;
   const shouldLoadExamImports = isPatientDetailsPage;
+  const shouldLoadRoundNotes = isPatientDetailsPage;
   const shouldLoadWorkflow = section === "inpatients";
-  const shouldLoadPrescriptions = isPatientDetailsPage;
+  const shouldLoadPrescriptions = isPatientDetailsPage || section === "interventions";
 
   const [
     currentProfessional,
@@ -3567,6 +3912,7 @@ export async function getDashboardData(
     patientAllergies,
     priorMedications,
     examImports,
+    roundNotes,
     inpatientWorkflowSnapshot,
     prescriptions
   ] = await Promise.all([
@@ -3588,8 +3934,11 @@ export async function getDashboardData(
     shouldLoadExamImports
       ? listPatientExamImports(selectedPatientId, { includeRawText: "latest" })
       : Promise.resolve([]),
+    shouldLoadRoundNotes ? listAdmissionRoundNotes(selectedPatientId) : Promise.resolve([]),
     shouldLoadWorkflow ? getInpatientWorkflowSnapshotByLogin(currentLogin) : Promise.resolve(null),
-    shouldLoadPrescriptions ? listMedicalPrescriptions(selectedPatientId) : Promise.resolve([])
+    shouldLoadPrescriptions
+      ? listMedicalPrescriptions(isPatientDetailsPage ? selectedPatientId : null)
+      : Promise.resolve([])
   ]);
 
   return {
@@ -3603,6 +3952,7 @@ export async function getDashboardData(
     patientAllergies,
     priorMedications,
     examImports,
+    roundNotes,
     inpatientWorkflowSnapshot,
     prescriptions,
     loadedPatientDetailsId: isPatientDetailsPage ? selectedPatientId : null

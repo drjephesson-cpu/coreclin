@@ -4,7 +4,11 @@ import { getCurrentSession } from "@/lib/auth";
 import { addMedicalPrescription, updateMedicalPrescriptionValidation } from "@/lib/db";
 import {
   MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS,
-  type MedicalPrescriptionInterventionResponse
+  PRESCRIPTION_INTERVENTION_CONTACT_OPTIONS,
+  PRESCRIPTION_INTERVENTION_ERROR_TYPE_OPTIONS,
+  type MedicalPrescriptionInterventionResponse,
+  type PrescriptionInterventionContactStatus,
+  type PrescriptionInterventionErrorType
 } from "@/lib/coreclin-types";
 
 export const runtime = "nodejs";
@@ -212,6 +216,28 @@ export async function PUT(
   const hasInterventionNotes = hasOwnProperty(body, "interventionNotes");
   const interventionNotes =
     typeof body.interventionNotes === "string" ? body.interventionNotes.trim() : "";
+  const hasInterventionErrorType = hasOwnProperty(body, "interventionErrorType");
+  const interventionErrorTypeRaw =
+    typeof body.interventionErrorType === "string" ? body.interventionErrorType.trim() : "";
+  const interventionErrorType =
+    !interventionErrorTypeRaw
+      ? null
+      : PRESCRIPTION_INTERVENTION_ERROR_TYPE_OPTIONS.includes(
+            interventionErrorTypeRaw as PrescriptionInterventionErrorType
+          )
+        ? (interventionErrorTypeRaw as PrescriptionInterventionErrorType)
+        : "invalid";
+  const hasInterventionContactStatus = hasOwnProperty(body, "interventionContactStatus");
+  const interventionContactStatusRaw =
+    typeof body.interventionContactStatus === "string" ? body.interventionContactStatus.trim() : "";
+  const interventionContactStatus =
+    !interventionContactStatusRaw
+      ? null
+      : PRESCRIPTION_INTERVENTION_CONTACT_OPTIONS.includes(
+            interventionContactStatusRaw as PrescriptionInterventionContactStatus
+          )
+        ? (interventionContactStatusRaw as PrescriptionInterventionContactStatus)
+        : "invalid";
   const hasInterventionRequestedToPrescriber = hasOwnProperty(
     body,
     "interventionRequestedToPrescriber"
@@ -274,12 +300,29 @@ export async function PUT(
     return NextResponse.json({ message: "Resposta da intervenção inválida." }, { status: 400 });
   }
 
+  if (hasInterventionErrorType && interventionErrorType === "invalid") {
+    return NextResponse.json({ message: "Tipo de erro inválido." }, { status: 400 });
+  }
+
+  if (hasInterventionContactStatus && interventionContactStatus === "invalid") {
+    return NextResponse.json({ message: "Contato da intervenção inválido." }, { status: 400 });
+  }
+
   const safeInterventionRequestedToPrescriber =
     interventionRequestedToPrescriber === "invalid"
       ? null
       : interventionRequestedToPrescriber;
   const safeInterventionResponse =
     interventionResponse === "invalid" ? null : interventionResponse;
+  const safeInterventionErrorType =
+    interventionErrorType === "invalid" ? null : interventionErrorType;
+  const safeInterventionContactStatus =
+    interventionContactStatus === "invalid" ? null : interventionContactStatus;
+  const derivedInterventionRequestedToPrescriber =
+    hasInterventionContactStatus && safeInterventionContactStatus !== null
+      ? safeInterventionContactStatus === "Realizado" ||
+        safeInterventionContactStatus === "Contato realizado anteriormente"
+      : safeInterventionRequestedToPrescriber;
 
   try {
     const prescription = await updateMedicalPrescriptionValidation({
@@ -292,8 +335,22 @@ export async function PUT(
       ...(hasPatientDidNotBring ? { patientDidNotBring } : {}),
       ...(hasStockValidationNote ? { stockValidationNote } : {}),
       ...(hasInterventionNotes ? { interventionNotes } : {}),
+      ...(hasInterventionErrorType ? { interventionErrorType: safeInterventionErrorType } : {}),
+      ...(hasInterventionContactStatus
+        ? { interventionContactStatus: safeInterventionContactStatus }
+        : {}),
       ...(hasInterventionRequestedToPrescriber
-        ? { interventionRequestedToPrescriber: safeInterventionRequestedToPrescriber }
+        ? { interventionRequestedToPrescriber: derivedInterventionRequestedToPrescriber }
+        : {}),
+      ...(!hasInterventionRequestedToPrescriber && hasInterventionContactStatus
+        ? { interventionRequestedToPrescriber: derivedInterventionRequestedToPrescriber }
+        : {}),
+      ...(hasInterventionNotes ||
+      hasInterventionErrorType ||
+      hasInterventionContactStatus ||
+      hasInterventionRequestedToPrescriber ||
+      hasInterventionResponse
+        ? { responsibleLogin: session.username }
         : {}),
       ...(hasInterventionResponse ? { interventionResponse: safeInterventionResponse } : {})
     });
