@@ -242,6 +242,12 @@ type DashboardSectionId = (typeof DASHBOARD_NAV_ITEMS)[number]["id"];
 type PatientViewId = (typeof PATIENT_VIEW_ITEMS)[number]["id"];
 type PrescriptionMode = "view" | "raw";
 type InpatientOverviewMode = (typeof INPATIENT_SIDEBAR_ITEMS)[number]["id"];
+type DashboardRouteSnapshot = {
+  patientId: string | null;
+  patientView: PatientViewId;
+  section: DashboardSectionId | null;
+  inpatientMode: InpatientOverviewMode;
+};
 type FeedbackType = "success" | "error";
 
 type TeamGroupOption = {
@@ -1270,6 +1276,29 @@ function mergeMandatoryEntriesIntoPayload(
 const DASHBOARD_SECTION_IDS = new Set<string>(DASHBOARD_NAV_ITEMS.map((item) => item.id));
 const INPATIENT_OVERVIEW_IDS = new Set<string>(INPATIENT_SIDEBAR_ITEMS.map((item) => item.id));
 const PATIENT_VIEW_IDS = new Set<string>(PATIENT_VIEW_ITEMS.map((item) => item.id));
+
+function parseDashboardRouteSnapshot(searchParams: Pick<URLSearchParams, "get">): DashboardRouteSnapshot {
+  const searchPatientId = searchParams.get("patientId");
+  const searchPatientView = searchParams.get("patientView");
+  const searchSection = searchParams.get("section");
+  const searchInpatientMode = searchParams.get("inpatientMode");
+
+  return {
+    patientId:
+      typeof searchPatientId === "string" && searchPatientId.trim().length > 0
+        ? searchPatientId
+        : null,
+    patientView: PATIENT_VIEW_IDS.has(searchPatientView ?? "")
+      ? (searchPatientView as PatientViewId)
+      : "admission-info",
+    section: DASHBOARD_SECTION_IDS.has(searchSection ?? "")
+      ? (searchSection as DashboardSectionId)
+      : null,
+    inpatientMode: INPATIENT_OVERVIEW_IDS.has(searchInpatientMode ?? "")
+      ? (searchInpatientMode as InpatientOverviewMode)
+      : "all"
+  };
+}
 
 function calculateAge(dateString: string): number | null {
   if (!dateString) {
@@ -3060,20 +3089,19 @@ export default function DashboardConsole({
   const currentProfessional = data?.currentProfessional ?? null;
   const currentWorkflowEditorName = currentProfessional?.fullName ?? currentLogin;
   const currentWorkflowEditorLogin = currentProfessional?.login ?? currentLogin;
-  const searchPatientId = searchParams.get("patientId");
-  const searchPatientView = searchParams.get("patientView");
-  const searchSection = searchParams.get("section");
-  const searchInpatientMode = searchParams.get("inpatientMode");
-  const patientPageMode = typeof searchPatientId === "string" && searchPatientId.trim().length > 0;
-  const requestedPatientView = PATIENT_VIEW_IDS.has(searchPatientView ?? "")
-    ? (searchPatientView as PatientViewId)
-    : "admission-info";
-  const requestedSection = DASHBOARD_SECTION_IDS.has(searchSection ?? "")
-    ? (searchSection as DashboardSectionId)
-    : null;
-  const requestedInpatientMode = INPATIENT_OVERVIEW_IDS.has(searchInpatientMode ?? "")
-    ? (searchInpatientMode as InpatientOverviewMode)
-    : "all";
+  const initialRouteSearch = searchParams.toString();
+  const initialRouteSnapshot = useMemo(
+    () => parseDashboardRouteSnapshot(searchParams),
+    [initialRouteSearch, searchParams]
+  );
+  const [dashboardRouteSnapshot, setDashboardRouteSnapshot] = useState<DashboardRouteSnapshot>(
+    () => initialRouteSnapshot
+  );
+  const searchPatientId = dashboardRouteSnapshot.patientId;
+  const requestedPatientView = dashboardRouteSnapshot.patientView;
+  const requestedSection = dashboardRouteSnapshot.section;
+  const requestedInpatientMode = dashboardRouteSnapshot.inpatientMode;
+  const patientPageMode = searchPatientId !== null;
   const persistedInpatientWorkflowPayload = useMemo(
     () => normalizeInpatientWorkflowStoragePayload(data?.inpatientWorkflowSnapshot),
     [data?.inpatientWorkflowSnapshot]
@@ -3122,6 +3150,36 @@ export default function DashboardConsole({
   useEffect(() => {
     setPrescriptions(data?.prescriptions ?? []);
   }, [data?.prescriptions]);
+
+  useEffect(() => {
+    setDashboardRouteSnapshot((current) => {
+      if (
+        current.patientId === initialRouteSnapshot.patientId &&
+        current.patientView === initialRouteSnapshot.patientView &&
+        current.section === initialRouteSnapshot.section &&
+        current.inpatientMode === initialRouteSnapshot.inpatientMode
+      ) {
+        return current;
+      }
+
+      return initialRouteSnapshot;
+    });
+  }, [initialRouteSnapshot]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handlePopState = () => {
+      setDashboardRouteSnapshot(parseDashboardRouteSnapshot(new URLSearchParams(window.location.search)));
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, []);
 
   useEffect(() => {
     if (requestedSection !== "interventions" || data?.loadedPatientDetailsId !== null) {
@@ -3352,17 +3410,9 @@ export default function DashboardConsole({
       return;
     }
 
-    if (searchParams.has("section")) {
-      setActiveSection(requestedSection);
-    }
-
-    if (searchParams.has("inpatientMode")) {
-      setInpatientOverviewMode(requestedInpatientMode);
-    }
-
-    if (searchParams.has("patientView") && PATIENT_VIEW_IDS.has(searchPatientView ?? "")) {
-      setPatientView(requestedPatientView);
-    }
+    setActiveSection(requestedSection);
+    setInpatientOverviewMode(requestedInpatientMode);
+    setPatientView(requestedPatientView);
   }, [
     patientPageMode,
     requestedInpatientMode,
@@ -3370,9 +3420,7 @@ export default function DashboardConsole({
     requestedSection,
     patientPageOverride,
     selectedPatientId,
-    searchParams,
-    searchPatientId,
-    searchPatientView
+    searchPatientId
   ]);
 
   useEffect(() => {
@@ -5906,9 +5954,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   }
 
   function pushDashboardUrl(url: string): void {
-    startDashboardTransition(() => {
-      router.push(url, { scroll: false });
-    });
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const nextUrl = new URL(url, window.location.origin);
+    window.history.pushState(window.history.state, "", nextUrl);
+    setDashboardRouteSnapshot(parseDashboardRouteSnapshot(nextUrl.searchParams));
   }
 
   function refreshDashboard(label = "Atualizando painel..."): void {
@@ -5948,9 +6000,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   }
 
   function replaceDashboardUrl(url: string): void {
-    startDashboardTransition(() => {
-      router.replace(url, { scroll: false });
-    });
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const nextUrl = new URL(url, window.location.origin);
+    window.history.replaceState(window.history.state, "", nextUrl);
+    setDashboardRouteSnapshot(parseDashboardRouteSnapshot(nextUrl.searchParams));
   }
 
   function toggleList(sectionId: DashboardSectionId): void {
