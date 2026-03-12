@@ -1876,6 +1876,39 @@ async function findProfessionalIdByLogin(client: PoolClient, login: string): Pro
   return toNumber((result.rows[0] as DbRow).id);
 }
 
+async function backfillLegacyInterventionProfessionalMetadata(
+  client: PoolClient,
+  login: string,
+  patientId?: number | null
+): Promise<void> {
+  const professionalId = await findProfessionalIdByLogin(client, login);
+  const values: unknown[] = [professionalId];
+  const patientFilter =
+    Number.isInteger(patientId) && Number(patientId) > 0
+      ? `AND mp.patient_id = $${values.push(Number(patientId))}`
+      : "";
+
+  await client.query(
+    `
+      UPDATE medical_prescriptions mp
+      SET
+        intervention_professional_id = $1,
+        intervention_recorded_at = COALESCE(mp.intervention_recorded_at, mp.created_at)
+      WHERE
+        mp.intervention_professional_id IS NULL
+        AND (
+          COALESCE(BTRIM(mp.intervention_notes), '') <> ''
+          OR COALESCE(BTRIM(mp.intervention_error_type), '') <> ''
+          OR COALESCE(BTRIM(mp.intervention_contact_status), '') <> ''
+          OR mp.intervention_requested_to_prescriber IS NOT NULL
+          OR COALESCE(BTRIM(mp.intervention_response), '') <> ''
+        )
+        ${patientFilter}
+    `,
+    values
+  );
+}
+
 export async function saveInpatientWorkflowSnapshot(
   input: SaveInpatientWorkflowSnapshotInput
 ): Promise<InpatientWorkflowStoragePayload> {
@@ -3786,61 +3819,78 @@ export async function getPatientExamImportById(
 }
 
 export async function listMedicalPrescriptions(
-  patientId?: number | null
+  patientId?: number | null,
+  options?: {
+    backfillInterventionProfessionalLogin?: string | null;
+  }
 ): Promise<MedicalPrescriptionRecord[]> {
   await ensureDatabaseReady();
   const pool = getPool();
   const shouldFilterByPatientId = Number.isInteger(patientId) && Number(patientId) > 0;
-  const result = await pool.query(
-    `
-    SELECT
-      mp.id,
-      mp.patient_id,
-      p.full_name AS patient_name,
-      p.chart_number,
-      mp.admission_id,
-      a.admission_date::text AS admission_date,
-      a.bed,
-      t.name AS team_name,
-      mp.medication_id,
-      mp.medication_name,
-      mp.dose::float8 AS dose,
-      mp.dose_unit,
-      mp.administration_route,
-      mp.frequency,
-      mp.shifts,
-      mp.notes,
-      mp.validation_start_at,
-      mp.validation_end_at,
-      mp.validation_status,
-      mp.external_validation_candidate,
-      mp.quantity_tablets,
-      mp.lot_number,
-      mp.expiration_date::text AS expiration_date,
-      mp.manufacturer,
-      mp.patient_did_not_bring,
-      mp.stock_validation_note,
-      mp.intervention_notes,
-      mp.intervention_error_type,
-      mp.intervention_contact_status,
-      mp.intervention_requested_to_prescriber,
-      mp.intervention_response,
-      mp.intervention_recorded_at,
-      mp.intervention_professional_id,
-      prof.full_name AS intervention_professional_name,
-      mp.created_at
-    FROM medical_prescriptions mp
-    INNER JOIN patients p ON p.id = mp.patient_id
-    LEFT JOIN admissions a ON a.id = mp.admission_id
-    LEFT JOIN teams t ON t.id = a.team_id
-    LEFT JOIN professionals prof ON prof.id = mp.intervention_professional_id
-    ${shouldFilterByPatientId ? "WHERE mp.patient_id = $1" : ""}
-    ORDER BY mp.created_at DESC, mp.id DESC
-  `,
-    shouldFilterByPatientId ? [Number(patientId)] : []
-  );
+  const client = await pool.connect();
 
-  return result.rows.map((row) => mapMedicalPrescription(row as DbRow));
+  try {
+    if (options?.backfillInterventionProfessionalLogin?.trim()) {
+      await backfillLegacyInterventionProfessionalMetadata(
+        client,
+        options.backfillInterventionProfessionalLogin,
+        shouldFilterByPatientId ? Number(patientId) : null
+      );
+    }
+
+    const result = await client.query(
+      `
+      SELECT
+        mp.id,
+        mp.patient_id,
+        p.full_name AS patient_name,
+        p.chart_number,
+        mp.admission_id,
+        a.admission_date::text AS admission_date,
+        a.bed,
+        t.name AS team_name,
+        mp.medication_id,
+        mp.medication_name,
+        mp.dose::float8 AS dose,
+        mp.dose_unit,
+        mp.administration_route,
+        mp.frequency,
+        mp.shifts,
+        mp.notes,
+        mp.validation_start_at,
+        mp.validation_end_at,
+        mp.validation_status,
+        mp.external_validation_candidate,
+        mp.quantity_tablets,
+        mp.lot_number,
+        mp.expiration_date::text AS expiration_date,
+        mp.manufacturer,
+        mp.patient_did_not_bring,
+        mp.stock_validation_note,
+        mp.intervention_notes,
+        mp.intervention_error_type,
+        mp.intervention_contact_status,
+        mp.intervention_requested_to_prescriber,
+        mp.intervention_response,
+        mp.intervention_recorded_at,
+        mp.intervention_professional_id,
+        prof.full_name AS intervention_professional_name,
+        mp.created_at
+      FROM medical_prescriptions mp
+      INNER JOIN patients p ON p.id = mp.patient_id
+      LEFT JOIN admissions a ON a.id = mp.admission_id
+      LEFT JOIN teams t ON t.id = a.team_id
+      LEFT JOIN professionals prof ON prof.id = mp.intervention_professional_id
+      ${shouldFilterByPatientId ? "WHERE mp.patient_id = $1" : ""}
+      ORDER BY mp.created_at DESC, mp.id DESC
+    `,
+      shouldFilterByPatientId ? [Number(patientId)] : []
+    );
+
+    return result.rows.map((row) => mapMedicalPrescription(row as DbRow));
+  } finally {
+    client.release();
+  }
 }
 
 function normalizeDashboardSection(
@@ -3937,7 +3987,9 @@ export async function getDashboardData(
     shouldLoadRoundNotes ? listAdmissionRoundNotes(selectedPatientId) : Promise.resolve([]),
     shouldLoadWorkflow ? getInpatientWorkflowSnapshotByLogin(currentLogin) : Promise.resolve(null),
     shouldLoadPrescriptions
-      ? listMedicalPrescriptions(isPatientDetailsPage ? selectedPatientId : null)
+      ? listMedicalPrescriptions(isPatientDetailsPage ? selectedPatientId : null, {
+          backfillInterventionProfessionalLogin: currentLogin
+        })
       : Promise.resolve([])
   ]);
 

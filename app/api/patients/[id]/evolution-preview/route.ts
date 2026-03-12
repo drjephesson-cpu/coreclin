@@ -34,7 +34,9 @@ export async function GET(
         listPatientAllergies(patientId),
         listPriorMedications(patientId),
         listPatientExamImports(patientId),
-        listMedicalPrescriptions(patientId),
+        listMedicalPrescriptions(patientId, {
+          backfillInterventionProfessionalLogin: session.username
+        }),
         findProfessionalByLogin(session.username)
       ]);
 

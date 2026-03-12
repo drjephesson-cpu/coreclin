@@ -12,7 +12,9 @@ export async function GET(): Promise<NextResponse> {
   }
 
   try {
-    const prescriptions = await listMedicalPrescriptions();
+    const prescriptions = await listMedicalPrescriptions(null, {
+      backfillInterventionProfessionalLogin: session.username
+    });
     return NextResponse.json({ prescriptions });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao carregar as intervenções.";

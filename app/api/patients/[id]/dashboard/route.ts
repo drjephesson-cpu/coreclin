@@ -38,7 +38,9 @@ export async function GET(
       listPriorMedications(patientId),
       listPatientExamImports(patientId, { includeRawText: "latest" }),
       listAdmissionRoundNotes(patientId),
-      listMedicalPrescriptions(patientId)
+      listMedicalPrescriptions(patientId, {
+        backfillInterventionProfessionalLogin: session.username
+      })
       ]);
 
     const patient = patients[0] ?? null;
