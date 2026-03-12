@@ -97,8 +97,11 @@ const DASHBOARD_NAV_GROUPS = [
   { label: "Paciente", items: [{ id: "patient", label: "Cadastrar pacientes" }] },
   {
     label: "Medicamentos",
+    items: [{ id: "medication", label: "Cadastrar medicamentos" }]
+  },
+  {
+    label: "Relatórios",
     items: [
-      { id: "medication", label: "Cadastrar medicamentos" },
       { id: "interventions", label: "Intervenções" },
       { id: "validated-medications", label: "Medicamentos validados" }
     ]
