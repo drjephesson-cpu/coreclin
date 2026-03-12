@@ -23,7 +23,10 @@ function normalizeWorkflowByKey(value: unknown): Record<string, InpatientWorkflo
 
       const workflow = entryValue as Record<string, unknown>;
       const status =
-        workflow.status === "Visitado" || workflow.status === "Concluído" || workflow.status === "Alta"
+        workflow.status === "Visitado" ||
+        workflow.status === "Ausente" ||
+        workflow.status === "Concluído" ||
+        workflow.status === "Alta"
           ? workflow.status
           : "Pendente";
 

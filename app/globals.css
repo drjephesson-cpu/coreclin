@@ -1104,8 +1104,29 @@ body {
   background: #fff4f4;
 }
 
+.dashboard-table tr.dashboard-row-visited td {
+  font-weight: 700;
+}
+
+.dashboard-table tr.dashboard-row-absent td {
+  background: #fff1f1;
+  color: #b42318;
+  font-weight: 700;
+}
+
 .dashboard-table td.dashboard-cell-alert {
   color: #8a2f2f;
+  font-weight: 700;
+}
+
+.dashboard-table-select.dashboard-status-select-visited {
+  font-weight: 700;
+}
+
+.dashboard-table-select.dashboard-status-select-absent {
+  border-color: #e2a6a6;
+  background: #fff7f7;
+  color: #b42318;
   font-weight: 700;
 }
 

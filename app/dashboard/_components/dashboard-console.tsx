@@ -124,6 +124,30 @@ function formatWorkflowEditorLabel(workflow: InpatientWorkflowState): string {
   return workflow.updatedByProfessionalName ?? workflow.updatedByProfessionalLogin ?? "-";
 }
 
+function getMandatoryInpatientRowClassName(status: InpatientWorkflowStatus): string {
+  if (status === "Visitado") {
+    return "dashboard-row-visited";
+  }
+
+  if (status === "Ausente") {
+    return "dashboard-row-absent";
+  }
+
+  return "";
+}
+
+function getMandatoryInpatientStatusSelectClassName(status: InpatientWorkflowStatus): string {
+  if (status === "Visitado") {
+    return "dashboard-status-select-visited";
+  }
+
+  if (status === "Ausente") {
+    return "dashboard-status-select-absent";
+  }
+
+  return "";
+}
+
 const INPATIENT_SIDEBAR_ITEMS = [
   { id: "all", label: "Todos" },
   { id: "team", label: "Por equipe" },
@@ -157,7 +181,7 @@ const PRIOR_MEDICATION_FREQUENCY_OPTIONS = [
   "5 vezes por semana"
 ] as const;
 
-const INPATIENT_STATUS_OPTIONS = ["Visitado", "Pendente", "Alta", "Concluído"] as const;
+const INPATIENT_STATUS_OPTIONS = ["Visitado", "Pendente", "Ausente", "Alta", "Concluído"] as const;
 const INPATIENT_WORKFLOW_STORAGE_KEY = "coreclin.inpatient-workflow.v1";
 const TEAM_GROUP_RULES = [
   { key: "clinica-medica-1", label: "Clínica médica 1", aliases: ["cm1", "clinica medica 1"] },
@@ -1183,6 +1207,7 @@ function normalizeInpatientWorkflowStoragePayload(
             const workflow = workflowValue as Partial<InpatientWorkflowState>;
             const status =
               workflow.status === "Visitado" ||
+              workflow.status === "Ausente" ||
               workflow.status === "Concluído" ||
               workflow.status === "Alta"
                 ? workflow.status
@@ -8320,7 +8345,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       };
       const currentWorkflow = current[inpatientKey] ?? fallbackWorkflow;
       const nextFirstVisitCompletedAt =
-        nextStatus === "Pendente"
+        nextStatus === "Pendente" || nextStatus === "Ausente"
           ? null
           : nextStatus === "Visitado" || nextStatus === "Concluído"
             ? currentWorkflow.firstVisitCompletedAt ?? now
@@ -9586,7 +9611,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     </tr>
                                   ) : (
                                     mandatoryOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
-                                      <tr key={entry.key}>
+                                      <tr
+                                        key={entry.key}
+                                        className={getMandatoryInpatientRowClassName(workflow.status)}
+                                      >
                                         <td>{entry.patientName}</td>
                                         <td>{entry.chartNumber || "-"}</td>
                                         <td>{formatAdmissionDate(entry.admissionDate)}</td>
@@ -9594,7 +9622,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         <td>{assignedTeamName ?? formatCanonicalTeamName(entry.teamName)}</td>
                                         <td>
                                           <select
-                                            className="dashboard-table-select"
+                                            className={`dashboard-table-select ${getMandatoryInpatientStatusSelectClassName(
+                                              workflow.status
+                                            )}`.trim()}
                                             value={workflow.status}
                                             onChange={(event) =>
                                               handleInpatientStatusChange(
@@ -10844,17 +10874,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               </p>
                             ) : null}
 
-                            <div className="dashboard-inline-actions">
-                              <button
-                                type="button"
-                                className="dashboard-mini-button"
-                                onClick={handleSaveAllPriorMedicationReconciliation}
-                                disabled={priorMedicationBatchSaving || priorMedicationEditableRows.length === 0}
-                              >
-                                {priorMedicationBatchSaving ? "Salvando todos..." : "Salvar todos"}
-                              </button>
-                            </div>
-
                             <button type="submit" disabled={priorMedicationLoading}>
                               {priorMedicationLoading ? "Salvando..." : "Salvar medicamento prévio"}
                             </button>
@@ -11053,6 +11072,17 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   )}
                                 </tbody>
                               </table>
+                            </div>
+
+                            <div className="dashboard-inline-actions">
+                              <button
+                                type="button"
+                                className="dashboard-mini-button"
+                                onClick={handleSaveAllPriorMedicationReconciliation}
+                                disabled={priorMedicationBatchSaving || priorMedicationEditableRows.length === 0}
+                              >
+                                {priorMedicationBatchSaving ? "Salvando todos..." : "Salvar todos"}
+                              </button>
                             </div>
                           </div>
                         ) : null}
