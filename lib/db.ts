@@ -3213,10 +3213,11 @@ export async function addMedicalPrescription(
         `,
         [input.admissionId, input.patientId]
       );
-      if (admissionResult.rows.length === 0) {
-        throw new Error("Internação selecionada não pertence ao paciente.");
+      if (admissionResult.rows.length > 0) {
+        safeAdmissionId = input.admissionId;
+      } else {
+        safeAdmissionId = await findLatestAdmissionIdByPatient(client, input.patientId);
       }
-      safeAdmissionId = input.admissionId;
     } else {
       safeAdmissionId = await findLatestAdmissionIdByPatient(client, input.patientId);
     }

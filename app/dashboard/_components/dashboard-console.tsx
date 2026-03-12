@@ -4477,6 +4477,16 @@ export default function DashboardConsole({
       birthDate: formatAdmissionDateValue(selectedPatient?.birthDate ?? ""),
       sex: selectedPatient?.sex ?? ""
     });
+    setPrescriptionMode("view");
+    setSelectedPrescriptionGroupKey("");
+    setSelectedPrescriptionMedicationHistory(null);
+    setPrescriptionInterventionOpenId(null);
+    setPrescriptionInterventionSavingId(null);
+    setPrescriptionFeedback(null);
+    setRawPrescriptionInput("");
+    setRawPrescriptionDrafts([]);
+    setRawPrescriptionFeedback(null);
+    setRawPrescriptionLoading(false);
     setShowAllergyComposer(false);
     setShowAdmissionSummaryComposer(false);
     setShowAdmissionSummaryPreview(false);
@@ -8270,14 +8280,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
     setRawPrescriptionLoading(true);
     try {
-      const failedLines: number[] = [];
+      const failedLines: string[] = [];
       const importedPrescriptions: MedicalPrescriptionRecord[] = [];
       for (const draft of validDrafts) {
         const response = await fetch(`/api/patients/${selectedPatient.id}/prescriptions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            admissionId: selectedCurrentAdmission?.id ?? undefined,
             medicationId: draft.medicationId ?? undefined,
             medicationName: draft.medicationName,
             dose: draft.dose,
@@ -8295,10 +8304,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
         const result = (await response.json()) as {
           prescription?: MedicalPrescriptionRecord;
+          message?: string;
         };
 
         if (!response.ok || !result.prescription) {
-          failedLines.push(draft.lineNumber);
+          failedLines.push(
+            result.message?.trim()
+              ? `${draft.lineNumber} (${result.message.trim()})`
+              : String(draft.lineNumber)
+          );
           continue;
         }
 
