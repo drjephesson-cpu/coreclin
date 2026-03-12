@@ -2516,7 +2516,8 @@ function ImportantExamCardsPanel({
 
       <div className="dashboard-important-exam-grid">
         {visibleCards.map((card) => {
-          const indicator = card.status === "high" ? "↑" : card.status === "low" ? "↓" : "";
+          const indicator =
+            card.status === "high" ? "↑" : card.status === "low" ? "↓" : card.status === "normal" ? "✓" : "";
           const statusLabel =
             card.status === "high"
               ? "Acima da referência"
