@@ -354,6 +354,8 @@ type PriorMedicationReconciliationFormState = {
   dose: string;
   frequency: string;
   shifts: string;
+  reconciliationManualStatus: "" | "sim" | "nao";
+  reconciliationPrescriptionId: string;
 };
 
 type PrescriptionInterventionFormState = {
@@ -430,7 +432,15 @@ function createEmptyAdmissionFormState() {
 }
 
 function createPriorMedicationReconciliationFormState(
-  priorMedication?: Pick<PriorMedicationRecord, "dose" | "doseUnit" | "frequency" | "shifts">
+  priorMedication?: Pick<
+    PriorMedicationRecord,
+    | "dose"
+    | "doseUnit"
+    | "frequency"
+    | "shifts"
+    | "reconciliationManualStatus"
+    | "reconciliationPrescriptionId"
+  >
 ): PriorMedicationReconciliationFormState {
   const formattedDose =
     priorMedication && priorMedication.dose > 0
@@ -440,13 +450,32 @@ function createPriorMedicationReconciliationFormState(
   return {
     dose: formattedDose,
     frequency: priorMedication?.frequency ?? "",
-    shifts: priorMedication?.shifts ?? ""
+    shifts: priorMedication?.shifts ?? "",
+    reconciliationManualStatus:
+      priorMedication?.reconciliationManualStatus === true
+        ? "sim"
+        : priorMedication?.reconciliationManualStatus === false
+          ? "nao"
+          : "",
+    reconciliationPrescriptionId:
+      priorMedication?.reconciliationPrescriptionId !== null &&
+      priorMedication?.reconciliationPrescriptionId !== undefined
+        ? String(priorMedication.reconciliationPrescriptionId)
+        : ""
   };
 }
 
 function arePriorMedicationReconciliationFormsEqual(
   formState: PriorMedicationReconciliationFormState,
-  reference: Pick<PriorMedicationRecord, "dose" | "doseUnit" | "frequency" | "shifts">
+  reference: Pick<
+    PriorMedicationRecord,
+    | "dose"
+    | "doseUnit"
+    | "frequency"
+    | "shifts"
+    | "reconciliationManualStatus"
+    | "reconciliationPrescriptionId"
+  >
 ): boolean {
   const formattedReferenceDose =
     reference.dose > 0 ? `${formatNumber(reference.dose)} ${reference.doseUnit}`.trim() : "";
@@ -454,7 +483,18 @@ function arePriorMedicationReconciliationFormsEqual(
   return (
     formState.dose.trim() === formattedReferenceDose &&
     formState.frequency.trim() === (reference.frequency ?? "") &&
-    formState.shifts.trim() === (reference.shifts ?? "")
+    formState.shifts.trim() === (reference.shifts ?? "") &&
+    formState.reconciliationManualStatus ===
+      (reference.reconciliationManualStatus === true
+        ? "sim"
+        : reference.reconciliationManualStatus === false
+          ? "nao"
+          : "") &&
+    formState.reconciliationPrescriptionId ===
+      (reference.reconciliationPrescriptionId !== null &&
+      reference.reconciliationPrescriptionId !== undefined
+        ? String(reference.reconciliationPrescriptionId)
+        : "")
   );
 }
 
@@ -840,11 +880,9 @@ function buildMandatoryEvolutionPreviewText(payload: MandatoryEvolutionPreviewPa
   pushSection(
     "#MEDICAMENTO DE USO CONTÍNUO E RECONCILIAÇÃO",
     payload.priorMedications.map((priorMedication) => {
-      const history = prescriptionGroups.map((group) => ({
-        reconciled: group.prescriptions.some((prescription) =>
-          isMedicationNameCompatible(prescription.medicationName, priorMedication.medicationName)
-        )
-      }));
+      const history = prescriptionGroups.map((group, groupIndex) =>
+        resolvePriorMedicationReconciliationForGroup(priorMedication, group, groupIndex)
+      );
       const latestReconciled = history[0]?.reconciled ?? null;
       const scheduleParts = [
         priorMedication.dose > 0 ? `${formatNumber(priorMedication.dose)} ${priorMedication.doseUnit}` : "",
@@ -1884,6 +1922,21 @@ function formatCanonicalTeamName(teamName: string | null | undefined): string {
   return identity?.label ?? "-";
 }
 
+function getInpatientEntryIdentity(entry: InpatientEntry): string {
+  const normalizedChart = normalizeSearchValue(entry.chartNumber);
+  const normalizedName = normalizeSearchValue(entry.patientName);
+
+  if (entry.patientId !== null) {
+    return `patient:${entry.patientId}`;
+  }
+
+  if (normalizedChart) {
+    return `chart:${normalizedChart}`;
+  }
+
+  return `name:${normalizedName || entry.key}`;
+}
+
 function formatInterventionUnitLabel(teamName: string | null | undefined): string {
   const normalizedTeamName = typeof teamName === "string" ? normalizeTeamAlias(teamName) : "";
   if (!normalizedTeamName) {
@@ -2505,6 +2558,55 @@ function isStrictMedicationReferenceMatch(firstName: string, secondName: string)
   }
 
   return hasEquivalentMedicationIdentity(firstName, secondName);
+}
+
+function doesManualReconciliationApplyToGroup(
+  manualStatus: boolean | null,
+  reconciliationPrescriptionId: number | null,
+  group: MedicalPrescriptionGroup,
+  groupIndex: number
+): boolean {
+  if (manualStatus === null) {
+    return false;
+  }
+
+  if (reconciliationPrescriptionId !== null) {
+    return group.prescriptions.some((prescription) => prescription.id === reconciliationPrescriptionId);
+  }
+
+  return groupIndex === 0;
+}
+
+function resolvePriorMedicationReconciliationForGroup(
+  priorMedication: Pick<
+    PriorMedicationRecord,
+    "medicationName" | "reconciliationManualStatus" | "reconciliationPrescriptionId"
+  >,
+  group: MedicalPrescriptionGroup,
+  groupIndex: number
+): { reconciled: boolean; source: "automatic" | "manual" } {
+  const automaticMatch = group.prescriptions.some((prescription) =>
+    isMedicationNameCompatible(prescription.medicationName, priorMedication.medicationName)
+  );
+
+  if (
+    doesManualReconciliationApplyToGroup(
+      priorMedication.reconciliationManualStatus,
+      priorMedication.reconciliationPrescriptionId,
+      group,
+      groupIndex
+    )
+  ) {
+    return {
+      reconciled: priorMedication.reconciliationManualStatus === true,
+      source: "manual"
+    };
+  }
+
+  return {
+    reconciled: automaticMatch,
+    source: "automatic"
+  };
 }
 
 function matchesMedicationReferenceList(
@@ -3956,14 +4058,7 @@ export default function DashboardConsole({
     const entriesByIdentity = new Map<string, InpatientEntry>();
 
     for (const entry of [...trackedInpatientEntries, ...inpatients]) {
-      const normalizedChart = normalizeSearchValue(entry.chartNumber);
-      const normalizedName = normalizeSearchValue(entry.patientName);
-      const identity =
-        entry.patientId !== null
-          ? `patient:${entry.patientId}`
-          : normalizedChart
-            ? `chart:${normalizedChart}`
-            : `name:${normalizedName || entry.key}`;
+      const identity = getInpatientEntryIdentity(entry);
 
       const currentEntry = entriesByIdentity.get(identity);
       if (!currentEntry) {
@@ -3993,6 +4088,11 @@ export default function DashboardConsole({
 
     return Array.from(entriesByIdentity.values());
   }, [trackedInpatientEntries, inpatients]);
+
+  const trackedInpatientEntryIdentities = useMemo(
+    () => new Set(trackedInpatientEntries.map((entry) => getInpatientEntryIdentity(entry))),
+    [trackedInpatientEntries]
+  );
 
   const inpatientEntriesWithWorkflow = useMemo(
     () =>
@@ -4051,7 +4151,12 @@ export default function DashboardConsole({
   const mandatoryOverviewRows = useMemo(
     () => {
       return inpatientEntriesWithWorkflow
-        .filter(({ workflow }) => workflow.mandatory && workflow.status !== "Alta")
+        .filter(
+          ({ entry, workflow }) =>
+            trackedInpatientEntryIdentities.has(getInpatientEntryIdentity(entry)) &&
+            workflow.mandatory &&
+            workflow.status !== "Alta"
+        )
         .sort((first, second) => {
           const firstPriority = first.workflow.firstVisitCompletedAt ? 1 : 0;
           const secondPriority = second.workflow.firstVisitCompletedAt ? 1 : 0;
@@ -4062,7 +4167,7 @@ export default function DashboardConsole({
           return first.entry.patientName.localeCompare(second.entry.patientName, "pt-BR");
         });
     },
-    [inpatientEntriesWithWorkflow]
+    [inpatientEntriesWithWorkflow, trackedInpatientEntryIdentities]
   );
 
   const dischargedOverviewRows = useMemo(
@@ -5380,19 +5485,43 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     };
   }, [priorMedicationCatalogMatch, priorMedicationForm.medicationName, selectedPatientPrescriptionGroups]);
 
+  const priorMedicationPrescriptionLinkOptions = useMemo(
+    () =>
+      selectedPatientPrescriptions
+        .map((prescription) => {
+          const referenceDate =
+            prescription.validationStartAt ?? prescription.validationEndAt ?? prescription.createdAt;
+
+          return {
+            id: prescription.id,
+            label: `${getPrescriptionMedicationDisplayName(
+              prescription.medicationName,
+              prescription.externalValidationCandidate
+            )} | ${
+              referenceDate ? formatTimestamp(referenceDate) : "Sem data"
+            }`
+          };
+        })
+        .sort((first, second) => second.id - first.id),
+    [selectedPatientPrescriptions]
+  );
+
   const priorMedicationRows = useMemo(
     () =>
       selectedPatientPriorMedications.map((priorMedication) => {
-        const history = selectedPatientPrescriptionGroups.map((group) => {
+        const history = selectedPatientPrescriptionGroups.map((group, groupIndex) => {
           const prescriptionDate =
             group.validationStartAt ?? group.validationEndAt ?? group.prescriptions[0]?.createdAt ?? null;
-          const reconciled = group.prescriptions.some((prescription) =>
-            isMedicationReconciled(prescription.medicationName, priorMedication.medicationName)
+          const reconciliation = resolvePriorMedicationReconciliationForGroup(
+            priorMedication,
+            group,
+            groupIndex
           );
           return {
             key: group.key,
             prescriptionDate,
-            reconciled
+            reconciled: reconciliation.reconciled,
+            source: reconciliation.source
           };
         });
 
@@ -5414,14 +5543,46 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         const formState =
           priorMedicationReconciliationForm[row.priorMedication.id] ??
           createPriorMedicationReconciliationFormState(row.priorMedication);
+        const draftPriorMedication = {
+          ...row.priorMedication,
+          reconciliationManualStatus:
+            formState.reconciliationManualStatus === "sim"
+              ? true
+              : formState.reconciliationManualStatus === "nao"
+                ? false
+                : null,
+          reconciliationPrescriptionId: formState.reconciliationPrescriptionId
+            ? Number(formState.reconciliationPrescriptionId)
+            : null
+        };
+        const history = selectedPatientPrescriptionGroups.map((group, groupIndex) => {
+          const prescriptionDate =
+            group.validationStartAt ?? group.validationEndAt ?? group.prescriptions[0]?.createdAt ?? null;
+          const reconciliation = resolvePriorMedicationReconciliationForGroup(
+            draftPriorMedication,
+            group,
+            groupIndex
+          );
+
+          return {
+            key: group.key,
+            prescriptionDate,
+            reconciled: reconciliation.reconciled,
+            source: reconciliation.source
+          };
+        });
+        const latest = history[0] ?? null;
 
         return {
           ...row,
           formState,
+          latestReconciled: latest?.reconciled ?? null,
+          reconciledInAllPrescriptions: history.length > 0 ? history.every((item) => item.reconciled) : null,
+          history,
           isDirty: !arePriorMedicationReconciliationFormsEqual(formState, row.priorMedication)
         };
       }),
-    [priorMedicationRows, priorMedicationReconciliationForm]
+    [priorMedicationRows, priorMedicationReconciliationForm, selectedPatientPrescriptionGroups]
   );
 
   const medicationValidationEditableRows = useMemo(
@@ -7239,7 +7400,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
               ? parsedDose.doseUnit || referenceMedication.doseUnit
               : "",
           frequency: formState.frequency,
-          shifts: formState.shifts
+          shifts: formState.shifts,
+          reconciliationManualStatus:
+            formState.reconciliationManualStatus === ""
+              ? null
+              : formState.reconciliationManualStatus === "sim",
+          reconciliationPrescriptionId: formState.reconciliationPrescriptionId
+            ? Number(formState.reconciliationPrescriptionId)
+            : null
         })
       });
 
@@ -10416,6 +10584,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     <th>Data da prescrição</th>
                                     <th>Reconciliado</th>
                                     <th>Reconciliado em todas</th>
+                                    <th>Manual</th>
+                                    <th>Vincular prescrição</th>
                                     <th>Histórico</th>
                                     <th>Registro</th>
                                     <th>Ações</th>
@@ -10424,7 +10594,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 <tbody>
                                   {priorMedicationEditableRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={10}>Nenhum medicamento prévio cadastrado.</td>
+                                      <td colSpan={12}>Nenhum medicamento prévio cadastrado.</td>
                                     </tr>
                                   ) : (
                                     priorMedicationEditableRows.map((row) => (
@@ -10486,6 +10656,56 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                               : "Não"}
                                         </td>
                                         <td>
+                                          <select
+                                            value={row.formState.reconciliationManualStatus}
+                                            onChange={(event) =>
+                                              setPriorMedicationReconciliationForm((current) => ({
+                                                ...current,
+                                                [row.priorMedication.id]: {
+                                                  ...(current[row.priorMedication.id] ??
+                                                    createPriorMedicationReconciliationFormState(
+                                                      row.priorMedication
+                                                    )),
+                                                  reconciliationManualStatus: event.target.value as
+                                                    PriorMedicationReconciliationFormState["reconciliationManualStatus"]
+                                                }
+                                              }))
+                                            }
+                                          >
+                                            <option value="">Automático</option>
+                                            <option value="sim">Sim</option>
+                                            <option value="nao">Não</option>
+                                          </select>
+                                        </td>
+                                        <td>
+                                          <select
+                                            value={row.formState.reconciliationPrescriptionId}
+                                            onChange={(event) =>
+                                              setPriorMedicationReconciliationForm((current) => ({
+                                                ...current,
+                                                [row.priorMedication.id]: {
+                                                  ...(current[row.priorMedication.id] ??
+                                                    createPriorMedicationReconciliationFormState(
+                                                      row.priorMedication
+                                                    )),
+                                                  reconciliationPrescriptionId: event.target.value
+                                                }
+                                              }))
+                                            }
+                                          >
+                                            <option value="">
+                                              {priorMedicationPrescriptionLinkOptions.length > 0
+                                                ? "Sem vínculo manual"
+                                                : "Sem prescrições para vincular"}
+                                            </option>
+                                            {priorMedicationPrescriptionLinkOptions.map((option) => (
+                                              <option key={option.id} value={option.id}>
+                                                {option.label}
+                                              </option>
+                                            ))}
+                                          </select>
+                                        </td>
+                                        <td>
                                           {row.history.length === 0 ? (
                                             "-"
                                           ) : (
@@ -10498,6 +10718,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                                     : "Sem data"}
                                                   {" "}
                                                   | Reconciliado: {historyItem.reconciled ? "Sim" : "Não"}
+                                                  {" "}
+                                                  | Origem:{" "}
+                                                  {historyItem.source === "manual"
+                                                    ? "Manual"
+                                                    : "Automática"}
                                                 </p>
                                               ))}
                                             </details>

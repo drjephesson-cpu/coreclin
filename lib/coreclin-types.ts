@@ -251,6 +251,9 @@ export type PriorMedicationRecord = {
   lotNumber: string | null;
   expirationDate: string | null;
   manufacturer: string | null;
+  reconciliationManualStatus: boolean | null;
+  reconciliationPrescriptionId: number | null;
+  reconciliationPrescriptionMedicationName: string | null;
   createdAt: string;
 };
 

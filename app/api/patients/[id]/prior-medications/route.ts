@@ -176,6 +176,29 @@ export async function PUT(
   const doseUnit = typeof body.doseUnit === "string" ? body.doseUnit.trim() : "";
   const frequency = typeof body.frequency === "string" ? body.frequency.trim() : "";
   const shifts = typeof body.shifts === "string" ? body.shifts.trim() : "";
+  const reconciliationManualStatusRaw = body.reconciliationManualStatus;
+  const reconciliationManualStatus =
+    reconciliationManualStatusRaw === null ||
+    reconciliationManualStatusRaw === "" ||
+    reconciliationManualStatusRaw === undefined
+      ? null
+      : reconciliationManualStatusRaw === true ||
+          reconciliationManualStatusRaw === "true" ||
+          reconciliationManualStatusRaw === "sim"
+        ? true
+        : reconciliationManualStatusRaw === false ||
+            reconciliationManualStatusRaw === "false" ||
+            reconciliationManualStatusRaw === "nao" ||
+            reconciliationManualStatusRaw === "não"
+          ? false
+          : "invalid";
+  const reconciliationPrescriptionIdRaw = body.reconciliationPrescriptionId;
+  const reconciliationPrescriptionId =
+    reconciliationPrescriptionIdRaw === undefined ||
+    reconciliationPrescriptionIdRaw === null ||
+    reconciliationPrescriptionIdRaw === ""
+      ? null
+      : Number(reconciliationPrescriptionIdRaw);
 
   if (!Number.isInteger(priorMedicationId) || priorMedicationId <= 0) {
     return NextResponse.json({ message: "Medicamento prévio inválido." }, { status: 400 });
@@ -189,6 +212,23 @@ export async function PUT(
     return NextResponse.json({ message: "Informe a unidade da dose." }, { status: 400 });
   }
 
+  if (reconciliationManualStatus === "invalid") {
+    return NextResponse.json(
+      { message: "Situação manual da reconciliação inválida." },
+      { status: 400 }
+    );
+  }
+
+  if (
+    reconciliationPrescriptionId !== null &&
+    (!Number.isInteger(reconciliationPrescriptionId) || reconciliationPrescriptionId <= 0)
+  ) {
+    return NextResponse.json(
+      { message: "Medicamento vinculado da prescrição inválido." },
+      { status: 400 }
+    );
+  }
+
   try {
     const priorMedication = await updatePriorMedication({
       patientId,
@@ -196,7 +236,9 @@ export async function PUT(
       dose,
       doseUnit,
       frequency,
-      shifts
+      shifts,
+      reconciliationManualStatus,
+      reconciliationPrescriptionId
     });
 
     return NextResponse.json({ ok: true, priorMedication });

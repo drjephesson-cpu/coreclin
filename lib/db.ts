@@ -182,6 +182,8 @@ export type UpdatePriorMedicationInput = {
   doseUnit: string;
   frequency: string;
   shifts: string;
+  reconciliationManualStatus?: boolean | null;
+  reconciliationPrescriptionId?: number | null;
 };
 
 export type AddMedicalPrescriptionInput = {
@@ -500,6 +502,18 @@ function mapPriorMedication(row: DbRow): PriorMedicationRecord {
     lotNumber: row.lot_number === null ? null : String(row.lot_number ?? ""),
     expirationDate: row.expiration_date === null ? null : String(row.expiration_date),
     manufacturer: row.manufacturer === null ? null : String(row.manufacturer ?? ""),
+    reconciliationManualStatus:
+      row.reconciliation_manual_status === null
+        ? null
+        : Boolean(row.reconciliation_manual_status),
+    reconciliationPrescriptionId:
+      row.reconciliation_prescription_id === null
+        ? null
+        : toNumber(row.reconciliation_prescription_id),
+    reconciliationPrescriptionMedicationName:
+      row.reconciliation_prescription_medication_name === null
+        ? null
+        : String(row.reconciliation_prescription_medication_name ?? ""),
     createdAt: toIso(row.created_at)
   };
 }
@@ -1064,6 +1078,8 @@ async function setupDatabase(): Promise<void> {
       lot_number TEXT,
       expiration_date DATE,
       manufacturer TEXT,
+      reconciliation_manual_status BOOLEAN,
+      reconciliation_prescription_id INTEGER,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -1240,6 +1256,12 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE patient_prior_medications
     ADD COLUMN IF NOT EXISTS manufacturer TEXT;
+
+    ALTER TABLE patient_prior_medications
+    ADD COLUMN IF NOT EXISTS reconciliation_manual_status BOOLEAN;
+
+    ALTER TABLE patient_prior_medications
+    ADD COLUMN IF NOT EXISTS reconciliation_prescription_id INTEGER;
   `);
 
   await pool.query(`
@@ -2514,9 +2536,11 @@ export async function addPriorMedication(
           quantity_tablets,
           lot_number,
           expiration_date,
-          manufacturer
+          manufacturer,
+          reconciliation_manual_status,
+          reconciliation_prescription_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL, NULL)
         RETURNING id
       `,
       [
@@ -2551,9 +2575,13 @@ export async function addPriorMedication(
           pm.lot_number,
           pm.expiration_date::text AS expiration_date,
           pm.manufacturer,
+          pm.reconciliation_manual_status,
+          pm.reconciliation_prescription_id,
+          linked_mp.medication_name AS reconciliation_prescription_medication_name,
           pm.created_at
         FROM patient_prior_medications pm
         INNER JOIN patients p ON p.id = pm.patient_id
+        LEFT JOIN medical_prescriptions linked_mp ON linked_mp.id = pm.reconciliation_prescription_id
         WHERE pm.id = $1
         LIMIT 1
       `,
@@ -2616,6 +2644,25 @@ export async function updatePriorMedication(
     await client.query("BEGIN");
     await ensurePatientExists(client, input.patientId);
 
+    if (
+      input.reconciliationPrescriptionId !== undefined &&
+      input.reconciliationPrescriptionId !== null
+    ) {
+      const linkedPrescription = await client.query(
+        `
+          SELECT id
+          FROM medical_prescriptions
+          WHERE id = $1 AND patient_id = $2
+          LIMIT 1
+        `,
+        [input.reconciliationPrescriptionId, input.patientId]
+      );
+
+      if (linkedPrescription.rows.length === 0) {
+        throw new Error("Medicamento da prescrição inválido para este paciente.");
+      }
+    }
+
     const updated = await client.query(
       `
         UPDATE patient_prior_medications
@@ -2623,8 +2670,10 @@ export async function updatePriorMedication(
           dose = $1,
           dose_unit = $2,
           frequency = $3,
-          shifts = $4
-        WHERE id = $5 AND patient_id = $6
+          shifts = $4,
+          reconciliation_manual_status = $5,
+          reconciliation_prescription_id = $6
+        WHERE id = $7 AND patient_id = $8
         RETURNING id
       `,
       [
@@ -2632,6 +2681,8 @@ export async function updatePriorMedication(
         input.doseUnit.trim(),
         input.frequency.trim(),
         input.shifts.trim(),
+        input.reconciliationManualStatus ?? null,
+        input.reconciliationPrescriptionId ?? null,
         input.priorMedicationId,
         input.patientId
       ]
@@ -2657,9 +2708,13 @@ export async function updatePriorMedication(
           pm.lot_number,
           pm.expiration_date::text AS expiration_date,
           pm.manufacturer,
+          pm.reconciliation_manual_status,
+          pm.reconciliation_prescription_id,
+          linked_mp.medication_name AS reconciliation_prescription_medication_name,
           pm.created_at
         FROM patient_prior_medications pm
         INNER JOIN patients p ON p.id = pm.patient_id
+        LEFT JOIN medical_prescriptions linked_mp ON linked_mp.id = pm.reconciliation_prescription_id
         WHERE pm.id = $1
         LIMIT 1
       `,
@@ -3734,9 +3789,13 @@ export async function listPriorMedications(patientId?: number | null): Promise<P
       pm.lot_number,
       pm.expiration_date::text AS expiration_date,
       pm.manufacturer,
+      pm.reconciliation_manual_status,
+      pm.reconciliation_prescription_id,
+      linked_mp.medication_name AS reconciliation_prescription_medication_name,
       pm.created_at
     FROM patient_prior_medications pm
     INNER JOIN patients p ON p.id = pm.patient_id
+    LEFT JOIN medical_prescriptions linked_mp ON linked_mp.id = pm.reconciliation_prescription_id
     ${shouldFilterByPatientId ? "WHERE pm.patient_id = $1" : ""}
     ORDER BY pm.created_at DESC, pm.id DESC
   `,
