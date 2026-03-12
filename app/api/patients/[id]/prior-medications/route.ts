@@ -5,6 +5,28 @@ import { addPriorMedication, removePriorMedication, updatePriorMedication } from
 
 export const runtime = "nodejs";
 
+function parseOptionalDecimalInput(value: unknown): number | null | "invalid" {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : "invalid";
+  }
+
+  if (typeof value !== "string") {
+    return "invalid";
+  }
+
+  const normalized = value.trim().replace(",", ".");
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : "invalid";
+}
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -34,13 +56,7 @@ export async function POST(
       ? undefined
       : Number(medicationIdRaw);
   const medicationName = typeof body.medicationName === "string" ? body.medicationName.trim() : "";
-  const doseRaw = body.dose;
-  const dose =
-    doseRaw === undefined || doseRaw === null || doseRaw === ""
-      ? null
-      : typeof doseRaw === "number"
-        ? doseRaw
-        : Number(doseRaw);
+  const dose = parseOptionalDecimalInput(body.dose);
   const doseUnit = typeof body.doseUnit === "string" ? body.doseUnit.trim() : "";
   const frequency = typeof body.frequency === "string" ? body.frequency.trim() : "";
   const shifts = typeof body.shifts === "string" ? body.shifts.trim() : "";
@@ -58,7 +74,7 @@ export async function POST(
     return NextResponse.json({ message: "Medicamento inválido." }, { status: 400 });
   }
 
-  if (dose !== null && (!Number.isFinite(dose) || dose <= 0)) {
+  if (dose === "invalid" || (dose !== null && dose <= 0)) {
     return NextResponse.json({ message: "Dose inválida." }, { status: 400 });
   }
 
@@ -168,11 +184,7 @@ export async function PUT(
 
   const body = payload as Record<string, unknown>;
   const priorMedicationId = Number(body.priorMedicationId);
-  const doseRaw = body.dose;
-  const dose =
-    doseRaw === undefined || doseRaw === null || doseRaw === ""
-      ? null
-      : Number(doseRaw);
+  const dose = parseOptionalDecimalInput(body.dose);
   const doseUnit = typeof body.doseUnit === "string" ? body.doseUnit.trim() : "";
   const frequency = typeof body.frequency === "string" ? body.frequency.trim() : "";
   const shifts = typeof body.shifts === "string" ? body.shifts.trim() : "";
@@ -204,7 +216,7 @@ export async function PUT(
     return NextResponse.json({ message: "Medicamento prévio inválido." }, { status: 400 });
   }
 
-  if (dose !== null && (!Number.isFinite(dose) || dose <= 0)) {
+  if (dose === "invalid" || (dose !== null && dose <= 0)) {
     return NextResponse.json({ message: "Dose inválida." }, { status: 400 });
   }
 

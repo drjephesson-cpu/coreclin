@@ -9,6 +9,7 @@ import {
   listPatients,
   listPriorMedications
 } from "@/lib/db";
+import { buildProfessionalSignatureLines } from "@/lib/professional-display";
 
 export const runtime = "nodejs";
 
@@ -46,10 +47,6 @@ export async function GET(
       return NextResponse.json({ message: "Paciente não encontrado." }, { status: 404 });
     }
 
-    const professionalSignature = currentProfessional
-      ? `${currentProfessional.fullName} - ${currentProfessional.councilType}/${currentProfessional.stateUf} ${currentProfessional.councilNumber}`
-      : session.username;
-
     return NextResponse.json({
       ok: true,
       preview: {
@@ -58,7 +55,10 @@ export async function GET(
         priorMedications,
         latestExamImport: examImports[0] ?? null,
         prescriptions,
-        professionalSignature
+        professionalSignatureLines: buildProfessionalSignatureLines(
+          currentProfessional,
+          session.username
+        )
       }
     });
   } catch (error) {

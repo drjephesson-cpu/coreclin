@@ -44,12 +44,28 @@ export { COUNCIL_OPTIONS, PROFESSION_OPTIONS };
 export type CreateProfessionalInput = {
   fullName: string;
   profession: ProfessionOption;
-  councilType: CouncilOption;
-  councilNumber: string;
-  stateUf: string;
+  councilType?: CouncilOption | null;
+  councilNumber?: string | null;
+  stateUf?: string | null;
   login: string;
   password: string;
   institution: string;
+  isTrainee?: boolean;
+  supervisingPharmacistId?: number | null;
+};
+
+export type UpdateProfessionalInput = {
+  professionalId: number;
+  fullName: string;
+  profession: ProfessionOption;
+  councilType?: CouncilOption | null;
+  councilNumber?: string | null;
+  stateUf?: string | null;
+  login: string;
+  password?: string | null;
+  institution: string;
+  isTrainee?: boolean;
+  supervisingPharmacistId?: number | null;
 };
 
 export type CreatePatientInput = {
@@ -359,16 +375,53 @@ function hasClinicalTermMatch(source: string, target: string): boolean {
   return target.length >= 5 && (source.includes(target) || target.includes(source));
 }
 
+const PROFESSIONAL_SELECT_FIELDS = `
+  p.id,
+  p.full_name,
+  p.profession,
+  p.council_type,
+  p.council_number,
+  p.state_uf,
+  p.login,
+  p.institution,
+  p.is_trainee,
+  p.supervising_pharmacist_id,
+  p.created_at,
+  supervisor.full_name AS supervising_pharmacist_name,
+  supervisor.council_type AS supervising_pharmacist_council_type,
+  supervisor.council_number AS supervising_pharmacist_council_number,
+  supervisor.state_uf AS supervising_pharmacist_state_uf
+`;
+
 function mapProfessional(row: DbRow): ProfessionalRecord {
   return {
     id: toNumber(row.id),
     fullName: String(row.full_name ?? ""),
     profession: String(row.profession ?? "Farmacêutico") as ProfessionOption,
-    councilType: String(row.council_type ?? "CRF") as CouncilOption,
-    councilNumber: String(row.council_number ?? ""),
-    stateUf: String(row.state_uf ?? ""),
+    councilType: row.council_type === null ? null : (String(row.council_type ?? "CRF") as CouncilOption),
+    councilNumber: row.council_number === null ? null : String(row.council_number ?? ""),
+    stateUf: row.state_uf === null ? null : String(row.state_uf ?? ""),
     login: String(row.login ?? ""),
     institution: String(row.institution ?? ""),
+    isTrainee: Boolean(row.is_trainee),
+    supervisingPharmacistId:
+      row.supervising_pharmacist_id === null ? null : toNumber(row.supervising_pharmacist_id),
+    supervisingPharmacistName:
+      row.supervising_pharmacist_name === null
+        ? null
+        : String(row.supervising_pharmacist_name ?? ""),
+    supervisingPharmacistCouncilType:
+      row.supervising_pharmacist_council_type === null
+        ? null
+        : (String(row.supervising_pharmacist_council_type ?? "CRF") as CouncilOption),
+    supervisingPharmacistCouncilNumber:
+      row.supervising_pharmacist_council_number === null
+        ? null
+        : String(row.supervising_pharmacist_council_number ?? ""),
+    supervisingPharmacistStateUf:
+      row.supervising_pharmacist_state_uf === null
+        ? null
+        : String(row.supervising_pharmacist_state_uf ?? ""),
     createdAt: toIso(row.created_at)
   };
 }
@@ -999,12 +1052,14 @@ async function setupDatabase(): Promise<void> {
       id SERIAL PRIMARY KEY,
       full_name TEXT NOT NULL,
       profession TEXT NOT NULL,
-      council_type TEXT NOT NULL,
-      council_number TEXT NOT NULL,
-      state_uf CHAR(2) NOT NULL,
+      council_type TEXT,
+      council_number TEXT,
+      state_uf CHAR(2),
       login TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       institution TEXT NOT NULL,
+      is_trainee BOOLEAN NOT NULL DEFAULT FALSE,
+      supervising_pharmacist_id INTEGER REFERENCES professionals(id),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -1182,6 +1237,21 @@ async function setupDatabase(): Promise<void> {
   `);
 
   await pool.query(`
+    ALTER TABLE professionals
+    ADD COLUMN IF NOT EXISTS is_trainee BOOLEAN NOT NULL DEFAULT FALSE;
+
+    ALTER TABLE professionals
+    ADD COLUMN IF NOT EXISTS supervising_pharmacist_id INTEGER REFERENCES professionals(id);
+
+    ALTER TABLE professionals
+    ALTER COLUMN council_type DROP NOT NULL;
+
+    ALTER TABLE professionals
+    ALTER COLUMN council_number DROP NOT NULL;
+
+    ALTER TABLE professionals
+    ALTER COLUMN state_uf DROP NOT NULL;
+
     ALTER TABLE patients
     ALTER COLUMN birth_date DROP NOT NULL;
 
@@ -1362,6 +1432,69 @@ export async function ensureDatabaseReady(): Promise<void> {
   await globalDbState.coreclinSetupPromise;
 }
 
+async function getProfessionalByIdFromClient(
+  client: Pool | PoolClient,
+  professionalId: number
+): Promise<ProfessionalRecord | null> {
+  const result = await client.query(
+    `
+      SELECT
+        ${PROFESSIONAL_SELECT_FIELDS}
+      FROM professionals p
+      LEFT JOIN professionals supervisor ON supervisor.id = p.supervising_pharmacist_id
+      WHERE p.id = $1
+      LIMIT 1
+    `,
+    [professionalId]
+  );
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  return mapProfessional(result.rows[0] as DbRow);
+}
+
+async function resolveSupervisingPharmacistId(
+  client: Pool | PoolClient,
+  input: {
+    professionalId?: number | null;
+    isTrainee: boolean;
+    supervisingPharmacistId?: number | null;
+  }
+): Promise<number | null> {
+  if (!input.isTrainee) {
+    return null;
+  }
+
+  const supervisorId = input.supervisingPharmacistId ?? null;
+  if (!supervisorId || !Number.isInteger(supervisorId) || supervisorId <= 0) {
+    throw new Error("Selecione o farmacêutico responsável pelo estagiário.");
+  }
+
+  if (input.professionalId !== undefined && input.professionalId !== null && supervisorId === input.professionalId) {
+    throw new Error("O estagiário não pode ser vinculado a si mesmo como responsável.");
+  }
+
+  const result = await client.query(
+    `
+      SELECT id
+      FROM professionals
+      WHERE id = $1
+        AND profession = 'Farmacêutico'
+        AND COALESCE(is_trainee, FALSE) = FALSE
+      LIMIT 1
+    `,
+    [supervisorId]
+  );
+
+  if (result.rows.length === 0) {
+    throw new Error("Farmacêutico responsável inválido.");
+  }
+
+  return supervisorId;
+}
+
 export async function findProfessionalByLogin(login: string): Promise<ProfessionalRecord | null> {
   await ensureDatabaseReady();
   const pool = getPool();
@@ -1369,9 +1502,11 @@ export async function findProfessionalByLogin(login: string): Promise<Profession
 
   const result = await pool.query(
     `
-      SELECT id, full_name, profession, council_type, council_number, state_uf, login, institution, created_at
-      FROM professionals
-      WHERE login = $1
+      SELECT
+        ${PROFESSIONAL_SELECT_FIELDS}
+      FROM professionals p
+      LEFT JOIN professionals supervisor ON supervisor.id = p.supervising_pharmacist_id
+      WHERE p.login = $1
       LIMIT 1
     `,
     [normalizedLogin]
@@ -1423,18 +1558,11 @@ export async function authenticateProfessional(
   const result = await pool.query(
     `
       SELECT
-        id,
-        full_name,
-        profession,
-        council_type,
-        council_number,
-        state_uf,
-        login,
-        institution,
-        created_at,
+        ${PROFESSIONAL_SELECT_FIELDS},
         password_hash
-      FROM professionals
-      WHERE login = $1
+      FROM professionals p
+      LEFT JOIN professionals supervisor ON supervisor.id = p.supervising_pharmacist_id
+      WHERE p.login = $1
       LIMIT 1
     `,
     [normalizedLogin]
@@ -1458,9 +1586,11 @@ export async function listProfessionals(): Promise<ProfessionalRecord[]> {
   await ensureDatabaseReady();
   const pool = getPool();
   const result = await pool.query(`
-    SELECT id, full_name, profession, council_type, council_number, state_uf, login, institution, created_at
-    FROM professionals
-    ORDER BY full_name ASC
+    SELECT
+      ${PROFESSIONAL_SELECT_FIELDS}
+    FROM professionals p
+    LEFT JOIN professionals supervisor ON supervisor.id = p.supervising_pharmacist_id
+    ORDER BY p.full_name ASC
   `);
 
   return result.rows.map((row) => mapProfessional(row as DbRow));
@@ -1471,8 +1601,14 @@ export async function createProfessional(input: CreateProfessionalInput): Promis
   const pool = getPool();
   const normalizedLogin = input.login.trim().toLowerCase();
   const passwordHash = hashPassword(input.password);
+  const isTrainee = input.isTrainee === true;
 
   try {
+    const supervisingPharmacistId = await resolveSupervisingPharmacistId(pool, {
+      isTrainee,
+      supervisingPharmacistId: input.supervisingPharmacistId ?? null
+    });
+
     const result = await pool.query(
       `
         INSERT INTO professionals (
@@ -1483,24 +1619,91 @@ export async function createProfessional(input: CreateProfessionalInput): Promis
           state_uf,
           login,
           password_hash,
-          institution
+          institution,
+          is_trainee,
+          supervising_pharmacist_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING id, full_name, profession, council_type, council_number, state_uf, login, institution, created_at
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING id
       `,
       [
         input.fullName.trim(),
         input.profession,
-        input.councilType,
-        input.councilNumber.trim(),
-        input.stateUf.trim().toUpperCase(),
+        isTrainee ? null : (input.councilType ?? null),
+        isTrainee ? null : input.councilNumber?.trim() || null,
+        isTrainee ? null : input.stateUf?.trim().toUpperCase() || null,
         normalizedLogin,
         passwordHash,
-        input.institution.trim()
+        input.institution.trim(),
+        isTrainee,
+        supervisingPharmacistId
       ]
     );
 
-    return mapProfessional(result.rows[0] as DbRow);
+    return (await getProfessionalByIdFromClient(pool, toNumber((result.rows[0] as DbRow).id)))!;
+  } catch (error) {
+    const postgresError = error as { code?: string };
+    if (postgresError.code === "23505") {
+      throw new Error("Já existe um profissional com este login.");
+    }
+    throw error;
+  }
+}
+
+export async function updateProfessional(input: UpdateProfessionalInput): Promise<ProfessionalRecord> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const normalizedLogin = input.login.trim().toLowerCase();
+  const isTrainee = input.isTrainee === true;
+  const passwordHash =
+    typeof input.password === "string" && input.password.trim().length > 0
+      ? hashPassword(input.password)
+      : null;
+
+  try {
+    const supervisingPharmacistId = await resolveSupervisingPharmacistId(pool, {
+      professionalId: input.professionalId,
+      isTrainee,
+      supervisingPharmacistId: input.supervisingPharmacistId ?? null
+    });
+
+    const result = await pool.query(
+      `
+        UPDATE professionals
+        SET
+          full_name = $2,
+          profession = $3,
+          council_type = $4,
+          council_number = $5,
+          state_uf = $6,
+          login = $7,
+          password_hash = COALESCE($8, password_hash),
+          institution = $9,
+          is_trainee = $10,
+          supervising_pharmacist_id = $11
+        WHERE id = $1
+        RETURNING id
+      `,
+      [
+        input.professionalId,
+        input.fullName.trim(),
+        input.profession,
+        isTrainee ? null : (input.councilType ?? null),
+        isTrainee ? null : input.councilNumber?.trim() || null,
+        isTrainee ? null : input.stateUf?.trim().toUpperCase() || null,
+        normalizedLogin,
+        passwordHash,
+        input.institution.trim(),
+        isTrainee,
+        supervisingPharmacistId
+      ]
+    );
+
+    if (result.rows.length === 0) {
+      throw new Error("Profissional não encontrado.");
+    }
+
+    return (await getProfessionalByIdFromClient(pool, input.professionalId))!;
   } catch (error) {
     const postgresError = error as { code?: string };
     if (postgresError.code === "23505") {

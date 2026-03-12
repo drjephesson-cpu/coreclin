@@ -51,6 +51,11 @@ import {
   RENAL_ADJUSTMENT_MEDICATIONS
 } from "@/lib/medication-safety-flags";
 import { buildImportantExamCards, isImportantExamRecord } from "@/lib/exam-highlights";
+import {
+  buildProfessionalSignatureLines,
+  formatProfessionalCouncilSummary,
+  formatProfessionalDisplayLabel
+} from "@/lib/professional-display";
 
 const UF_OPTIONS = [
   "AC",
@@ -407,7 +412,7 @@ type MandatoryEvolutionPreviewPayload = {
   priorMedications: PriorMedicationRecord[];
   latestExamImport: PatientExamImportRecord | null;
   prescriptions: MedicalPrescriptionRecord[];
-  professionalSignature: string;
+  professionalSignatureLines: string[];
 };
 
 type MandatoryEvolutionPreviewState = {
@@ -980,7 +985,7 @@ function buildMandatoryEvolutionPreviewText(payload: MandatoryEvolutionPreviewPa
   );
   pushSection("#PENDÊNCIAS", splitTextIntoBulletLines(latestAdmission?.interviewPendingIssues));
 
-  sections.push("", payload.professionalSignature);
+  sections.push("", ...payload.professionalSignatureLines);
   return sections.join("\n").trim();
 }
 
@@ -2156,6 +2161,38 @@ function formatEditableDateInput(input: string): string {
   }
 
   return `${digitsOnly.slice(0, 2)}/${digitsOnly.slice(2, 4)}/${digitsOnly.slice(4)}`;
+}
+
+function formatEditableDecimalInput(input: string): string {
+  const sanitized = input.replace(/\./g, ",").replace(/[^\d,]/g, "");
+  if (!sanitized) {
+    return "";
+  }
+
+  const startsWithSeparator = sanitized.startsWith(",");
+  const [integerPartRaw, ...decimalParts] = sanitized.split(",");
+  const integerPart = startsWithSeparator ? `0${integerPartRaw}` : integerPartRaw;
+
+  if (decimalParts.length === 0) {
+    return integerPart;
+  }
+
+  return `${integerPart || "0"},${decimalParts.join("")}`;
+}
+
+function parseOptionalDecimalInput(input: string): number | undefined {
+  const formatted = formatEditableDecimalInput(input);
+  if (!formatted) {
+    return undefined;
+  }
+
+  const normalized = formatted.endsWith(",") ? formatted.slice(0, -1) : formatted;
+  if (!normalized) {
+    return undefined;
+  }
+
+  const parsed = Number(normalized.replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function formatAdmissionDateValue(input: string | null | undefined): string {
@@ -3425,6 +3462,8 @@ export default function DashboardConsole({
   const [professionalForm, setProfessionalForm] = useState({
     fullName: "",
     profession: "Farmacêutico" as ProfessionOption,
+    isTrainee: false,
+    supervisingPharmacistId: "",
     councilType: "CRF" as CouncilOption,
     councilNumber: "",
     stateUf: "RS",
@@ -3432,6 +3471,7 @@ export default function DashboardConsole({
     password: "",
     institution: ""
   });
+  const [editingProfessionalId, setEditingProfessionalId] = useState<number | null>(null);
   const [professionalFeedback, setProfessionalFeedback] = useState<FeedbackState>(null);
   const [professionalLoading, setProfessionalLoading] = useState(false);
 
@@ -3682,6 +3722,17 @@ export default function DashboardConsole({
   }, [medications, patientInitialAllergyForm.medicationId]);
 
   const agePreview = useMemo(() => calculateAge(patientForm.birthDate), [patientForm.birthDate]);
+  const pharmacistSupervisorOptions = useMemo(
+    () =>
+      professionals.filter(
+        (professional) => professional.profession === "Farmacêutico" && !professional.isTrainee
+      ),
+    [professionals]
+  );
+  const currentProfessionalSignatureLines = useMemo(
+    () => buildProfessionalSignatureLines(currentProfessional, currentLogin),
+    [currentLogin, currentProfessional]
+  );
   const responsibleProfessionalName = currentProfessional?.fullName ?? currentLogin;
   const inpatientWorkflowStorageKey = useMemo(
     () => buildInpatientWorkflowStorageKey(currentLogin),
@@ -5996,11 +6047,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
     pushSection("#PENDÊNCIAS", splitTextIntoBulletLines(admissionForm.interviewPendingIssues));
 
-    const professionalSignature = currentProfessional
-      ? `${currentProfessional.fullName} - ${currentProfessional.councilType}/${currentProfessional.stateUf} ${currentProfessional.councilNumber}`
-      : currentLogin;
-
-    sections.push("", professionalSignature);
+    sections.push("", ...currentProfessionalSignatureLines);
     return sections.join("\n").trim();
   }, [
     admissionForm.heightCm,
@@ -6016,6 +6063,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     admissionPreview,
     currentLogin,
     currentProfessional,
+    currentProfessionalSignatureLines,
     medicationValidationEditableRows,
     priorMedicationEditableRows,
     selectedCurrentAdmission,
@@ -6724,6 +6772,41 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }));
   }
 
+  function resetProfessionalForm(): void {
+    setEditingProfessionalId(null);
+    setProfessionalForm({
+      fullName: "",
+      profession: "Farmacêutico",
+      isTrainee: false,
+      supervisingPharmacistId: "",
+      councilType: "CRF",
+      councilNumber: "",
+      stateUf: "RS",
+      login: "",
+      password: "",
+      institution: ""
+    });
+  }
+
+  function startProfessionalEdit(professional: ProfessionalRecord): void {
+    setEditingProfessionalId(professional.id);
+    setProfessionalFeedback(null);
+    setProfessionalForm({
+      fullName: professional.fullName,
+      profession: professional.profession,
+      isTrainee: professional.isTrainee,
+      supervisingPharmacistId: professional.supervisingPharmacistId
+        ? String(professional.supervisingPharmacistId)
+        : "",
+      councilType: professional.councilType ?? "CRF",
+      councilNumber: professional.councilNumber ?? "",
+      stateUf: professional.stateUf ?? "RS",
+      login: professional.login,
+      password: "",
+      institution: professional.institution
+    });
+  }
+
   async function handleProfessionalSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setProfessionalFeedback(null);
@@ -6731,9 +6814,12 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
     try {
       const response = await fetch("/api/professionals", {
-        method: "POST",
+        method: editingProfessionalId === null ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(professionalForm)
+        body: JSON.stringify({
+          ...professionalForm,
+          professionalId: editingProfessionalId ?? undefined
+        })
       });
 
       const result = (await response.json()) as {
@@ -6748,22 +6834,22 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         return;
       }
 
-      setProfessionalFeedback({ type: "success", message: "Profissional cadastrado com sucesso." });
-      setProfessionalForm({
-        fullName: "",
-        profession: "Farmacêutico",
-        councilType: "CRF",
-        councilNumber: "",
-        stateUf: "RS",
-        login: "",
-        password: "",
-        institution: ""
+      setProfessionalFeedback({
+        type: "success",
+        message:
+          editingProfessionalId === null
+            ? "Profissional cadastrado com sucesso."
+            : "Profissional atualizado com sucesso."
       });
+      resetProfessionalForm();
       setProfessionals((current) => upsertRecordById(current, result.professional!));
     } catch {
       setProfessionalFeedback({
         type: "error",
-        message: "Erro de conexão ao cadastrar profissional."
+        message:
+          editingProfessionalId === null
+            ? "Erro de conexão ao cadastrar profissional."
+            : "Erro de conexão ao atualizar profissional."
       });
     } finally {
       setProfessionalLoading(false);
@@ -7515,6 +7601,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     const medicationNameToSave = matchedCatalogMedication
       ? matchedCatalogMedication.name
       : typedMedicationName;
+    const doseToSave = parseOptionalDecimalInput(priorMedicationForm.dose);
+
+    if (priorMedicationForm.dose.trim() && doseToSave === undefined) {
+      setPriorMedicationFeedback({
+        type: "error",
+        message: "Dose inválida. Use números com vírgula ou ponto."
+      });
+      return;
+    }
 
     setPriorMedicationLoading(true);
     try {
@@ -7524,7 +7619,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         body: JSON.stringify({
           medicationId: medicationIdToSave,
           medicationName: medicationNameToSave,
-          dose: Number(priorMedicationForm.dose),
+          dose: doseToSave,
           doseUnit: priorMedicationForm.doseUnit,
           frequency: priorMedicationForm.frequency,
           shifts: priorMedicationForm.shifts,
@@ -8912,8 +9007,20 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             <section className="dashboard-card dashboard-highlight">
               <h2>Profissional logado</h2>
               <p>
-                <strong>{responsibleProfessionalName}</strong> é o farmacêutico responsável padrão para novos
-                registros.
+                {currentProfessional?.isTrainee ? (
+                  <>
+                    <strong>{responsibleProfessionalName}</strong> atua como{" "}
+                    <strong>{formatProfessionalDisplayLabel(currentProfessional)}</strong>
+                    {currentProfessional.supervisingPharmacistName
+                      ? ` e está vinculada a ${currentProfessional.supervisingPharmacistName}.`
+                      : "."}
+                  </>
+                ) : (
+                  <>
+                    <strong>{responsibleProfessionalName}</strong> é o farmacêutico responsável padrão para novos
+                    registros.
+                  </>
+                )}
               </p>
             </section>
           ) : null}
@@ -8997,7 +9104,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
               {activeSection === "professional" ? (
                 <section className="dashboard-card">
-                  <h2>Cadastrar Profissional</h2>
+                  <h2>{editingProfessionalId === null ? "Cadastrar Profissional" : "Editar Profissional"}</h2>
                   <form className="dashboard-form" onSubmit={handleProfessionalSubmit}>
                     <input
                       placeholder="Nome completo"
@@ -9025,48 +9132,90 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                         ))}
                       </select>
 
-                      <select
-                        value={professionalForm.councilType}
-                        onChange={(event) =>
-                          setProfessionalForm((current) => ({
-                            ...current,
-                            councilType: event.target.value as CouncilOption
-                          }))
-                        }
-                      >
-                        {COUNCIL_OPTIONS.map((council) => (
-                          <option key={council} value={council}>
-                            {council}
-                          </option>
-                        ))}
-                      </select>
+                      <label className="dashboard-inline-toggle">
+                        <input
+                          type="checkbox"
+                          checked={professionalForm.isTrainee}
+                          onChange={(event) =>
+                            setProfessionalForm((current) => ({
+                              ...current,
+                              isTrainee: event.target.checked,
+                              supervisingPharmacistId: event.target.checked
+                                ? current.supervisingPharmacistId
+                                : ""
+                            }))
+                          }
+                        />
+                        Cadastro de estagiário
+                      </label>
                     </div>
 
-                    <div className="dashboard-two-columns">
-                      <input
-                        placeholder="Número do conselho"
-                        value={professionalForm.councilNumber}
+                    {professionalForm.isTrainee ? (
+                      <select
+                        value={professionalForm.supervisingPharmacistId}
                         onChange={(event) =>
                           setProfessionalForm((current) => ({
                             ...current,
-                            councilNumber: event.target.value
+                            supervisingPharmacistId: event.target.value
                           }))
                         }
                         required
-                      />
-                      <select
-                        value={professionalForm.stateUf}
-                        onChange={(event) =>
-                          setProfessionalForm((current) => ({ ...current, stateUf: event.target.value }))
-                        }
                       >
-                        {UF_OPTIONS.map((uf) => (
-                          <option key={uf} value={uf}>
-                            {uf}
+                        <option value="">Selecione o farmacêutico responsável</option>
+                        {pharmacistSupervisorOptions.map((professional) => (
+                          <option key={professional.id} value={professional.id}>
+                            {professional.fullName}
                           </option>
                         ))}
                       </select>
-                    </div>
+                    ) : (
+                      <>
+                        <div className="dashboard-two-columns">
+                          <select
+                            value={professionalForm.councilType}
+                            onChange={(event) =>
+                              setProfessionalForm((current) => ({
+                                ...current,
+                                councilType: event.target.value as CouncilOption
+                              }))
+                            }
+                          >
+                            {COUNCIL_OPTIONS.map((council) => (
+                              <option key={council} value={council}>
+                                {council}
+                              </option>
+                            ))}
+                          </select>
+                          <select
+                            value={professionalForm.stateUf}
+                            onChange={(event) =>
+                              setProfessionalForm((current) => ({
+                                ...current,
+                                stateUf: event.target.value
+                              }))
+                            }
+                          >
+                            {UF_OPTIONS.map((uf) => (
+                              <option key={uf} value={uf}>
+                                {uf}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <input
+                          placeholder="Número do conselho"
+                          value={professionalForm.councilNumber}
+                          onChange={(event) =>
+                            setProfessionalForm((current) => ({
+                              ...current,
+                              councilNumber: event.target.value
+                            }))
+                          }
+                          required
+                        />
+                      </>
+                    )}
 
                     <div className="dashboard-two-columns">
                       <input
@@ -9079,12 +9228,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                       />
                       <input
                         type="password"
-                        placeholder="Senha"
+                        placeholder={
+                          editingProfessionalId === null ? "Senha" : "Nova senha (opcional ao editar)"
+                        }
                         value={professionalForm.password}
                         onChange={(event) =>
                           setProfessionalForm((current) => ({ ...current, password: event.target.value }))
                         }
-                        required
+                        required={editingProfessionalId === null}
                       />
                     </div>
 
@@ -9103,9 +9254,25 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                       </p>
                     ) : null}
 
-                    <button type="submit" disabled={professionalLoading}>
-                      {professionalLoading ? "Salvando..." : "Salvar profissional"}
-                    </button>
+                    <div className="dashboard-inline-actions">
+                      <button type="submit" disabled={professionalLoading}>
+                        {professionalLoading
+                          ? "Salvando..."
+                          : editingProfessionalId === null
+                            ? "Salvar profissional"
+                            : "Atualizar profissional"}
+                      </button>
+                      {editingProfessionalId !== null ? (
+                        <button
+                          type="button"
+                          className="dashboard-chip-remove"
+                          onClick={resetProfessionalForm}
+                          disabled={professionalLoading}
+                        >
+                          Cancelar edição
+                        </button>
+                      ) : null}
+                    </div>
                   </form>
 
                   <div className="dashboard-list-box">
@@ -9127,22 +9294,32 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                             <thead>
                               <tr>
                                 <th>Nome</th>
-                                <th>Profissão</th>
+                                <th>Perfil</th>
                                 <th>Conselho</th>
                                 <th>Login</th>
+                                <th>Farmacêutico responsável</th>
                                 <th>Instituição</th>
+                                <th>Ações</th>
                               </tr>
                             </thead>
                             <tbody>
                               {professionals.map((professional) => (
                                 <tr key={professional.id}>
                                   <td>{professional.fullName}</td>
-                                  <td>{professional.profession}</td>
-                                  <td>
-                                    {professional.councilType}/{professional.stateUf}: {professional.councilNumber}
-                                  </td>
+                                  <td>{formatProfessionalDisplayLabel(professional)}</td>
+                                  <td>{formatProfessionalCouncilSummary(professional) ?? "-"}</td>
                                   <td>{professional.login}</td>
+                                  <td>{professional.supervisingPharmacistName ?? "-"}</td>
                                   <td>{professional.institution}</td>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="dashboard-mini-button"
+                                      onClick={() => startProfessionalEdit(professional)}
+                                    >
+                                      Editar
+                                    </button>
+                                  </td>
                                 </tr>
                               ))}
                             </tbody>
@@ -10803,15 +10980,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
                               <div className="dashboard-two-columns">
                                 <input
-                                  type="number"
-                                  step="0.01"
-                                  min="0"
+                                  type="text"
+                                  inputMode="decimal"
                                   placeholder="Dose (opcional)"
                                   value={priorMedicationForm.dose}
                                   onChange={(event) =>
                                     setPriorMedicationForm((current) => ({
                                       ...current,
-                                      dose: event.target.value
+                                      dose: formatEditableDecimalInput(event.target.value)
                                     }))
                                   }
                                 />

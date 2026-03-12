@@ -98,11 +98,17 @@ export type ProfessionalRecord = {
   id: number;
   fullName: string;
   profession: ProfessionOption;
-  councilType: CouncilOption;
-  councilNumber: string;
-  stateUf: string;
+  councilType: CouncilOption | null;
+  councilNumber: string | null;
+  stateUf: string | null;
   login: string;
   institution: string;
+  isTrainee: boolean;
+  supervisingPharmacistId: number | null;
+  supervisingPharmacistName: string | null;
+  supervisingPharmacistCouncilType: CouncilOption | null;
+  supervisingPharmacistCouncilNumber: string | null;
+  supervisingPharmacistStateUf: string | null;
   createdAt: string;
 };
 
