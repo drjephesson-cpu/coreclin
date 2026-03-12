@@ -524,6 +524,23 @@ body {
   font-weight: 700;
 }
 
+.dashboard-calculation-result {
+  display: grid;
+  gap: 6px;
+}
+
+.dashboard-calculation-result label {
+  color: #24496f;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.dashboard-calculation-result p {
+  color: #6a7f9d;
+  font-size: 0.77rem;
+  line-height: 1.4;
+}
+
 .dashboard-evolution-preview {
   font-family: "IBM Plex Mono", "Fira Code", monospace;
   font-size: 0.84rem;
@@ -632,6 +649,11 @@ body {
   background: linear-gradient(180deg, #f5faff 0%, #edf5ff 100%);
 }
 
+.dashboard-important-exam-card-normal {
+  border-color: #b8dfc7;
+  background: linear-gradient(180deg, #f5fff8 0%, #eaf8ef 100%);
+}
+
 .dashboard-important-exam-card-header {
   display: flex;
   align-items: flex-start;
@@ -684,6 +706,11 @@ body {
 
 .dashboard-important-exam-card-low .dashboard-important-exam-value-indicator {
   color: #2e6db2;
+}
+
+.dashboard-important-exam-card-normal .dashboard-important-exam-value,
+.dashboard-important-exam-card-normal .dashboard-important-exam-status {
+  color: #1f6a3c;
 }
 
 .dashboard-important-exam-reference {

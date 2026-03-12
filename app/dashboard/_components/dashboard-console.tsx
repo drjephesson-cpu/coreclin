@@ -29,6 +29,7 @@ import {
   type InterviewInformationQuality,
   type InterviewInformationSourceType,
   type LatestMeasurement,
+  type MedicationRecord,
   type MedicalPrescriptionRecord,
   type MedicalPrescriptionInterventionResponse,
   type InpatientWorkflowStoragePayload,
@@ -866,8 +867,7 @@ function buildMandatoryEvolutionPreviewText(payload: MandatoryEvolutionPreviewPa
             [
               record.examName,
               record.result,
-              record.unit || "",
-              record.referenceRange ? `(VR ${record.referenceRange})` : ""
+              record.unit || ""
             ]
               .filter((part) => part.length > 0)
               .join(" ")
@@ -5886,8 +5886,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
               [
                 record.examName,
                 record.result,
-                record.unit || "",
-                record.referenceRange ? `(VR ${record.referenceRange})` : ""
+                record.unit || ""
               ]
                 .filter((part) => part.length > 0)
                 .join(" ")
@@ -7585,7 +7584,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     priorMedicationId: number,
     formState: PriorMedicationReconciliationFormState,
     referenceMedication: PriorMedicationRecord
-  ): Promise<{ ok: true; priorMedication: PriorMedicationRecord } | { ok: false; message: string }> {
+  ): Promise<
+    | { ok: true; priorMedication: PriorMedicationRecord; learnedMedication: MedicationRecord | null }
+    | { ok: false; message: string }
+  > {
     const trimmedDose = formState.dose.trim();
     const parsedDose = parseDosePart(trimmedDose);
 
@@ -7622,6 +7624,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       const result = (await response.json()) as {
         message?: string;
         priorMedication?: PriorMedicationRecord;
+        learnedMedication?: MedicationRecord | null;
       };
       if (!response.ok || !result.priorMedication) {
         return {
@@ -7630,7 +7633,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         };
       }
 
-      return { ok: true, priorMedication: result.priorMedication };
+      return {
+        ok: true,
+        priorMedication: result.priorMedication,
+        learnedMedication: result.learnedMedication ?? null
+      };
     } catch {
       return {
         ok: false,
@@ -7676,6 +7683,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         message: "Reconciliação do medicamento prévio atualizada."
       });
       updatePriorMedicationLocally(result.priorMedication);
+      const learnedMedication = result.learnedMedication;
+      if (learnedMedication) {
+        setMedications((current) => upsertRecordById(current, learnedMedication));
+      }
     } finally {
       setPriorMedicationUpdatingId(null);
     }
@@ -7703,6 +7714,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setPriorMedicationBatchSaving(true);
 
     try {
+      const learnedMedications: MedicationRecord[] = [];
       const results = await Promise.allSettled(
         changedRows.map((row) =>
           submitPriorMedicationReconciliationUpdate(
@@ -7719,6 +7731,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         if (result.status === "fulfilled") {
           if (result.value.ok) {
             successfulUpdates.push(result.value.priorMedication);
+            if (result.value.learnedMedication) {
+              learnedMedications.push(result.value.learnedMedication);
+            }
             return [];
           }
 
@@ -7742,6 +7757,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       });
       successfulUpdates.forEach((priorMedication) => {
         updatePriorMedicationLocally(priorMedication);
+      });
+      learnedMedications.forEach((medication) => {
+        setMedications((current) => upsertRecordById(current, medication));
       });
     } finally {
       setPriorMedicationBatchSaving(false);
@@ -10170,25 +10188,30 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
                               <div className="dashboard-calculation-box">
                                 <h3>Cálculo automático</h3>
-                                <p>
-                                  {selectedBmiFormula?.label}: <span>{selectedBmiFormula?.equation ?? "-"}</span>
-                                </p>
-                                <p>
-                                  {selectedBsaFormula?.label}: <span>{selectedBsaFormula?.equation ?? "-"}</span>
-                                </p>
+                                <p>Os resultados são preenchidos automaticamente a partir de peso e altura.</p>
                                 <div className="dashboard-two-columns">
-                                  <input
-                                    value={admissionPreview ? formatNumber(admissionPreview.bmi) : "IMC calculado"}
-                                    disabled
-                                  />
-                                  <input
-                                    value={
-                                      admissionPreview
-                                        ? formatNumber(admissionPreview.bodySurfaceArea)
-                                        : "Superfície corporal calculada"
-                                    }
-                                    disabled
-                                  />
+                                  <div className="dashboard-calculation-result">
+                                    <label>IMC calculado</label>
+                                    <input
+                                      value={
+                                        admissionPreview ? formatNumber(admissionPreview.bmi) : "IMC calculado"
+                                      }
+                                      disabled
+                                    />
+                                    <p>{selectedBmiFormula?.equation ?? "-"}</p>
+                                  </div>
+                                  <div className="dashboard-calculation-result">
+                                    <label>SC calculada</label>
+                                    <input
+                                      value={
+                                        admissionPreview
+                                          ? formatNumber(admissionPreview.bodySurfaceArea)
+                                          : "Superfície corporal calculada"
+                                      }
+                                      disabled
+                                    />
+                                    <p>{selectedBsaFormula?.equation ?? "-"}</p>
+                                  </div>
                                 </div>
                               </div>
 

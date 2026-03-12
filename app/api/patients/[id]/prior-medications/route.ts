@@ -230,7 +230,7 @@ export async function PUT(
   }
 
   try {
-    const priorMedication = await updatePriorMedication({
+    const result = await updatePriorMedication({
       patientId,
       priorMedicationId,
       dose,
@@ -241,7 +241,11 @@ export async function PUT(
       reconciliationPrescriptionId
     });
 
-    return NextResponse.json({ ok: true, priorMedication });
+    return NextResponse.json({
+      ok: true,
+      priorMedication: result.priorMedication,
+      learnedMedication: result.learnedMedication
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao atualizar medicamento prévio.";
     return NextResponse.json({ message }, { status: 400 });

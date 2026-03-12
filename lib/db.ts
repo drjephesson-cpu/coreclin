@@ -186,6 +186,11 @@ export type UpdatePriorMedicationInput = {
   reconciliationPrescriptionId?: number | null;
 };
 
+export type UpdatePriorMedicationResult = {
+  priorMedication: PriorMedicationRecord;
+  learnedMedication: MedicationRecord | null;
+};
+
 export type AddMedicalPrescriptionInput = {
   patientId: number;
   admissionId?: number;
@@ -1770,6 +1775,147 @@ async function ensureAdmissionExists(
   };
 }
 
+async function findLatestAdmissionIdByPatient(
+  client: PoolClient,
+  patientId: number
+): Promise<number | null> {
+  const result = await client.query(
+    `
+      SELECT id
+      FROM admissions
+      WHERE patient_id = $1
+      ORDER BY admission_date DESC, created_at DESC, id DESC
+      LIMIT 1
+    `,
+    [patientId]
+  );
+
+  return result.rows.length > 0 ? toNumber((result.rows[0] as DbRow).id) : null;
+}
+
+async function appendMedicationCatalogAlias(
+  client: PoolClient,
+  medicationId: number,
+  alias: string
+): Promise<MedicationRecord | null> {
+  const normalizedAlias = normalizeMedicationCatalogName(alias);
+  const normalizedAliasSearch = normalizeClinicalSearchValue(normalizedAlias);
+  if (!normalizedAlias || !normalizedAliasSearch) {
+    return null;
+  }
+
+  const currentMedication = await client.query(
+    `
+      SELECT
+        id,
+        name,
+        default_unit,
+        active_ingredients,
+        therapeutic_class,
+        search_aliases,
+        created_at
+      FROM medication_catalog
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [medicationId]
+  );
+
+  if (currentMedication.rows.length === 0) {
+    return null;
+  }
+
+  const medicationRow = currentMedication.rows[0] as DbRow;
+  const existingAliases = String(medicationRow.search_aliases ?? "").trim();
+  const existingAliasTerms = splitClinicalTerms(existingAliases);
+  const hasAlias = existingAliasTerms.some((term) => term.normalized === normalizedAliasSearch);
+  const normalizedMedicationName = normalizeClinicalSearchValue(String(medicationRow.name ?? ""));
+
+  if (hasAlias || normalizedMedicationName === normalizedAliasSearch) {
+    return mapMedication(medicationRow);
+  }
+
+  const nextAliases = [...existingAliasTerms.map((term) => term.raw), normalizedAlias].join("; ");
+  const updatedMedication = await client.query(
+    `
+      UPDATE medication_catalog
+      SET search_aliases = $2
+      WHERE id = $1
+      RETURNING
+        id,
+        name,
+        default_unit,
+        active_ingredients,
+        therapeutic_class,
+        search_aliases,
+        created_at
+    `,
+    [medicationId, nextAliases]
+  );
+
+  return updatedMedication.rows[0] ? mapMedication(updatedMedication.rows[0] as DbRow) : null;
+}
+
+async function findMedicationCatalogBySearchText(
+  client: PoolClient,
+  searchText: string
+): Promise<MedicationRecord | null> {
+  const normalizedSearch = normalizeClinicalSearchValue(searchText);
+  if (!normalizedSearch) {
+    return null;
+  }
+
+  const catalogRows = await client.query(
+    `
+      SELECT
+        id,
+        name,
+        default_unit,
+        active_ingredients,
+        therapeutic_class,
+        search_aliases,
+        created_at
+      FROM medication_catalog
+    `
+  );
+
+  for (const row of catalogRows.rows) {
+    const catalogRow = row as DbRow;
+    const catalogMedicationName = String(catalogRow.name ?? "").trim();
+    const activeIngredients = String(catalogRow.active_ingredients ?? "").trim();
+    const therapeuticClass = String(catalogRow.therapeutic_class ?? "").trim();
+    const aliases = String(catalogRow.search_aliases ?? "").trim();
+
+    const normalizedCatalogMedicationName = normalizeClinicalSearchValue(catalogMedicationName);
+    if (
+      normalizedCatalogMedicationName === normalizedSearch ||
+      hasClinicalTermMatch(normalizedCatalogMedicationName, normalizedSearch)
+    ) {
+      return mapMedication(catalogRow);
+    }
+
+    const activeTerms = splitClinicalTerms(activeIngredients);
+    if (activeTerms.some((term) => hasClinicalTermMatch(term.normalized, normalizedSearch))) {
+      return mapMedication(catalogRow);
+    }
+
+    const normalizedTherapeuticClass = normalizeClinicalSearchValue(therapeuticClass);
+    if (
+      normalizedTherapeuticClass &&
+      hasClinicalTermMatch(normalizedTherapeuticClass, normalizedSearch)
+    ) {
+      return mapMedication(catalogRow);
+    }
+
+    const aliasTerms = splitClinicalTerms(aliases);
+    if (aliasTerms.some((term) => hasClinicalTermMatch(term.normalized, normalizedSearch))) {
+      return mapMedication(catalogRow);
+    }
+  }
+
+  return null;
+}
+
 async function resolveMedicationData(
   client: PoolClient,
   medicationId: number | undefined,
@@ -2692,7 +2838,7 @@ export async function removePriorMedication(input: RemovePriorMedicationInput): 
 
 export async function updatePriorMedication(
   input: UpdatePriorMedicationInput
-): Promise<PriorMedicationRecord> {
+): Promise<UpdatePriorMedicationResult> {
   await ensureDatabaseReady();
   const pool = getPool();
   const client = await pool.connect();
@@ -2701,13 +2847,15 @@ export async function updatePriorMedication(
     await client.query("BEGIN");
     await ensurePatientExists(client, input.patientId);
 
+    let linkedPrescriptionMedicationId: number | null = null;
+    let linkedPrescriptionMedicationName = "";
     if (
       input.reconciliationPrescriptionId !== undefined &&
       input.reconciliationPrescriptionId !== null
     ) {
       const linkedPrescription = await client.query(
         `
-          SELECT id
+          SELECT id, medication_id, medication_name
           FROM medical_prescriptions
           WHERE id = $1 AND patient_id = $2
           LIMIT 1
@@ -2718,6 +2866,14 @@ export async function updatePriorMedication(
       if (linkedPrescription.rows.length === 0) {
         throw new Error("Medicamento da prescrição inválido para este paciente.");
       }
+
+      linkedPrescriptionMedicationId =
+        (linkedPrescription.rows[0] as DbRow).medication_id === null
+          ? null
+          : toNumber((linkedPrescription.rows[0] as DbRow).medication_id);
+      linkedPrescriptionMedicationName = String(
+        (linkedPrescription.rows[0] as DbRow).medication_name ?? ""
+      ).trim();
     }
 
     const updated = await client.query(
@@ -2747,6 +2903,38 @@ export async function updatePriorMedication(
 
     if (updated.rowCount === 0) {
       throw new Error("Medicamento prévio não encontrado para este paciente.");
+    }
+
+    let learnedMedication: MedicationRecord | null = null;
+    if (
+      input.reconciliationManualStatus === true &&
+      (linkedPrescriptionMedicationId !== null || linkedPrescriptionMedicationName)
+    ) {
+      const priorMedicationAlias = await client.query(
+        `
+          SELECT medication_name
+          FROM patient_prior_medications
+          WHERE id = $1 AND patient_id = $2
+          LIMIT 1
+        `,
+        [input.priorMedicationId, input.patientId]
+      );
+
+      const aliasName = String((priorMedicationAlias.rows[0] as DbRow | undefined)?.medication_name ?? "").trim();
+      if (aliasName) {
+        if (linkedPrescriptionMedicationId === null && linkedPrescriptionMedicationName) {
+          linkedPrescriptionMedicationId =
+            (await findMedicationCatalogBySearchText(client, linkedPrescriptionMedicationName))?.id ?? null;
+        }
+
+        if (linkedPrescriptionMedicationId !== null) {
+        learnedMedication = await appendMedicationCatalogAlias(
+          client,
+          linkedPrescriptionMedicationId,
+          aliasName
+        );
+        }
+      }
     }
 
     const result = await client.query(
@@ -2779,7 +2967,10 @@ export async function updatePriorMedication(
     );
 
     await client.query("COMMIT");
-    return mapPriorMedication(result.rows[0] as DbRow);
+    return {
+      priorMedication: mapPriorMedication(result.rows[0] as DbRow),
+      learnedMedication
+    };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -3026,6 +3217,8 @@ export async function addMedicalPrescription(
         throw new Error("Internação selecionada não pertence ao paciente.");
       }
       safeAdmissionId = input.admissionId;
+    } else {
+      safeAdmissionId = await findLatestAdmissionIdByPatient(client, input.patientId);
     }
 
     const inserted = await client.query(
@@ -3093,10 +3286,10 @@ export async function addMedicalPrescription(
           mp.patient_id,
           p.full_name AS patient_name,
           p.chart_number,
-          mp.admission_id,
-          a.admission_date::text AS admission_date,
-          a.bed,
-          t.name AS team_name,
+          COALESCE(mp.admission_id, latest_admission.id) AS admission_id,
+          COALESCE(a.admission_date::text, latest_admission.admission_date::text) AS admission_date,
+          COALESCE(a.bed, latest_admission.bed) AS bed,
+          COALESCE(t.name, latest_admission.team_name) AS team_name,
           mp.medication_id,
           mp.medication_name,
           mp.dose::float8 AS dose,
@@ -3131,6 +3324,18 @@ export async function addMedicalPrescription(
         INNER JOIN patients p ON p.id = mp.patient_id
         LEFT JOIN admissions a ON a.id = mp.admission_id
         LEFT JOIN teams t ON t.id = a.team_id
+        LEFT JOIN LATERAL (
+          SELECT
+            a2.id,
+            a2.admission_date,
+            a2.bed,
+            t2.name AS team_name
+          FROM admissions a2
+          LEFT JOIN teams t2 ON t2.id = a2.team_id
+          WHERE a2.patient_id = mp.patient_id
+          ORDER BY a2.admission_date DESC, a2.created_at DESC, a2.id DESC
+          LIMIT 1
+        ) latest_admission ON TRUE
         LEFT JOIN professionals stock_prof ON stock_prof.id = mp.stock_validation_professional_id
         LEFT JOIN professionals prof ON prof.id = mp.intervention_professional_id
         WHERE mp.id = $1
@@ -3326,10 +3531,10 @@ export async function updateMedicalPrescriptionValidation(
           mp.patient_id,
           p.full_name AS patient_name,
           p.chart_number,
-          mp.admission_id,
-          a.admission_date::text AS admission_date,
-          a.bed,
-          t.name AS team_name,
+          COALESCE(mp.admission_id, latest_admission.id) AS admission_id,
+          COALESCE(a.admission_date::text, latest_admission.admission_date::text) AS admission_date,
+          COALESCE(a.bed, latest_admission.bed) AS bed,
+          COALESCE(t.name, latest_admission.team_name) AS team_name,
           mp.medication_id,
           mp.medication_name,
           mp.dose::float8 AS dose,
@@ -3364,6 +3569,18 @@ export async function updateMedicalPrescriptionValidation(
         INNER JOIN patients p ON p.id = mp.patient_id
         LEFT JOIN admissions a ON a.id = mp.admission_id
         LEFT JOIN teams t ON t.id = a.team_id
+        LEFT JOIN LATERAL (
+          SELECT
+            a2.id,
+            a2.admission_date,
+            a2.bed,
+            t2.name AS team_name
+          FROM admissions a2
+          LEFT JOIN teams t2 ON t2.id = a2.team_id
+          WHERE a2.patient_id = mp.patient_id
+          ORDER BY a2.admission_date DESC, a2.created_at DESC, a2.id DESC
+          LIMIT 1
+        ) latest_admission ON TRUE
         LEFT JOIN professionals stock_prof ON stock_prof.id = mp.stock_validation_professional_id
         LEFT JOIN professionals prof ON prof.id = mp.intervention_professional_id
         WHERE mp.id = $1
@@ -4011,10 +4228,10 @@ export async function listMedicalPrescriptions(
         mp.patient_id,
         p.full_name AS patient_name,
         p.chart_number,
-        mp.admission_id,
-        a.admission_date::text AS admission_date,
-        a.bed,
-        t.name AS team_name,
+        COALESCE(mp.admission_id, latest_admission.id) AS admission_id,
+        COALESCE(a.admission_date::text, latest_admission.admission_date::text) AS admission_date,
+        COALESCE(a.bed, latest_admission.bed) AS bed,
+        COALESCE(t.name, latest_admission.team_name) AS team_name,
         mp.medication_id,
         mp.medication_name,
         mp.dose::float8 AS dose,
@@ -4049,6 +4266,18 @@ export async function listMedicalPrescriptions(
       INNER JOIN patients p ON p.id = mp.patient_id
       LEFT JOIN admissions a ON a.id = mp.admission_id
       LEFT JOIN teams t ON t.id = a.team_id
+      LEFT JOIN LATERAL (
+        SELECT
+          a2.id,
+          a2.admission_date,
+          a2.bed,
+          t2.name AS team_name
+        FROM admissions a2
+        LEFT JOIN teams t2 ON t2.id = a2.team_id
+        WHERE a2.patient_id = mp.patient_id
+        ORDER BY a2.admission_date DESC, a2.created_at DESC, a2.id DESC
+        LIMIT 1
+      ) latest_admission ON TRUE
       LEFT JOIN professionals stock_prof ON stock_prof.id = mp.stock_validation_professional_id
       LEFT JOIN professionals prof ON prof.id = mp.intervention_professional_id
       ${shouldFilterByPatientId ? "WHERE mp.patient_id = $1" : ""}
