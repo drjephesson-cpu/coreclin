@@ -62,6 +62,8 @@ export type CreateAdmissionInput = {
   bed: string;
   admissionReason?: string | null;
   admissionSummary?: string | null;
+  roundSummary?: string | null;
+  roundSummaryDate?: string | null;
   admissionImportExcerpt?: string | null;
   interviewInformationQuality?: InterviewInformationQuality | null;
   interviewInformationSourceType?: InterviewInformationSourceType | null;
@@ -86,6 +88,8 @@ export type UpdateAdmissionInput = {
   bed: string;
   admissionReason?: string | null;
   admissionSummary?: string | null;
+  roundSummary?: string | null;
+  roundSummaryDate?: string | null;
   admissionImportExcerpt?: string | null;
   interviewInformationQuality?: InterviewInformationQuality | null;
   interviewInformationSourceType?: InterviewInformationSourceType | null;
@@ -374,6 +378,8 @@ function mapAdmission(row: DbRow): AdmissionRecord {
     bed: String(row.bed ?? ""),
     admissionReason: String(row.admission_reason ?? ""),
     admissionSummary: row.admission_summary === null ? null : String(row.admission_summary ?? ""),
+    roundSummary: row.round_summary === null ? null : String(row.round_summary ?? ""),
+    roundSummaryDate: row.round_summary_date === null ? null : String(row.round_summary_date),
     admissionImportExcerpt:
       row.admission_import_excerpt === null ? null : String(row.admission_import_excerpt ?? ""),
     interviewInformationQuality: INTERVIEW_INFORMATION_QUALITY_OPTIONS.includes(
@@ -661,6 +667,14 @@ function mapPatient(row: DbRow): PatientRecord {
           admissionReason: String(row.latest_admission_reason ?? ""),
           admissionSummary:
             row.latest_admission_summary === null ? null : String(row.latest_admission_summary ?? ""),
+          roundSummary:
+            row.latest_admission_round_summary === null
+              ? null
+              : String(row.latest_admission_round_summary ?? ""),
+          roundSummaryDate:
+            row.latest_admission_round_summary_date === null
+              ? null
+              : String(row.latest_admission_round_summary_date),
           admissionImportExcerpt:
             row.latest_admission_import_excerpt === null
               ? null
@@ -884,6 +898,8 @@ async function setupDatabase(): Promise<void> {
       bed TEXT NOT NULL,
       admission_reason TEXT NOT NULL,
       admission_summary TEXT,
+      round_summary TEXT,
+      round_summary_date DATE,
       admission_import_excerpt TEXT,
       interview_information_quality TEXT,
       interview_information_source_type TEXT,
@@ -1030,6 +1046,12 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE admissions
     ADD COLUMN IF NOT EXISTS admission_summary TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS round_summary TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS round_summary_date DATE;
 
     ALTER TABLE admissions
     ADD COLUMN IF NOT EXISTS admission_import_excerpt TEXT;
@@ -1863,6 +1885,8 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
           bed,
           admission_reason,
           admission_summary,
+          round_summary,
+          round_summary_date,
           admission_import_excerpt,
           interview_information_quality,
           interview_information_source_type,
@@ -1876,7 +1900,7 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
           team_id,
           responsible_professional_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         RETURNING id
       `,
       [
@@ -1885,6 +1909,8 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
         input.bed.trim(),
         input.admissionReason?.trim() || "Pendente de preenchimento",
         input.admissionSummary?.trim() || null,
+        input.roundSummary?.trim() || null,
+        input.roundSummaryDate?.trim() || null,
         input.admissionImportExcerpt?.trim() || null,
         input.interviewInformationQuality?.trim() || null,
         input.interviewInformationSourceType?.trim() || null,
@@ -1965,17 +1991,19 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
           bed = $3,
           admission_reason = $4,
           admission_summary = $5,
-          admission_import_excerpt = $6,
-          interview_information_quality = $7,
-          interview_information_source_type = $8,
-          interview_information_source_name = $9,
-          interview_information_source_relationship = $10,
-          interview_intervention_motive = $11,
-          interview_subjective = $12,
-          interview_relevant_symptoms = $13,
-          interview_pending_issues = $14,
-          interview_plan = $15,
-          team_id = $16
+          round_summary = $6,
+          round_summary_date = $7,
+          admission_import_excerpt = $8,
+          interview_information_quality = $9,
+          interview_information_source_type = $10,
+          interview_information_source_name = $11,
+          interview_information_source_relationship = $12,
+          interview_intervention_motive = $13,
+          interview_subjective = $14,
+          interview_relevant_symptoms = $15,
+          interview_pending_issues = $16,
+          interview_plan = $17,
+          team_id = $18
         WHERE id = $1
         RETURNING id, patient_id
       `,
@@ -1985,6 +2013,8 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
         input.bed.trim(),
         input.admissionReason?.trim() || "Pendente de preenchimento",
         input.admissionSummary?.trim() || null,
+        input.roundSummary?.trim() || null,
+        input.roundSummaryDate?.trim() || null,
         input.admissionImportExcerpt?.trim() || null,
         input.interviewInformationQuality?.trim() || null,
         input.interviewInformationSourceType?.trim() || null,
@@ -2954,6 +2984,8 @@ export async function listPatients(
       la.bed AS latest_admission_bed,
       la.admission_reason AS latest_admission_reason,
       la.admission_summary AS latest_admission_summary,
+      la.round_summary AS latest_admission_round_summary,
+      la.round_summary_date::text AS latest_admission_round_summary_date,
       la.admission_import_excerpt AS latest_admission_import_excerpt,
       la.interview_information_quality AS latest_admission_interview_information_quality,
       la.interview_information_source_type AS latest_admission_interview_information_source_type,
@@ -2983,6 +3015,8 @@ export async function listPatients(
       NULL::text AS latest_admission_bed,
       NULL::text AS latest_admission_reason,
       NULL::text AS latest_admission_summary,
+      NULL::text AS latest_admission_round_summary,
+      NULL::text AS latest_admission_round_summary_date,
       NULL::text AS latest_admission_import_excerpt,
       NULL::text AS latest_admission_interview_information_quality,
       NULL::text AS latest_admission_interview_information_source_type,
@@ -3016,6 +3050,8 @@ export async function listPatients(
         a.bed,
         a.admission_reason,
         a.admission_summary,
+        a.round_summary,
+        a.round_summary_date,
         a.admission_import_excerpt,
         a.interview_information_quality,
         a.interview_information_source_type,
@@ -3140,6 +3176,8 @@ export async function listRecentAdmissions(
         a.bed,
         a.admission_reason,
         a.admission_summary,
+        a.round_summary,
+        a.round_summary_date::text AS round_summary_date,
         a.admission_import_excerpt,
         a.interview_information_quality,
         a.interview_information_source_type,
@@ -3203,6 +3241,8 @@ async function getAdmissionById(admissionId: number): Promise<AdmissionRecord | 
         a.bed,
         a.admission_reason,
         a.admission_summary,
+        a.round_summary,
+        a.round_summary_date::text AS round_summary_date,
         a.admission_import_excerpt,
         a.interview_information_quality,
         a.interview_information_source_type,

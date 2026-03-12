@@ -122,6 +122,7 @@ const PATIENT_VIEW_ITEMS = [
   { id: "prior-use", label: "Medicamentos de uso prévio" },
   { id: "medication-validation", label: "Validação de medicamentos" },
   { id: "prescriptions", label: "Prescrição médica" },
+  { id: "round-summary", label: "Resumo do round" },
   { id: "evolution", label: "Evolução atualizada" }
 ] as const;
 
@@ -383,6 +384,8 @@ function createEmptyAdmissionFormState() {
     bed: "",
     admissionReason: "",
     admissionSummary: "",
+    roundSummary: "",
+    roundSummaryDate: "",
     admissionImportExcerpt: "",
     interviewInformationQuality: "",
     interviewInformationSourceType: "",
@@ -1858,6 +1861,14 @@ function formatAdmissionDate(input: string | null | undefined): string {
   return formatAdmissionDateValue(input) || "-";
 }
 
+function getCurrentFormattedDateValue(): string {
+  const now = new Date();
+  const day = String(now.getDate()).padStart(2, "0");
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const year = String(now.getFullYear());
+  return `${day}/${month}/${year}`;
+}
+
 function scoreExamDateCandidateLine(line: string): number {
   const normalizedLine = normalizeSearchValue(line);
   if (!normalizedLine) {
@@ -2163,17 +2174,23 @@ function ImportantExamCardsPanel({
   }
 
   const cards = buildImportantExamCards({ records, rawText, patientAgeYears, patientSex });
-  const identifiedCount = cards.filter((card) => card.result.trim().length > 0).length;
+  const visibleCards = cards.filter((card) => card.result.trim().length > 0);
   const recordByKey = new Map(records.map((record) => [record.key, record]));
+
+  if (visibleCards.length === 0) {
+    return <p className="dashboard-muted">{emptyMessage}</p>;
+  }
 
   return (
     <div className="dashboard-important-exams">
       <p className="dashboard-muted">
-        {`${identifiedCount} de ${cards.length} cards laboratoriais preenchidos automaticamente ou calculados a partir do PDF.`}
+        {`${visibleCards.length} card${visibleCards.length === 1 ? "" : "s"} laboratorial${
+          visibleCards.length === 1 ? "" : "ais"
+        } preenchido${visibleCards.length === 1 ? "" : "s"} com resultado.`}
       </p>
 
       <div className="dashboard-important-exam-grid">
-        {cards.map((card) => {
+        {visibleCards.map((card) => {
           const indicator = card.status === "high" ? "↑" : card.status === "low" ? "↓" : "";
           const statusLabel =
             card.status === "high"
@@ -3866,6 +3883,9 @@ export default function DashboardConsole({
           ? latestAdmission.admissionReason
           : "",
       admissionSummary: latestAdmission?.admissionSummary ?? "",
+      roundSummary: latestAdmission?.roundSummary ?? "",
+      roundSummaryDate:
+        formatAdmissionDateValue(latestAdmission?.roundSummaryDate ?? "") || getCurrentFormattedDateValue(),
       admissionImportExcerpt: latestAdmission?.admissionImportExcerpt ?? "",
       interviewInformationQuality: latestAdmission?.interviewInformationQuality ?? "",
       interviewInformationSourceType: latestAdmission?.interviewInformationSourceType ?? "",
@@ -4771,6 +4791,12 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
     return selectedSavedExamImport;
   }, [selectedExamImportDetails, selectedSavedExamImport]);
+
+  const shouldShowLatestExamImportPreview =
+    examImportResult !== null &&
+    (!selectedSavedExamImportDetails ||
+      selectedSavedExamImportDetails.fileName !== examImportResult.fileName ||
+      selectedSavedExamImportDetails.createdAt !== examImportResult.importedAt);
 
   useEffect(() => {
     if (!selectedPatient || !selectedSavedExamImport) {
@@ -6132,6 +6158,19 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       return;
     }
 
+    const normalizedRoundSummaryDate = admissionForm.roundSummaryDate.trim()
+      ? normalizeAdmissionDateValue(admissionForm.roundSummaryDate)
+      : admissionForm.roundSummary.trim()
+        ? normalizeAdmissionDateValue(getCurrentFormattedDateValue())
+        : null;
+    if (admissionForm.roundSummaryDate.trim() && !normalizedRoundSummaryDate) {
+      setAdmissionFeedback({
+        type: "error",
+        message: "Informe a data do round no formato DD/MM/AAAA."
+      });
+      return;
+    }
+
     setAdmissionLoading(true);
 
     try {
@@ -6174,6 +6213,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         body: JSON.stringify({
           ...admissionForm,
           admissionDate: normalizedAdmissionDate,
+          roundSummaryDate: normalizedRoundSummaryDate ?? undefined,
           admissionId: shouldUpdateAdmission ? Number(admissionForm.admissionId) : undefined,
           patientId: selectedPatient.id,
           teamId: admissionForm.teamId ? Number(admissionForm.teamId) : undefined,
@@ -6293,6 +6333,18 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       requireExistingAdmission: true,
       successMessage: "Entrevista salva com sucesso.",
       connectionErrorMessage: "Erro de conexão ao salvar entrevista."
+    });
+  }
+
+  async function handleRoundSummarySubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    await persistAdmissionForm({
+      analyzeSummary: false,
+      requireExistingAdmission: true,
+      missingAdmissionMessage:
+        "Salve primeiro as informações da internação para registrar o resumo do round.",
+      successMessage: "Resumo do round salvo com sucesso.",
+      connectionErrorMessage: "Erro de conexão ao salvar resumo do round."
     });
   }
 
@@ -9447,7 +9499,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               </button>
                             </form>
 
-                            {examImportResult ? (
+                            {shouldShowLatestExamImportPreview && examImportResult ? (
                               <>
                                 <div className="dashboard-calculation-box">
                                   <h3>Última importação processada</h3>
@@ -10595,6 +10647,69 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 <span className="dashboard-flag-legend-text">Hepatotóxico</span>
                               </div>
                             </div>
+                          </div>
+                        ) : null}
+
+                        {patientView === "round-summary" ? (
+                          <div className="dashboard-subsection-block">
+                            <h3>Resumo do round</h3>
+                            <p className="dashboard-muted">
+                              Anotação interna do round farmacêutico. Este texto não entra na evolução.
+                            </p>
+
+                            <form className="dashboard-form" onSubmit={handleRoundSummarySubmit}>
+                              <input
+                                value={`${selectedPatient.fullName} (${selectedPatient.chartNumber})`}
+                                disabled
+                                aria-label="Paciente selecionado"
+                              />
+
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                placeholder="Data do round (DD/MM/AAAA)"
+                                value={admissionForm.roundSummaryDate}
+                                onChange={(event) =>
+                                  setAdmissionForm((current) => ({
+                                    ...current,
+                                    roundSummaryDate: formatEditableDateInput(event.target.value)
+                                  }))
+                                }
+                              />
+
+                              <textarea
+                                placeholder="Anotações internas do round"
+                                value={admissionForm.roundSummary}
+                                onChange={(event) =>
+                                  setAdmissionForm((current) => ({
+                                    ...current,
+                                    roundSummary: event.target.value
+                                  }))
+                                }
+                                rows={12}
+                              />
+
+                              {!admissionForm.admissionId.trim() ? (
+                                <p className="dashboard-muted">
+                                  Salve primeiro as informações da internação para persistir o resumo do round.
+                                </p>
+                              ) : null}
+
+                              {admissionFeedback ? (
+                                <p className={`dashboard-feedback dashboard-feedback-${admissionFeedback.type}`}>
+                                  {admissionFeedback.message}
+                                </p>
+                              ) : null}
+
+                              <div className="dashboard-inline-actions">
+                                <button
+                                  type="submit"
+                                  disabled={admissionLoading || !admissionForm.admissionId.trim()}
+                                >
+                                  {admissionLoading ? "Salvando..." : "Salvar resumo do round"}
+                                </button>
+                              </div>
+                            </form>
                           </div>
                         ) : null}
 

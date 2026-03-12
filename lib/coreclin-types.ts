@@ -146,6 +146,8 @@ export type AdmissionRecord = {
   bed: string;
   admissionReason: string;
   admissionSummary: string | null;
+  roundSummary: string | null;
+  roundSummaryDate: string | null;
   admissionImportExcerpt: string | null;
   interviewInformationQuality: InterviewInformationQuality | null;
   interviewInformationSourceType: InterviewInformationSourceType | null;

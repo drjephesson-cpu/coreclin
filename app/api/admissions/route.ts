@@ -114,6 +114,10 @@ export async function POST(request: Request): Promise<NextResponse> {
   const bed = typeof body.bed === "string" ? body.bed.trim() : "";
   const admissionReason = typeof body.admissionReason === "string" ? body.admissionReason.trim() : "";
   const admissionSummary = typeof body.admissionSummary === "string" ? body.admissionSummary.trim() : "";
+  const roundSummary = typeof body.roundSummary === "string" ? body.roundSummary.trim() : "";
+  const roundSummaryDate = normalizeAdmissionDate(
+    typeof body.roundSummaryDate === "string" ? body.roundSummaryDate : ""
+  );
   const admissionImportExcerpt =
     typeof body.admissionImportExcerpt === "string" ? body.admissionImportExcerpt.trim() : "";
   const teamIdRaw = body.teamId;
@@ -198,6 +202,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       bed,
       admissionReason,
       admissionSummary,
+      roundSummary,
+      roundSummaryDate,
       admissionImportExcerpt,
       teamId,
       weightKg,
@@ -235,6 +241,10 @@ export async function PUT(request: Request): Promise<NextResponse> {
   const bed = typeof body.bed === "string" ? body.bed.trim() : "";
   const admissionReason = typeof body.admissionReason === "string" ? body.admissionReason.trim() : "";
   const admissionSummary = typeof body.admissionSummary === "string" ? body.admissionSummary.trim() : "";
+  const roundSummary = typeof body.roundSummary === "string" ? body.roundSummary.trim() : "";
+  const roundSummaryDate = normalizeAdmissionDate(
+    typeof body.roundSummaryDate === "string" ? body.roundSummaryDate : ""
+  );
   const admissionImportExcerpt =
     typeof body.admissionImportExcerpt === "string" ? body.admissionImportExcerpt.trim() : "";
   const teamId = parseOptionalPositiveNumber(body.teamId);
@@ -315,6 +325,8 @@ export async function PUT(request: Request): Promise<NextResponse> {
       bed,
       admissionReason,
       admissionSummary,
+      roundSummary,
+      roundSummaryDate,
       admissionImportExcerpt,
       teamId,
       weightKg,
