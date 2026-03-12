@@ -319,6 +319,9 @@ export type MedicalPrescriptionRecord = {
   manufacturer: string | null;
   patientDidNotBring: boolean;
   stockValidationNote: string | null;
+  stockValidationRecordedAt: string | null;
+  stockValidationProfessionalId: number | null;
+  stockValidationProfessionalName: string | null;
   interventionNotes: string | null;
   interventionErrorType: PrescriptionInterventionErrorType | null;
   interventionContactStatus: PrescriptionInterventionContactStatus | null;

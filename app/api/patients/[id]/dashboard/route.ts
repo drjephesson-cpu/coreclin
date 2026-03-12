@@ -39,7 +39,8 @@ export async function GET(
       listPatientExamImports(patientId, { includeRawText: "latest" }),
       listAdmissionRoundNotes(patientId),
       listMedicalPrescriptions(patientId, {
-        backfillInterventionProfessionalLogin: session.username
+        backfillInterventionProfessionalLogin: session.username,
+        backfillValidationProfessionalLogin: session.username
       })
       ]);
 

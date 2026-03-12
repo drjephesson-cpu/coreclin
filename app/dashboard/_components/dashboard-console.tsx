@@ -87,6 +87,7 @@ const DASHBOARD_NAV_ITEMS = [
   { id: "patient", label: "Cadastrar pacientes" },
   { id: "medication", label: "Cadastrar medicamentos" },
   { id: "interventions", label: "Intervenções" },
+  { id: "validated-medications", label: "Medicamentos validados" },
   { id: "inpatients", label: "Pacientes internados" }
 ] as const;
 
@@ -98,7 +99,8 @@ const DASHBOARD_NAV_GROUPS = [
     label: "Medicamentos",
     items: [
       { id: "medication", label: "Cadastrar medicamentos" },
-      { id: "interventions", label: "Intervenções" }
+      { id: "interventions", label: "Intervenções" },
+      { id: "validated-medications", label: "Medicamentos validados" }
     ]
   }
 ] as const;
@@ -899,15 +901,7 @@ function buildMandatoryEvolutionPreviewText(payload: MandatoryEvolutionPreviewPa
   pushSection(
     "#VALIDAÇÃO DE MEDICAMENTOS",
     payload.prescriptions
-      .filter((prescription) => {
-        if (prescription.externalValidationCandidate) {
-          return true;
-        }
-
-        return normalizeMedicationName(prescription.medicationName).startsWith(
-          "medicamento nao cadastrado"
-        );
-      })
+      .filter((prescription) => isPrescriptionMedicationValidationCandidate(prescription))
       .map((prescription) => {
         const dailyTabletUse = calculateDailyTabletUse({
           dose: prescription.dose,
@@ -1689,6 +1683,98 @@ function buildMedicationValidationSummary(input: {
   return details.length > 0
     ? `${input.displayMedicationName} | ${details.join(" | ")}`
     : input.displayMedicationName;
+}
+
+function isPrescriptionMedicationValidationCandidate(
+  prescription: Pick<MedicalPrescriptionRecord, "externalValidationCandidate" | "medicationName">
+): boolean {
+  if (prescription.externalValidationCandidate) {
+    return true;
+  }
+
+  return normalizeMedicationName(prescription.medicationName).startsWith(
+    "medicamento nao cadastrado"
+  );
+}
+
+function hasPrescriptionStockValidation(
+  prescription: Pick<
+    MedicalPrescriptionRecord,
+    | "quantityTablets"
+    | "lotNumber"
+    | "expirationDate"
+    | "manufacturer"
+    | "patientDidNotBring"
+    | "stockValidationNote"
+    | "stockValidationRecordedAt"
+    | "stockValidationProfessionalId"
+  >
+): boolean {
+  return (
+    prescription.stockValidationRecordedAt !== null ||
+    prescription.stockValidationProfessionalId !== null ||
+    prescription.quantityTablets !== null ||
+    Boolean(prescription.lotNumber?.trim()) ||
+    Boolean(prescription.expirationDate) ||
+    Boolean(prescription.manufacturer?.trim()) ||
+    prescription.patientDidNotBring ||
+    Boolean(prescription.stockValidationNote?.trim())
+  );
+}
+
+function formatPrescriptionPosology(
+  prescription: Pick<MedicalPrescriptionRecord, "dose" | "doseUnit" | "frequency" | "shifts">
+): string {
+  const shiftsLabel = prescription.shifts.trim();
+  return [
+    prescription.dose > 0 ? `${formatNumber(prescription.dose)} ${prescription.doseUnit}`.trim() : "",
+    prescription.frequency.trim(),
+    shiftsLabel && shiftsLabel !== "-" ? shiftsLabel : ""
+  ]
+    .filter((part) => part.length > 0)
+    .join(" | ");
+}
+
+function formatMedicationValidationExpiry(expirationDate: string | null): string {
+  const normalized = expirationDate ? normalizeAdmissionDateValue(expirationDate) : null;
+  if (!normalized) {
+    return "-";
+  }
+
+  const parsed = new Date(`${normalized}T12:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return formatAdmissionDateValue(normalized);
+  }
+
+  return new Intl.DateTimeFormat("pt-BR", {
+    month: "short",
+    year: "2-digit"
+  })
+    .format(parsed)
+    .replace(".", "");
+}
+
+function calculateMedicationRevalidationDate(
+  validationRecordedAt: string | null,
+  quantityTablets: number | null,
+  dailyTabletUse: number | null
+): string | null {
+  const normalizedValidationDate = validationRecordedAt
+    ? normalizeAdmissionDateValue(validationRecordedAt)
+    : null;
+  const durationDays = calculateDurationDays(quantityTablets, dailyTabletUse);
+
+  if (!normalizedValidationDate || durationDays === null) {
+    return null;
+  }
+
+  const baseDate = new Date(`${normalizedValidationDate}T12:00:00`);
+  if (Number.isNaN(baseDate.getTime())) {
+    return null;
+  }
+
+  baseDate.setDate(baseDate.getDate() + Math.ceil(durationDays));
+  return baseDate.toISOString().slice(0, 10);
 }
 
 function isLikelyExamResultValue(input: string): boolean {
@@ -3284,7 +3370,10 @@ export default function DashboardConsole({
   }, []);
 
   useEffect(() => {
-    if (requestedSection !== "interventions" || data?.loadedPatientDetailsId !== null) {
+    if (
+      (requestedSection !== "interventions" && requestedSection !== "validated-medications") ||
+      data?.loadedPatientDetailsId !== null
+    ) {
       return;
     }
 
@@ -3299,6 +3388,7 @@ export default function DashboardConsole({
     team: false,
     patient: false,
     interventions: false,
+    "validated-medications": false,
     inpatients: true,
     medication: false
   });
@@ -3396,12 +3486,25 @@ export default function DashboardConsole({
   const [interventionReportPrescriptions, setInterventionReportPrescriptions] = useState<
     MedicalPrescriptionRecord[]
   >(() =>
-    data?.loadedPatientDetailsId === null && requestedSection === "interventions"
+    data?.loadedPatientDetailsId === null &&
+    (requestedSection === "interventions" || requestedSection === "validated-medications")
       ? data?.prescriptions ?? []
       : []
   );
   const [interventionReportFeedback, setInterventionReportFeedback] = useState<FeedbackState>(null);
   const [interventionReportLoading, setInterventionReportLoading] = useState(false);
+  const [validatedMedicationReportForm, setValidatedMedicationReportForm] =
+    useState<InterventionReportFormState>({
+      startDate: getCurrentMonthStartFormattedDateValue(),
+      endDate: getCurrentFormattedDateValue()
+    });
+  const [appliedValidatedMedicationReportRange, setAppliedValidatedMedicationReportRange] =
+    useState<InterventionReportFormState>({
+      startDate: getCurrentMonthStartFormattedDateValue(),
+      endDate: getCurrentFormattedDateValue()
+    });
+  const [validatedMedicationReportFeedback, setValidatedMedicationReportFeedback] =
+    useState<FeedbackState>(null);
   const [selectedPatientProfileForm, setSelectedPatientProfileForm] = useState({
     birthDate: "",
     sex: "" as PatientSex | ""
@@ -3635,13 +3738,17 @@ export default function DashboardConsole({
   }, [selectedPatientId]);
 
   useEffect(() => {
-    if (activeSection !== "interventions") {
+    if (activeSection !== "interventions" && activeSection !== "validated-medications") {
       return;
     }
 
     let isCancelled = false;
     setInterventionReportLoading(true);
-    setInterventionReportFeedback(null);
+    if (activeSection === "interventions") {
+      setInterventionReportFeedback(null);
+    } else {
+      setValidatedMedicationReportFeedback(null);
+    }
 
     void fetch("/api/interventions")
       .then(async (response) => {
@@ -3651,7 +3758,12 @@ export default function DashboardConsole({
         };
 
         if (!response.ok || !Array.isArray(result.prescriptions)) {
-          throw new Error(result.message ?? "Falha ao carregar as intervenções.");
+          throw new Error(
+            result.message ??
+              (activeSection === "validated-medications"
+                ? "Falha ao carregar os medicamentos validados."
+                : "Falha ao carregar as intervenções.")
+          );
         }
 
         if (isCancelled) {
@@ -3665,10 +3777,21 @@ export default function DashboardConsole({
           return;
         }
 
-        setInterventionReportFeedback({
+        const feedback: FeedbackState = {
           type: "error",
-          message: error instanceof Error ? error.message : "Falha ao carregar as intervenções."
-        });
+          message:
+            error instanceof Error
+              ? error.message
+              : activeSection === "validated-medications"
+                ? "Falha ao carregar os medicamentos validados."
+                : "Falha ao carregar as intervenções."
+        };
+
+        if (activeSection === "validated-medications") {
+          setValidatedMedicationReportFeedback(feedback);
+        } else {
+          setInterventionReportFeedback(feedback);
+        }
       })
       .finally(() => {
         if (!isCancelled) {
@@ -4229,6 +4352,71 @@ export default function DashboardConsole({
     () =>
       interventionReportPrescriptions.filter((prescription) => hasPrescriptionIntervention(prescription))
         .length,
+    [interventionReportPrescriptions]
+  );
+
+  const validatedMedicationReportRows = useMemo(() => {
+    const startDate = normalizeAdmissionDateValue(appliedValidatedMedicationReportRange.startDate);
+    const endDate = normalizeAdmissionDateValue(appliedValidatedMedicationReportRange.endDate);
+    if (!startDate || !endDate) {
+      return [];
+    }
+
+    const rangeStart = new Date(`${startDate}T00:00:00`).getTime();
+    const rangeEnd = new Date(`${endDate}T23:59:59`).getTime();
+
+    return interventionReportPrescriptions
+      .filter((prescription) => isPrescriptionMedicationValidationCandidate(prescription))
+      .filter((prescription) => hasPrescriptionStockValidation(prescription))
+      .map((prescription) => {
+        const dailyTabletUse = calculateDailyTabletUse({
+          dose: prescription.dose,
+          doseUnit: prescription.doseUnit,
+          frequency: prescription.frequency,
+          shifts: prescription.shifts
+        });
+        const validationRecordedAt =
+          prescription.stockValidationRecordedAt ??
+          prescription.validationStartAt ??
+          prescription.validationEndAt ??
+          prescription.createdAt;
+
+        return {
+          prescription,
+          displayMedicationName: getMedicationReferenceName(prescription.medicationName),
+          posology: formatPrescriptionPosology(prescription),
+          validationRecordedAt,
+          revalidationDate: prescription.patientDidNotBring
+            ? null
+            : calculateMedicationRevalidationDate(
+                validationRecordedAt,
+                prescription.quantityTablets,
+                dailyTabletUse
+              )
+        };
+      })
+      .filter((row) => {
+        const referenceTimestamp = new Date(row.validationRecordedAt).getTime();
+        return referenceTimestamp >= rangeStart && referenceTimestamp <= rangeEnd;
+      })
+      .sort((first, second) => {
+        const firstTimestamp = new Date(first.validationRecordedAt).getTime();
+        const secondTimestamp = new Date(second.validationRecordedAt).getTime();
+        return secondTimestamp - firstTimestamp;
+      });
+  }, [
+    appliedValidatedMedicationReportRange.endDate,
+    appliedValidatedMedicationReportRange.startDate,
+    interventionReportPrescriptions
+  ]);
+
+  const validatedMedicationSidebarIndicator = useMemo(
+    () =>
+      interventionReportPrescriptions.filter(
+        (prescription) =>
+          isPrescriptionMedicationValidationCandidate(prescription) &&
+          hasPrescriptionStockValidation(prescription)
+      ).length,
     [interventionReportPrescriptions]
   );
 
@@ -5376,15 +5564,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   const selectedPatientMedicationValidationRows = useMemo(
     () =>
       selectedPatientPrescriptions
-        .filter((prescription) => {
-          if (prescription.externalValidationCandidate) {
-            return true;
-          }
-
-          return normalizeMedicationName(prescription.medicationName).startsWith(
-            "medicamento nao cadastrado"
-          );
-        })
+        .filter((prescription) => isPrescriptionMedicationValidationCandidate(prescription))
         .map((prescription) => {
           const dailyTabletUse = calculateDailyTabletUse({
             dose: prescription.dose,
@@ -7726,6 +7906,105 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     });
   }
 
+  function handleApplyValidatedMedicationReportRange(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    const normalizedStart = normalizeAdmissionDateValue(validatedMedicationReportForm.startDate);
+    const normalizedEnd = normalizeAdmissionDateValue(validatedMedicationReportForm.endDate);
+
+    if (!normalizedStart || !normalizedEnd) {
+      setValidatedMedicationReportFeedback({
+        type: "error",
+        message: "Informe o período no formato DD/MM/AAAA."
+      });
+      return;
+    }
+
+    if (normalizedStart > normalizedEnd) {
+      setValidatedMedicationReportFeedback({
+        type: "error",
+        message: "A data inicial não pode ser maior que a data final."
+      });
+      return;
+    }
+
+    setAppliedValidatedMedicationReportRange({
+      startDate: formatAdmissionDateValue(normalizedStart),
+      endDate: formatAdmissionDateValue(normalizedEnd)
+    });
+    setValidatedMedicationReportFeedback({
+      type: "success",
+      message: "Período dos medicamentos validados atualizado."
+    });
+  }
+
+  function handleExportValidatedMedicationReport(): void {
+    if (validatedMedicationReportRows.length === 0) {
+      setValidatedMedicationReportFeedback({
+        type: "error",
+        message: "Não há medicamentos validados no período selecionado para exportar."
+      });
+      return;
+    }
+
+    const headers = [
+      "LEITO",
+      "PRONTUÁRIO",
+      "PACIENTE",
+      "MEDICAMENTO",
+      "POSOLOGIA",
+      "QTD",
+      "LAB",
+      "LOTE",
+      "VAL",
+      "VALIDADO POR",
+      "DATA VALIDAÇÃO",
+      "REVALIDAR"
+    ];
+    const lines = validatedMedicationReportRows.map((row) => [
+      row.prescription.bed ?? "",
+      row.prescription.chartNumber,
+      row.prescription.patientName,
+      row.displayMedicationName,
+      row.posology,
+      row.prescription.quantityTablets === null ? "" : String(row.prescription.quantityTablets),
+      row.prescription.manufacturer ?? "",
+      row.prescription.lotNumber ?? "",
+      row.prescription.expirationDate
+        ? formatMedicationValidationExpiry(row.prescription.expirationDate)
+        : "",
+      row.prescription.stockValidationProfessionalName ?? "",
+      formatAdmissionDateValue(row.validationRecordedAt),
+      row.revalidationDate ? formatAdmissionDateValue(row.revalidationDate) : ""
+    ]);
+
+    const csvContent = [headers, ...lines]
+      .map((columns) => columns.map((value) => escapeCsvCell(value)).join(";"))
+      .join("\n");
+    const blob = new Blob([`\uFEFF${csvContent}`], {
+      type: "text/csv;charset=utf-8;"
+    });
+    const downloadUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const startLabel =
+      formatAdmissionDateValue(normalizeAdmissionDateValue(appliedValidatedMedicationReportRange.startDate)) ||
+      "inicio";
+    const endLabel =
+      formatAdmissionDateValue(normalizeAdmissionDateValue(appliedValidatedMedicationReportRange.endDate)) ||
+      "fim";
+
+    anchor.href = downloadUrl;
+    anchor.download = `medicamentos-validados-${startLabel.replaceAll("/", "-")}-${endLabel.replaceAll("/", "-")}.csv`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(downloadUrl);
+
+    setValidatedMedicationReportFeedback({
+      type: "success",
+      message: "Planilha exportada com sucesso."
+    });
+  }
+
   async function handleSavePrescriptionIntervention(
     prescriptionId: number,
     formState: PrescriptionInterventionFormState
@@ -8597,6 +8876,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                         {item.id === "interventions" && interventionSidebarIndicator > 0 ? (
                           <span className="dashboard-sidebar-indicator">
                             {interventionSidebarIndicator}
+                          </span>
+                        ) : item.id === "validated-medications" &&
+                          validatedMedicationSidebarIndicator > 0 ? (
+                          <span className="dashboard-sidebar-indicator">
+                            {validatedMedicationSidebarIndicator}
                           </span>
                         ) : null}
                       </button>
@@ -11686,6 +11970,128 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               </td>
                               <td>{prescription.interventionResponse ?? "-"}</td>
                               <td>{prescription.interventionProfessionalName ?? "-"}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
+
+              {activeSection === "validated-medications" ? (
+                <section className="dashboard-card">
+                  <h2>Medicamentos validados</h2>
+                  <p className="dashboard-muted">
+                    Escolha o período para listar os medicamentos validados e exportar a planilha para
+                    Excel.
+                  </p>
+
+                  <form className="dashboard-form" onSubmit={handleApplyValidatedMedicationReportRange}>
+                    <div className="dashboard-two-columns">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="Data inicial (DD/MM/AAAA)"
+                        value={validatedMedicationReportForm.startDate}
+                        onChange={(event) =>
+                          setValidatedMedicationReportForm((current) => ({
+                            ...current,
+                            startDate: formatEditableDateInput(event.target.value)
+                          }))
+                        }
+                      />
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="Data final (DD/MM/AAAA)"
+                        value={validatedMedicationReportForm.endDate}
+                        onChange={(event) =>
+                          setValidatedMedicationReportForm((current) => ({
+                            ...current,
+                            endDate: formatEditableDateInput(event.target.value)
+                          }))
+                        }
+                      />
+                    </div>
+
+                    {validatedMedicationReportFeedback ? (
+                      <p
+                        className={`dashboard-feedback dashboard-feedback-${validatedMedicationReportFeedback.type}`}
+                      >
+                        {validatedMedicationReportFeedback.message}
+                      </p>
+                    ) : null}
+
+                    <div className="dashboard-inline-actions">
+                      <button type="submit" disabled={interventionReportLoading}>
+                        {interventionReportLoading ? "Atualizando..." : "Puxar medicamentos validados"}
+                      </button>
+                      <button
+                        type="button"
+                        className="dashboard-mini-button"
+                        onClick={handleExportValidatedMedicationReport}
+                        disabled={interventionReportLoading}
+                      >
+                        Exportar Excel
+                      </button>
+                    </div>
+                  </form>
+
+                  <div className="dashboard-table-wrap">
+                    <table className="dashboard-table">
+                      <thead>
+                        <tr>
+                          <th>Leito</th>
+                          <th>Prontuário</th>
+                          <th>Paciente</th>
+                          <th>Medicamento</th>
+                          <th>Posologia</th>
+                          <th>Qtd</th>
+                          <th>Lab</th>
+                          <th>Lote</th>
+                          <th>Val</th>
+                          <th>Validado por</th>
+                          <th>Data validação</th>
+                          <th>Revalidar</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {interventionReportLoading ? (
+                          <tr>
+                            <td colSpan={12}>Carregando medicamentos validados...</td>
+                          </tr>
+                        ) : validatedMedicationReportRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={12}>
+                              Nenhum medicamento validado encontrado no período selecionado.
+                            </td>
+                          </tr>
+                        ) : (
+                          validatedMedicationReportRows.map((row) => (
+                            <tr key={`validated-medication-${row.prescription.id}`}>
+                              <td>{row.prescription.bed ?? "-"}</td>
+                              <td>{row.prescription.chartNumber}</td>
+                              <td>{row.prescription.patientName}</td>
+                              <td>{row.displayMedicationName}</td>
+                              <td>{row.posology || "-"}</td>
+                              <td>
+                                {row.prescription.quantityTablets === null
+                                  ? row.prescription.patientDidNotBring
+                                    ? "Não trouxe"
+                                    : "-"
+                                  : row.prescription.quantityTablets}
+                              </td>
+                              <td>{row.prescription.manufacturer ?? "-"}</td>
+                              <td>{row.prescription.lotNumber ?? "-"}</td>
+                              <td>{formatMedicationValidationExpiry(row.prescription.expirationDate)}</td>
+                              <td>{row.prescription.stockValidationProfessionalName ?? "-"}</td>
+                              <td>{formatAdmissionDateValue(row.validationRecordedAt)}</td>
+                              <td>
+                                {row.revalidationDate
+                                  ? formatAdmissionDateValue(row.revalidationDate)
+                                  : "-"}
+                              </td>
                             </tr>
                           ))
                         )}

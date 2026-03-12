@@ -13,7 +13,8 @@ export async function GET(): Promise<NextResponse> {
 
   try {
     const prescriptions = await listMedicalPrescriptions(null, {
-      backfillInterventionProfessionalLogin: session.username
+      backfillInterventionProfessionalLogin: session.username,
+      backfillValidationProfessionalLogin: session.username
     });
     return NextResponse.json({ prescriptions });
   } catch (error) {

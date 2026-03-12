@@ -707,6 +707,16 @@ function mapMedicalPrescription(row: DbRow): MedicalPrescriptionRecord {
     patientDidNotBring: Boolean(row.patient_did_not_bring),
     stockValidationNote:
       row.stock_validation_note === null ? null : String(row.stock_validation_note ?? ""),
+    stockValidationRecordedAt:
+      row.stock_validation_recorded_at === null ? null : toIso(row.stock_validation_recorded_at),
+    stockValidationProfessionalId:
+      row.stock_validation_professional_id === null
+        ? null
+        : toNumber(row.stock_validation_professional_id),
+    stockValidationProfessionalName:
+      row.stock_validation_professional_name === null
+        ? null
+        : String(row.stock_validation_professional_name ?? ""),
     interventionNotes:
       row.intervention_notes === null ? null : String(row.intervention_notes ?? ""),
     interventionErrorType: normalizePrescriptionInterventionErrorType(row.intervention_error_type),
@@ -1105,6 +1115,8 @@ async function setupDatabase(): Promise<void> {
       manufacturer TEXT,
       patient_did_not_bring BOOLEAN NOT NULL DEFAULT FALSE,
       stock_validation_note TEXT,
+      stock_validation_recorded_at TIMESTAMPTZ,
+      stock_validation_professional_id INTEGER REFERENCES professionals(id),
       intervention_notes TEXT,
       intervention_error_type TEXT,
       intervention_contact_status TEXT,
@@ -1285,6 +1297,12 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE medical_prescriptions
     ADD COLUMN IF NOT EXISTS stock_validation_note TEXT;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS stock_validation_recorded_at TIMESTAMPTZ;
+
+    ALTER TABLE medical_prescriptions
+    ADD COLUMN IF NOT EXISTS stock_validation_professional_id INTEGER REFERENCES professionals(id);
   `);
 
   await pool.query(`
@@ -1924,6 +1942,45 @@ async function backfillLegacyInterventionProfessionalMetadata(
           OR COALESCE(BTRIM(mp.intervention_contact_status), '') <> ''
           OR mp.intervention_requested_to_prescriber IS NOT NULL
           OR COALESCE(BTRIM(mp.intervention_response), '') <> ''
+        )
+        ${patientFilter}
+    `,
+    values
+  );
+}
+
+async function backfillLegacyStockValidationProfessionalMetadata(
+  client: PoolClient,
+  login: string,
+  patientId?: number | null
+): Promise<void> {
+  const professionalId = await findProfessionalIdByLogin(client, login);
+  const values: unknown[] = [professionalId];
+  const patientFilter =
+    Number.isInteger(patientId) && Number(patientId) > 0
+      ? `AND mp.patient_id = $${values.push(Number(patientId))}`
+      : "";
+
+  await client.query(
+    `
+      UPDATE medical_prescriptions mp
+      SET
+        stock_validation_professional_id = $1,
+        stock_validation_recorded_at = COALESCE(
+          mp.stock_validation_recorded_at,
+          mp.validation_start_at,
+          mp.validation_end_at,
+          mp.created_at
+        )
+      WHERE
+        mp.stock_validation_professional_id IS NULL
+        AND (
+          mp.quantity_tablets IS NOT NULL
+          OR COALESCE(BTRIM(mp.lot_number), '') <> ''
+          OR mp.expiration_date IS NOT NULL
+          OR COALESCE(BTRIM(mp.manufacturer), '') <> ''
+          OR mp.patient_did_not_bring = TRUE
+          OR COALESCE(BTRIM(mp.stock_validation_note), '') <> ''
         )
         ${patientFilter}
     `,
@@ -2994,6 +3051,8 @@ export async function addMedicalPrescription(
           manufacturer,
           patient_did_not_bring,
           stock_validation_note,
+          stock_validation_recorded_at,
+          stock_validation_professional_id,
           intervention_notes,
           intervention_error_type,
           intervention_contact_status,
@@ -3004,7 +3063,7 @@ export async function addMedicalPrescription(
         )
         VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-          NULL, NULL, NULL, NULL, FALSE, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+          NULL, NULL, NULL, NULL, FALSE, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
         )
         RETURNING id
       `,
@@ -3056,6 +3115,9 @@ export async function addMedicalPrescription(
           mp.manufacturer,
           mp.patient_did_not_bring,
           mp.stock_validation_note,
+          mp.stock_validation_recorded_at,
+          mp.stock_validation_professional_id,
+          stock_prof.full_name AS stock_validation_professional_name,
           mp.intervention_notes,
           mp.intervention_error_type,
           mp.intervention_contact_status,
@@ -3069,6 +3131,7 @@ export async function addMedicalPrescription(
         INNER JOIN patients p ON p.id = mp.patient_id
         LEFT JOIN admissions a ON a.id = mp.admission_id
         LEFT JOIN teams t ON t.id = a.team_id
+        LEFT JOIN professionals stock_prof ON stock_prof.id = mp.stock_validation_professional_id
         LEFT JOIN professionals prof ON prof.id = mp.intervention_professional_id
         WHERE mp.id = $1
         LIMIT 1
@@ -3103,6 +3166,13 @@ export async function updateMedicalPrescriptionValidation(
 
     const assignments: string[] = [];
     const values: unknown[] = [];
+    const hasStockValidationField =
+      "quantityTablets" in input ||
+      "lotNumber" in input ||
+      "expirationDate" in input ||
+      "manufacturer" in input ||
+      "patientDidNotBring" in input ||
+      "stockValidationNote" in input;
     const hasInterventionField =
       "interventionNotes" in input ||
       "interventionErrorType" in input ||
@@ -3148,6 +3218,30 @@ export async function updateMedicalPrescriptionValidation(
         `stock_validation_note = $${values.push(
           input.stockValidationNote?.trim() ? input.stockValidationNote.trim() : null
         )}`
+      );
+    }
+
+    if (hasStockValidationField) {
+      const hasPersistedStockValidation =
+        input.quantityTablets !== null &&
+        input.quantityTablets !== undefined ||
+        Boolean(input.lotNumber?.trim()) ||
+        Boolean(input.expirationDate?.trim()) ||
+        Boolean(input.manufacturer?.trim()) ||
+        Boolean(input.patientDidNotBring) ||
+        Boolean(input.stockValidationNote?.trim());
+      const stockValidationProfessionalId =
+        hasPersistedStockValidation && input.responsibleLogin?.trim()
+          ? await findProfessionalIdByLogin(client, input.responsibleLogin)
+          : null;
+
+      assignments.push(
+        `stock_validation_recorded_at = $${values.push(
+          hasPersistedStockValidation ? new Date().toISOString() : null
+        )}`
+      );
+      assignments.push(
+        `stock_validation_professional_id = $${values.push(stockValidationProfessionalId)}`
       );
     }
 
@@ -3254,6 +3348,9 @@ export async function updateMedicalPrescriptionValidation(
           mp.manufacturer,
           mp.patient_did_not_bring,
           mp.stock_validation_note,
+          mp.stock_validation_recorded_at,
+          mp.stock_validation_professional_id,
+          stock_prof.full_name AS stock_validation_professional_name,
           mp.intervention_notes,
           mp.intervention_error_type,
           mp.intervention_contact_status,
@@ -3267,6 +3364,7 @@ export async function updateMedicalPrescriptionValidation(
         INNER JOIN patients p ON p.id = mp.patient_id
         LEFT JOIN admissions a ON a.id = mp.admission_id
         LEFT JOIN teams t ON t.id = a.team_id
+        LEFT JOIN professionals stock_prof ON stock_prof.id = mp.stock_validation_professional_id
         LEFT JOIN professionals prof ON prof.id = mp.intervention_professional_id
         WHERE mp.id = $1
         LIMIT 1
@@ -3881,6 +3979,7 @@ export async function listMedicalPrescriptions(
   patientId?: number | null,
   options?: {
     backfillInterventionProfessionalLogin?: string | null;
+    backfillValidationProfessionalLogin?: string | null;
   }
 ): Promise<MedicalPrescriptionRecord[]> {
   await ensureDatabaseReady();
@@ -3893,6 +3992,14 @@ export async function listMedicalPrescriptions(
       await backfillLegacyInterventionProfessionalMetadata(
         client,
         options.backfillInterventionProfessionalLogin,
+        shouldFilterByPatientId ? Number(patientId) : null
+      );
+    }
+
+    if (options?.backfillValidationProfessionalLogin?.trim()) {
+      await backfillLegacyStockValidationProfessionalMetadata(
+        client,
+        options.backfillValidationProfessionalLogin,
         shouldFilterByPatientId ? Number(patientId) : null
       );
     }
@@ -3926,6 +4033,9 @@ export async function listMedicalPrescriptions(
         mp.manufacturer,
         mp.patient_did_not_bring,
         mp.stock_validation_note,
+        mp.stock_validation_recorded_at,
+        mp.stock_validation_professional_id,
+        stock_prof.full_name AS stock_validation_professional_name,
         mp.intervention_notes,
         mp.intervention_error_type,
         mp.intervention_contact_status,
@@ -3939,6 +4049,7 @@ export async function listMedicalPrescriptions(
       INNER JOIN patients p ON p.id = mp.patient_id
       LEFT JOIN admissions a ON a.id = mp.admission_id
       LEFT JOIN teams t ON t.id = a.team_id
+      LEFT JOIN professionals stock_prof ON stock_prof.id = mp.stock_validation_professional_id
       LEFT JOIN professionals prof ON prof.id = mp.intervention_professional_id
       ${shouldFilterByPatientId ? "WHERE mp.patient_id = $1" : ""}
       ORDER BY mp.created_at DESC, mp.id DESC
@@ -3954,12 +4065,13 @@ export async function listMedicalPrescriptions(
 
 function normalizeDashboardSection(
   section?: string | null
-): "professional" | "team" | "patient" | "medication" | "interventions" | "inpatients" {
+): "professional" | "team" | "patient" | "medication" | "interventions" | "validated-medications" | "inpatients" {
   switch (section) {
     case "team":
     case "patient":
     case "medication":
     case "interventions":
+    case "validated-medications":
     case "inpatients":
       return section;
     default:
@@ -4008,7 +4120,8 @@ export async function getDashboardData(
   const shouldLoadExamImports = isPatientDetailsPage;
   const shouldLoadRoundNotes = isPatientDetailsPage;
   const shouldLoadWorkflow = section === "inpatients";
-  const shouldLoadPrescriptions = isPatientDetailsPage || section === "interventions";
+  const shouldLoadPrescriptions =
+    isPatientDetailsPage || section === "interventions" || section === "validated-medications";
 
   const [
     currentProfessional,
@@ -4047,7 +4160,8 @@ export async function getDashboardData(
     shouldLoadWorkflow ? getInpatientWorkflowSnapshotByLogin(currentLogin) : Promise.resolve(null),
     shouldLoadPrescriptions
       ? listMedicalPrescriptions(isPatientDetailsPage ? selectedPatientId : null, {
-          backfillInterventionProfessionalLogin: currentLogin
+          backfillInterventionProfessionalLogin: currentLogin,
+          backfillValidationProfessionalLogin: currentLogin
         })
       : Promise.resolve([])
   ]);

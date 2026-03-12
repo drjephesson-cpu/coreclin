@@ -213,6 +213,13 @@ export async function PUT(
   const hasStockValidationNote = hasOwnProperty(body, "stockValidationNote");
   const stockValidationNote =
     typeof body.stockValidationNote === "string" ? body.stockValidationNote.trim() : "";
+  const hasStockValidationField =
+    hasQuantityTablets ||
+    hasLotNumber ||
+    hasExpirationDate ||
+    hasManufacturer ||
+    hasPatientDidNotBring ||
+    hasStockValidationNote;
   const hasInterventionNotes = hasOwnProperty(body, "interventionNotes");
   const interventionNotes =
     typeof body.interventionNotes === "string" ? body.interventionNotes.trim() : "";
@@ -334,6 +341,7 @@ export async function PUT(
       ...(hasManufacturer ? { manufacturer } : {}),
       ...(hasPatientDidNotBring ? { patientDidNotBring } : {}),
       ...(hasStockValidationNote ? { stockValidationNote } : {}),
+      ...(hasStockValidationField ? { responsibleLogin: session.username } : {}),
       ...(hasInterventionNotes ? { interventionNotes } : {}),
       ...(hasInterventionErrorType ? { interventionErrorType: safeInterventionErrorType } : {}),
       ...(hasInterventionContactStatus
