@@ -130,6 +130,27 @@ function formatWorkflowEditorLabel(workflow: InpatientWorkflowState): string {
   return workflow.updatedByProfessionalName ?? workflow.updatedByProfessionalLogin ?? "-";
 }
 
+function getTimestampValue(input: string | null | undefined): number {
+  if (!input) {
+    return 0;
+  }
+
+  const parsed = new Date(input).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isSupervisorReviewPending(
+  workflow: InpatientWorkflowState,
+  traineeActivityAt: string | null | undefined
+): boolean {
+  const traineeTimestamp = getTimestampValue(traineeActivityAt);
+  if (traineeTimestamp <= 0) {
+    return false;
+  }
+
+  return getTimestampValue(workflow.reviewedBySupervisorAt) < traineeTimestamp;
+}
+
 function getMandatoryInpatientRowClassName(status: InpatientWorkflowStatus): string {
   if (status === "Visitado") {
     return "dashboard-row-visited";
@@ -158,6 +179,7 @@ const INPATIENT_SIDEBAR_ITEMS = [
   { id: "all", label: "Todos" },
   { id: "team", label: "Por equipe" },
   { id: "mandatory", label: "Lista diária" },
+  { id: "trainees", label: "Estagiários" },
   { id: "discharged", label: "Pacientes de alta" }
 ] as const;
 
@@ -1249,6 +1271,18 @@ function normalizeInpatientWorkflowStoragePayload(
                   updatedByProfessionalLogin:
                     typeof workflow.updatedByProfessionalLogin === "string"
                       ? workflow.updatedByProfessionalLogin
+                      : null,
+                  reviewedBySupervisorName:
+                    typeof workflow.reviewedBySupervisorName === "string"
+                      ? workflow.reviewedBySupervisorName
+                      : null,
+                  reviewedBySupervisorLogin:
+                    typeof workflow.reviewedBySupervisorLogin === "string"
+                      ? workflow.reviewedBySupervisorLogin
+                      : null,
+                  reviewedBySupervisorAt:
+                    typeof workflow.reviewedBySupervisorAt === "string"
+                      ? workflow.reviewedBySupervisorAt
                       : null,
                   updatedAt:
                     typeof workflow.updatedAt === "string" ? workflow.updatedAt : new Date().toISOString()
@@ -3737,6 +3771,18 @@ export default function DashboardConsole({
     [currentLogin, currentProfessional]
   );
   const responsibleProfessionalName = currentProfessional?.fullName ?? currentLogin;
+  const supervisedTrainees = useMemo(
+    () =>
+      currentProfessional
+        ? professionals
+            .filter(
+              (professional) =>
+                professional.isTrainee && professional.supervisingPharmacistId === currentProfessional.id
+            )
+            .sort((first, second) => first.fullName.localeCompare(second.fullName, "pt-BR"))
+        : [],
+    [currentProfessional, professionals]
+  );
   const inpatientWorkflowStorageKey = useMemo(
     () => buildInpatientWorkflowStorageKey(currentLogin),
     [currentLogin]
@@ -3773,6 +3819,10 @@ export default function DashboardConsole({
     (Number.isInteger(selectedPatientNumericId) && selectedPatientNumericId > 0
       ? patients.find((patient) => patient.id === selectedPatientNumericId) ?? null
       : null);
+  const patientById = useMemo(
+    () => new Map(patients.map((patient) => [patient.id, patient] as const)),
+    [patients]
+  );
   const hasSelectedPatientDetailsLoaded = selectedPatientCachedDetails !== null;
   const selectedPatientBirthDate = normalizeAdmissionDateValue(selectedPatientProfileForm.birthDate) ?? "";
   const selectedPatientAgePreview = useMemo(
@@ -4321,6 +4371,49 @@ export default function DashboardConsole({
     [inpatientEntries, teamGroupById, workflowByInpatientKey]
   );
 
+  const traineeOverviewGroups = useMemo(() => {
+    return supervisedTrainees.map((trainee) => {
+      const rows = inpatientEntriesWithWorkflow
+        .map(({ entry, workflow, assignedTeamName }) => {
+          const patient = entry.patientId !== null ? patientById.get(entry.patientId) ?? null : null;
+          const latestAdmission = patient?.latestAdmission ?? null;
+          const traineeActivityAt =
+            latestAdmission?.responsibleProfessionalId === trainee.id ? latestAdmission.createdAt : null;
+
+          if (
+            !latestAdmission ||
+            latestAdmission.responsibleProfessionalId !== trainee.id ||
+            workflow.status === "Alta" ||
+            !isSupervisorReviewPending(workflow, traineeActivityAt)
+          ) {
+            return null;
+          }
+
+          return {
+            entry,
+            workflow,
+            assignedTeamName,
+            traineeActivityAt
+          };
+        })
+        .filter((row): row is NonNullable<typeof row> => row !== null)
+        .sort((first, second) => {
+          const timeDifference =
+            getTimestampValue(second.traineeActivityAt) - getTimestampValue(first.traineeActivityAt);
+          if (timeDifference !== 0) {
+            return timeDifference;
+          }
+
+          return first.entry.patientName.localeCompare(second.entry.patientName, "pt-BR");
+        });
+
+      return {
+        trainee,
+        rows
+      };
+    });
+  }, [inpatientEntriesWithWorkflow, patientById, supervisedTrainees]);
+
   const selectedInpatientEntry = useMemo(
     () =>
       selectedPatient !== null
@@ -4393,9 +4486,16 @@ export default function DashboardConsole({
       all: inpatients.length,
       team: teamOverviewRows.length,
       mandatory: mandatoryOverviewRows.length,
+      trainees: traineeOverviewGroups.reduce((total, group) => total + group.rows.length, 0),
       discharged: dischargedOverviewRows.length
     }),
-    [dischargedOverviewRows.length, inpatients.length, mandatoryOverviewRows.length, teamOverviewRows.length]
+    [
+      dischargedOverviewRows.length,
+      inpatients.length,
+      mandatoryOverviewRows.length,
+      teamOverviewRows.length,
+      traineeOverviewGroups
+    ]
   );
 
   const interventionReportRows = useMemo(() => {
@@ -8579,6 +8679,34 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     });
   }
 
+  function handleMarkTraineeReview(inpatientKey: string): void {
+    setWorkflowByInpatientKey((current) => {
+      const now = new Date().toISOString();
+      const currentWorkflow =
+        current[inpatientKey] ??
+        ({
+          status: "Pendente",
+          assignedTeamId: null,
+          mandatory: true,
+          firstVisitCompletedAt: null,
+          evolutionGeneratedAt: null,
+          updatedByProfessionalName: null,
+          updatedByProfessionalLogin: null,
+          updatedAt: now
+        } satisfies InpatientWorkflowState);
+
+      return {
+        ...current,
+        [inpatientKey]: {
+          ...currentWorkflow,
+          reviewedBySupervisorName: currentWorkflowEditorName,
+          reviewedBySupervisorLogin: currentWorkflowEditorLogin,
+          reviewedBySupervisorAt: now
+        }
+      };
+    });
+  }
+
   async function handleGenerateMandatoryEvolution(entry: InpatientEntry): Promise<void> {
     const currentWorkflow = resolveInpatientWorkflow(entry);
     if (!currentWorkflow.firstVisitCompletedAt && currentWorkflow.status !== "Concluído") {
@@ -9977,6 +10105,92 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 </tbody>
                               </table>
                             </div>
+                          </div>
+                        </section>
+                      ) : null}
+
+                      {!effectivePatientPageMode && inpatientOverviewMode === "trainees" ? (
+                        <section className="dashboard-subsection">
+                          <div className="dashboard-subsection-block">
+                            <h3>Estagiários</h3>
+                            <p className="dashboard-muted">
+                              Pacientes vinculados aos seus estagiários ficam nesta lista até você marcar
+                              que revisou.
+                            </p>
+
+                            {supervisedTrainees.length === 0 ? (
+                              <p className="dashboard-muted">
+                                Nenhum estagiário está vinculado ao seu login no momento.
+                              </p>
+                            ) : traineeOverviewGroups.every((group) => group.rows.length === 0) ? (
+                              <p className="dashboard-muted">
+                                Nenhum paciente pendente de revisão dos seus estagiários.
+                              </p>
+                            ) : (
+                              traineeOverviewGroups.map((group) => (
+                                <div key={group.trainee.id} className="dashboard-subsection-block">
+                                  <h3>
+                                    {group.trainee.fullName} ({group.rows.length})
+                                  </h3>
+                                  {group.rows.length === 0 ? (
+                                    <p className="dashboard-muted">
+                                      Nenhum paciente pendente de revisão para este estagiário.
+                                    </p>
+                                  ) : (
+                                    <div className="dashboard-table-wrap">
+                                      <table className="dashboard-table">
+                                        <thead>
+                                          <tr>
+                                            <th>Paciente</th>
+                                            <th>Prontuário</th>
+                                            <th>Leito</th>
+                                            <th>Equipe</th>
+                                            <th>Status</th>
+                                            <th>Feito em</th>
+                                            <th>Revisão</th>
+                                            <th>Detalhes</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {group.rows.map(({ entry, workflow, assignedTeamName, traineeActivityAt }) => (
+                                            <tr key={`${group.trainee.id}-${entry.key}`}>
+                                              <td>{entry.patientName}</td>
+                                              <td>{entry.chartNumber || "-"}</td>
+                                              <td>{entry.bed || "-"}</td>
+                                              <td>{assignedTeamName ?? formatCanonicalTeamName(entry.teamName)}</td>
+                                              <td>{workflow.status}</td>
+                                              <td>{traineeActivityAt ? formatTimestamp(traineeActivityAt) : "-"}</td>
+                                              <td>
+                                                <button
+                                                  type="button"
+                                                  className="dashboard-mini-button"
+                                                  onClick={() => handleMarkTraineeReview(entry.key)}
+                                                >
+                                                  Marcar revisado
+                                                </button>
+                                              </td>
+                                              <td>
+                                                {entry.patientId ? (
+                                                  <button
+                                                    type="button"
+                                                    className="dashboard-link-button"
+                                                    onClick={() => openPatientDetails(entry.patientId!)}
+                                                  >
+                                                    Abrir
+                                                  </button>
+                                                ) : (
+                                                  "-"
+                                                )}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  )}
+                                </div>
+                              ))
+                            )}
                           </div>
                         </section>
                       ) : null}

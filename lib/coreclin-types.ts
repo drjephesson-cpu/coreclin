@@ -128,6 +128,9 @@ export type InpatientWorkflowState = {
   evolutionGeneratedAt: string | null;
   updatedByProfessionalName?: string | null;
   updatedByProfessionalLogin?: string | null;
+  reviewedBySupervisorName?: string | null;
+  reviewedBySupervisorLogin?: string | null;
+  reviewedBySupervisorAt?: string | null;
   updatedAt: string;
 };
 

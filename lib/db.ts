@@ -4533,10 +4533,11 @@ function normalizeDashboardSection(
 
 function normalizeDashboardInpatientMode(
   inpatientMode?: string | null
-): "all" | "team" | "mandatory" | "discharged" {
+): "all" | "team" | "mandatory" | "trainees" | "discharged" {
   switch (inpatientMode) {
     case "team":
     case "mandatory":
+    case "trainees":
     case "discharged":
       return inpatientMode;
     default:
@@ -4560,7 +4561,7 @@ export async function getDashboardData(
       : null;
   const section = normalizeDashboardSection(options?.section);
   const isPatientDetailsPage = section === "inpatients" && selectedPatientId !== null;
-  const shouldLoadProfessionals = section === "professional";
+  const shouldLoadProfessionals = section === "professional" || section === "inpatients";
   const shouldLoadTeams = section === "team" || section === "patient" || section === "inpatients";
   const shouldLoadPatients = section === "patient" || section === "inpatients";
   const shouldLoadInpatientOverviewEntries = section === "inpatients";
@@ -4595,7 +4596,7 @@ export async function getDashboardData(
     shouldLoadTeams ? listTeams() : Promise.resolve([]),
     shouldLoadPatients
       ? listPatients(isPatientDetailsPage ? selectedPatientId : null, {
-          includeLatestDetails: section === "patient" || isPatientDetailsPage
+          includeLatestDetails: section === "patient" || isPatientDetailsPage || section === "inpatients"
         })
       : Promise.resolve([]),
     shouldLoadInpatientOverviewEntries ? listInpatientOverviewEntries() : Promise.resolve([]),
