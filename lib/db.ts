@@ -1559,7 +1559,7 @@ export async function authenticateProfessional(
     `
       SELECT
         ${PROFESSIONAL_SELECT_FIELDS},
-        password_hash
+        p.password_hash
       FROM professionals p
       LEFT JOIN professionals supervisor ON supervisor.id = p.supervising_pharmacist_id
       WHERE p.login = $1
