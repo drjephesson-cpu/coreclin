@@ -445,6 +445,7 @@ function createEmptyAdmissionFormState() {
     admissionDate: "",
     bed: "",
     admissionReason: "",
+    deniesContinuousMedicationUse: false,
     admissionSummary: "",
     roundSummary: "",
     roundSummaryDate: "",
@@ -911,24 +912,27 @@ function buildMandatoryEvolutionPreviewText(payload: MandatoryEvolutionPreviewPa
   pushSection("#FONTE INFORMAÇÃO", informationSourceSummary ? [informationSourceSummary] : []);
 
   const prescriptionGroups = groupPrescriptionRecordsBySet(payload.prescriptions);
-  pushSection(
-    "#MEDICAMENTO DE USO CONTÍNUO E RECONCILIAÇÃO",
-    payload.priorMedications.map((priorMedication) => {
-      const history = prescriptionGroups.map((group, groupIndex) =>
-        resolvePriorMedicationReconciliationForGroup(priorMedication, group, groupIndex)
-      );
-      const latestReconciled = history[0]?.reconciled ?? null;
-      const scheduleParts = [
-        priorMedication.dose > 0 ? `${formatNumber(priorMedication.dose)} ${priorMedication.doseUnit}` : "",
-        priorMedication.frequency.trim(),
-        priorMedication.shifts.trim()
-      ].filter((part) => part.length > 0);
-      const scheduleText = scheduleParts.length > 0 ? ` (${scheduleParts.join(" | ")})` : "";
-      const reconciledText =
-        latestReconciled === null ? "Não avaliado" : latestReconciled ? "Sim" : "Não";
-      return `${priorMedication.medicationName}${scheduleText} | Reconciliado: ${reconciledText}`;
-    })
-  );
+  const priorMedicationLines =
+    payload.priorMedications.length > 0
+      ? payload.priorMedications.map((priorMedication) => {
+          const history = prescriptionGroups.map((group, groupIndex) =>
+            resolvePriorMedicationReconciliationForGroup(priorMedication, group, groupIndex)
+          );
+          const latestReconciled = history[0]?.reconciled ?? null;
+          const scheduleParts = [
+            priorMedication.dose > 0 ? `${formatNumber(priorMedication.dose)} ${priorMedication.doseUnit}` : "",
+            priorMedication.frequency.trim(),
+            priorMedication.shifts.trim()
+          ].filter((part) => part.length > 0);
+          const scheduleText = scheduleParts.length > 0 ? ` (${scheduleParts.join(" | ")})` : "";
+          const reconciledText =
+            latestReconciled === null ? "Não avaliado" : latestReconciled ? "Sim" : "Não";
+          return `${priorMedication.medicationName}${scheduleText} | Reconciliado: ${reconciledText}`;
+        })
+      : latestAdmission?.deniesContinuousMedicationUse
+        ? ["Paciente nega uso de medicamentos de uso contínuo (MUC)."]
+        : [];
+  pushSection("#MEDICAMENTO DE USO CONTÍNUO E RECONCILIAÇÃO", priorMedicationLines);
 
   pushSection(
     "#VALIDAÇÃO DE MEDICAMENTOS",
@@ -1301,28 +1305,27 @@ function mergeMandatoryEntriesIntoPayload(
 ): InpatientWorkflowStoragePayload {
   const nextTrackedEntriesByKey = new Map(payload.trackedEntries.map((entry) => [entry.key, entry]));
   for (const manualEntry of manualEntries) {
-    nextTrackedEntriesByKey.set(manualEntry.key, manualEntry);
+    if (!nextTrackedEntriesByKey.has(manualEntry.key)) {
+      nextTrackedEntriesByKey.set(manualEntry.key, manualEntry);
+    }
   }
 
   const nextWorkflowByKey = { ...payload.workflowByKey };
   for (const [entryKey, assignedTeamId] of entriesToPending.entries()) {
     const currentWorkflow = nextWorkflowByKey[entryKey];
-    const baseWorkflow: InpatientWorkflowState = currentWorkflow ?? {
-      status: "Pendente",
-      assignedTeamId: null,
-      mandatory: true,
-      firstVisitCompletedAt: null,
-      evolutionGeneratedAt: null,
-      updatedByProfessionalName: null,
-      updatedByProfessionalLogin: null,
-      updatedAt: new Date().toISOString()
-    };
+    if (currentWorkflow) {
+      nextWorkflowByKey[entryKey] = {
+        ...currentWorkflow,
+        mandatory: true,
+        assignedTeamId: currentWorkflow.assignedTeamId ?? assignedTeamId ?? null
+      };
+      continue;
+    }
 
     nextWorkflowByKey[entryKey] = {
-      ...baseWorkflow,
       status: "Pendente",
-      mandatory: true,
       assignedTeamId: assignedTeamId ?? null,
+      mandatory: true,
       firstVisitCompletedAt: null,
       evolutionGeneratedAt: null,
       updatedByProfessionalName,
@@ -4577,6 +4580,7 @@ export default function DashboardConsole({
         latestAdmission?.admissionReason && latestAdmission.admissionReason !== "Pendente de preenchimento"
           ? latestAdmission.admissionReason
           : "",
+      deniesContinuousMedicationUse: latestAdmission?.deniesContinuousMedicationUse ?? false,
       admissionSummary: latestAdmission?.admissionSummary ?? "",
       roundSummary: "",
       roundSummaryDate: getCurrentFormattedDateValue(),
@@ -4702,6 +4706,20 @@ export default function DashboardConsole({
     }
 
     const getAllergySuggestionScore = (item: AllergySuggestionItem): number => {
+      const hasDirectValueMatch =
+        item.normalizedValue === normalizedQuery ||
+        item.normalizedValue.startsWith(normalizedQuery) ||
+        hasTokenBoundaryMatch(item.normalizedValue, normalizedQuery) ||
+        hasConceptTermMatch(item.normalizedValue, normalizedQuery);
+      const isShortAliasOnlyCandidate =
+        item.normalizedValue.length <= 4 &&
+        normalizedQuery.length >= 5 &&
+        !hasDirectValueMatch;
+
+      if (isShortAliasOnlyCandidate) {
+        return 0;
+      }
+
       let score = 0;
 
       if (item.normalizedValue === normalizedQuery) {
@@ -4714,6 +4732,10 @@ export default function DashboardConsole({
         score += 620;
       } else if (hasConceptTermMatch(item.normalizedSearch, normalizedQuery)) {
         score += 420;
+      }
+
+      if (!hasDirectValueMatch && item.normalizedValue.length <= normalizedQuery.length / 2) {
+        score -= 280;
       }
 
       if (item.source === "medication") {
@@ -5855,6 +5877,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     [priorMedicationRows, priorMedicationReconciliationForm, selectedPatientPrescriptionGroups]
   );
 
+  const hasPriorMedicationNegationChange =
+    admissionForm.deniesContinuousMedicationUse !==
+    (selectedCurrentAdmission?.deniesContinuousMedicationUse ?? false);
+
   const medicationValidationEditableRows = useMemo(
     () =>
       selectedPatientMedicationValidationRows.map((row) => {
@@ -5988,20 +6014,23 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             : "";
     pushSection("#FONTE INFORMAÇÃO", informationSourceSummary ? [informationSourceSummary] : []);
 
-    pushSection(
-      "#MEDICAMENTO DE USO CONTÍNUO E RECONCILIAÇÃO",
-      priorMedicationEditableRows.map((row) => {
-        const scheduleParts = [
-          row.formState.dose.trim(),
-          row.formState.frequency.trim(),
-          row.formState.shifts.trim()
-        ].filter((part) => part.length > 0);
-        const scheduleText = scheduleParts.length > 0 ? ` (${scheduleParts.join(" | ")})` : "";
-        const reconciledText =
-          row.latestReconciled === null ? "Não avaliado" : row.latestReconciled ? "Sim" : "Não";
-        return `${row.priorMedication.medicationName}${scheduleText} | Reconciliado: ${reconciledText}`;
-      })
-    );
+    const priorMedicationLines =
+      priorMedicationEditableRows.length > 0
+        ? priorMedicationEditableRows.map((row) => {
+            const scheduleParts = [
+              row.formState.dose.trim(),
+              row.formState.frequency.trim(),
+              row.formState.shifts.trim()
+            ].filter((part) => part.length > 0);
+            const scheduleText = scheduleParts.length > 0 ? ` (${scheduleParts.join(" | ")})` : "";
+            const reconciledText =
+              row.latestReconciled === null ? "Não avaliado" : row.latestReconciled ? "Sim" : "Não";
+            return `${row.priorMedication.medicationName}${scheduleText} | Reconciliado: ${reconciledText}`;
+          })
+        : admissionForm.deniesContinuousMedicationUse
+          ? ["Paciente nega uso de medicamentos de uso contínuo (MUC)."]
+          : [];
+    pushSection("#MEDICAMENTO DE USO CONTÍNUO E RECONCILIAÇÃO", priorMedicationLines);
 
     pushSection(
       "#VALIDAÇÃO DE MEDICAMENTOS",
@@ -6051,6 +6080,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     return sections.join("\n").trim();
   }, [
     admissionForm.heightCm,
+    admissionForm.deniesContinuousMedicationUse,
     admissionForm.interviewInformationQuality,
     admissionForm.interviewInformationSourceName,
     admissionForm.interviewInformationSourceRelationship,
@@ -6954,7 +6984,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     missingAdmissionMessage?: string;
     successMessage?: string;
     connectionErrorMessage?: string;
-  }): Promise<void> {
+  }): Promise<boolean> {
     setAdmissionFeedback(null);
     setEvolutionFeedback(null);
 
@@ -6963,7 +6993,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         type: "error",
         message: "Selecione um paciente internado para cadastrar a internação."
       });
-      return;
+      return false;
     }
 
     if (options?.requireExistingAdmission && !admissionForm.admissionId.trim()) {
@@ -6973,7 +7003,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           options.missingAdmissionMessage ??
           "Salve primeiro as informações da internação para registrar a entrevista."
       });
-      return;
+      return false;
     }
 
     const normalizedAdmissionDate = normalizeAdmissionDateValue(admissionForm.admissionDate);
@@ -6982,7 +7012,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         type: "error",
         message: "Informe a admissão no formato DD/MM/AAAA."
       });
-      return;
+      return false;
     }
 
     const normalizedBirthDate = selectedPatientProfileForm.birthDate.trim()
@@ -6996,7 +7026,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         type: "error",
         message: "Informe a data de nascimento no formato DD/MM/AAAA."
       });
-      return;
+      return false;
     }
 
     setAdmissionLoading(true);
@@ -7028,7 +7058,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             type: "error",
             message: patientResult.message ?? "Falha ao atualizar os dados do paciente."
           });
-          return;
+          return false;
         }
 
         upsertPatientRecordLocally(patientResult.patient);
@@ -7047,7 +7077,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           patientId: selectedPatient.id,
           teamId: admissionForm.teamId ? Number(admissionForm.teamId) : undefined,
           weightKg: admissionForm.weightKg ? Number(admissionForm.weightKg) : undefined,
-          heightCm: admissionForm.heightCm ? Number(admissionForm.heightCm) : undefined
+          heightCm: admissionForm.heightCm ? Number(admissionForm.heightCm) : undefined,
+          deniesContinuousMedicationUse: admissionForm.deniesContinuousMedicationUse
         })
       });
 
@@ -7060,7 +7091,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           type: "error",
           message: result.message ?? "Falha ao salvar internação."
         });
-        return;
+        return false;
       }
 
       let autofillDetails = "";
@@ -7140,11 +7171,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       });
       upsertAdmissionRecordLocally(savedAdmission, selectedPatient);
       setAdmissionForm(createEmptyAdmissionFormState());
+      return true;
     } catch {
       setAdmissionFeedback({
         type: "error",
         message: options?.connectionErrorMessage ?? "Erro de conexão ao salvar internação."
       });
+      return false;
     } finally {
       setAdmissionLoading(false);
     }
@@ -7674,6 +7707,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         expirationDate: "",
         manufacturer: ""
       }));
+      setAdmissionForm((current) => ({
+        ...current,
+        deniesContinuousMedicationUse: false
+      }));
       appendPriorMedicationLocally(result.priorMedication);
     } catch {
       setPriorMedicationFeedback({
@@ -7808,7 +7845,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
 
     const changedRows = priorMedicationEditableRows.filter((row) => row.isDirty);
-    if (changedRows.length === 0) {
+    const shouldPersistMucNegation = hasPriorMedicationNegationChange;
+    if (changedRows.length === 0 && !shouldPersistMucNegation) {
       setPriorMedicationFeedback({
         type: "success",
         message: "Nenhuma alteração pendente nos medicamentos prévios."
@@ -7820,6 +7858,35 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setPriorMedicationBatchSaving(true);
 
     try {
+      if (shouldPersistMucNegation) {
+        if (!admissionForm.admissionId.trim()) {
+          setPriorMedicationFeedback({
+            type: "error",
+            message: "Salve primeiro a internação para marcar nega uso de MUC."
+          });
+          return;
+        }
+
+        const savedAdmission = await persistAdmissionForm({
+          analyzeSummary: false,
+          requireExistingAdmission: true,
+          missingAdmissionMessage: "Salve primeiro a internação para marcar nega uso de MUC.",
+          successMessage: "Marcador de MUC atualizado.",
+          connectionErrorMessage: "Erro de conexão ao salvar o marcador de MUC."
+        });
+        if (!savedAdmission) {
+          return;
+        }
+      }
+
+      if (changedRows.length === 0) {
+        setPriorMedicationFeedback({
+          type: "success",
+          message: "Marcador de nega uso de MUC atualizado."
+        });
+        return;
+      }
+
       const learnedMedications: MedicationRecord[] = [];
       const results = await Promise.allSettled(
         changedRows.map((row) =>
@@ -7859,7 +7926,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
       setPriorMedicationFeedback({
         type: "success",
-        message: `${changedRows.length} medicamento(s) prévio(s) atualizado(s).`
+        message: `${
+          changedRows.length
+        } medicamento(s) prévio(s) atualizado(s).${
+          shouldPersistMucNegation ? " Marcador de MUC também salvo." : ""
+        }`
       });
       successfulUpdates.forEach((priorMedication) => {
         updatePriorMedicationLocally(priorMedication);
@@ -8703,6 +8774,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             : []
         )
       );
+      const trackedEntriesByKey = new Map(
+        trackedInpatientEntries.map((entry) => [entry.key, entry] as const)
+      );
 
       const nextManualEntriesByKey = new Map<string, InpatientEntry>();
       const entriesToPending = new Map<string, number | null>();
@@ -8784,6 +8858,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
         const entryKey = `patient-${patientRecord.id}`;
         const admissionKey = `${patientRecord.id}:${admissionDate}:${normalizeSearchValue(bed)}`;
+        const existingTrackedEntry =
+          nextManualEntriesByKey.get(entryKey) ?? trackedEntriesByKey.get(entryKey) ?? null;
+        if (existingTrackedEntry) {
+          nextManualEntriesByKey.set(entryKey, existingTrackedEntry);
+          linkedCount += 1;
+          continue;
+        }
+
         const matchedActiveInpatient = activeInpatientByPatientId.get(patientRecord.id) ?? null;
         const matchedTeamId = matchedActiveInpatient?.teamId ?? null;
         const matchedTeamName = matchedActiveInpatient?.teamName ?? null;
@@ -11042,6 +11124,31 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 quantidade por horário no padrão da tomada (ex.: 1-1-1).
                               </p>
 
+                              <label className="dashboard-inline-toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={admissionForm.deniesContinuousMedicationUse}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({
+                                      ...current,
+                                      deniesContinuousMedicationUse: event.target.checked
+                                    }))
+                                  }
+                                />
+                                Paciente nega uso de MUC
+                              </label>
+
+                              <p className="dashboard-muted">
+                                Use esse marcador quando não houver medicamento de uso prévio para registrar. Ele
+                                entra automaticamente na evolução após salvar.
+                              </p>
+
+                              {!admissionForm.admissionId.trim() ? (
+                                <p className="dashboard-muted">
+                                  Salve primeiro a internação para persistir o marcador de nega uso de MUC.
+                                </p>
+                              ) : null}
+
                               <div className="dashboard-two-columns">
                                 <input
                                   value={
@@ -11293,7 +11400,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 type="button"
                                 className="dashboard-mini-button"
                                 onClick={handleSaveAllPriorMedicationReconciliation}
-                                disabled={priorMedicationBatchSaving || priorMedicationEditableRows.length === 0}
+                                disabled={
+                                  priorMedicationBatchSaving ||
+                                  (priorMedicationEditableRows.length === 0 &&
+                                    !hasPriorMedicationNegationChange)
+                                }
                               >
                                 {priorMedicationBatchSaving ? "Salvando todos..." : "Salvar todos"}
                               </button>

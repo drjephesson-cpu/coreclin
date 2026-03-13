@@ -65,6 +65,19 @@ function parseOptionalTrimmedString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function parseBooleanFlag(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "true" || normalized === "1" || normalized === "sim";
+  }
+
+  return false;
+}
+
 function buildIsoAdmissionDate(year: number, month: number, day: number): string | null {
   const parsed = new Date(year, month - 1, day, 12, 0, 0, 0);
   if (
@@ -113,6 +126,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const admissionDate = normalizeAdmissionDate(typeof body.admissionDate === "string" ? body.admissionDate : "");
   const bed = typeof body.bed === "string" ? body.bed.trim() : "";
   const admissionReason = typeof body.admissionReason === "string" ? body.admissionReason.trim() : "";
+  const deniesContinuousMedicationUse = parseBooleanFlag(body.deniesContinuousMedicationUse);
   const admissionSummary = typeof body.admissionSummary === "string" ? body.admissionSummary.trim() : "";
   const roundSummary = typeof body.roundSummary === "string" ? body.roundSummary.trim() : "";
   const roundSummaryDate = normalizeAdmissionDate(
@@ -201,6 +215,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       admissionDate,
       bed,
       admissionReason,
+      deniesContinuousMedicationUse,
       admissionSummary,
       roundSummary,
       roundSummaryDate,
@@ -240,6 +255,7 @@ export async function PUT(request: Request): Promise<NextResponse> {
   const admissionDate = normalizeAdmissionDate(typeof body.admissionDate === "string" ? body.admissionDate : "");
   const bed = typeof body.bed === "string" ? body.bed.trim() : "";
   const admissionReason = typeof body.admissionReason === "string" ? body.admissionReason.trim() : "";
+  const deniesContinuousMedicationUse = parseBooleanFlag(body.deniesContinuousMedicationUse);
   const admissionSummary = typeof body.admissionSummary === "string" ? body.admissionSummary.trim() : "";
   const roundSummary = typeof body.roundSummary === "string" ? body.roundSummary.trim() : "";
   const roundSummaryDate = normalizeAdmissionDate(
@@ -324,6 +340,7 @@ export async function PUT(request: Request): Promise<NextResponse> {
       admissionDate,
       bed,
       admissionReason,
+      deniesContinuousMedicationUse,
       admissionSummary,
       roundSummary,
       roundSummaryDate,

@@ -82,6 +82,7 @@ export type CreateAdmissionInput = {
   admissionDate: string;
   bed: string;
   admissionReason?: string | null;
+  deniesContinuousMedicationUse?: boolean;
   admissionSummary?: string | null;
   roundSummary?: string | null;
   roundSummaryDate?: string | null;
@@ -108,6 +109,7 @@ export type UpdateAdmissionInput = {
   admissionDate: string;
   bed: string;
   admissionReason?: string | null;
+  deniesContinuousMedicationUse?: boolean;
   admissionSummary?: string | null;
   roundSummary?: string | null;
   roundSummaryDate?: string | null;
@@ -452,6 +454,7 @@ function mapAdmission(row: DbRow): AdmissionRecord {
     admissionDate: String(row.admission_date ?? ""),
     bed: String(row.bed ?? ""),
     admissionReason: String(row.admission_reason ?? ""),
+    deniesContinuousMedicationUse: Boolean(row.denies_continuous_medication_use),
     admissionSummary: row.admission_summary === null ? null : String(row.admission_summary ?? ""),
     roundSummary: row.round_summary === null ? null : String(row.round_summary ?? ""),
     roundSummaryDate: row.round_summary_date === null ? null : String(row.round_summary_date),
@@ -851,6 +854,9 @@ function mapPatient(row: DbRow): PatientRecord {
           admissionDate: String(row.latest_admission_date ?? ""),
           bed: String(row.latest_admission_bed ?? ""),
           admissionReason: String(row.latest_admission_reason ?? ""),
+          deniesContinuousMedicationUse: Boolean(
+            row.latest_admission_denies_continuous_medication_use
+          ),
           admissionSummary:
             row.latest_admission_summary === null ? null : String(row.latest_admission_summary ?? ""),
           roundSummary:
@@ -1085,6 +1091,7 @@ async function setupDatabase(): Promise<void> {
       admission_date DATE NOT NULL,
       bed TEXT NOT NULL,
       admission_reason TEXT NOT NULL,
+      denies_continuous_medication_use BOOLEAN NOT NULL DEFAULT FALSE,
       admission_summary TEXT,
       round_summary TEXT,
       round_summary_date DATE,
@@ -1278,6 +1285,9 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE admissions
     ADD COLUMN IF NOT EXISTS admission_import_excerpt TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS denies_continuous_medication_use BOOLEAN NOT NULL DEFAULT FALSE;
 
     ALTER TABLE admissions
     ADD COLUMN IF NOT EXISTS interview_information_quality TEXT;
@@ -2499,6 +2509,7 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
           admission_date,
           bed,
           admission_reason,
+          denies_continuous_medication_use,
           admission_summary,
           round_summary,
           round_summary_date,
@@ -2515,7 +2526,7 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
           team_id,
           responsible_professional_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
         RETURNING id
       `,
       [
@@ -2523,6 +2534,7 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
         input.admissionDate,
         input.bed.trim(),
         input.admissionReason?.trim() || "Pendente de preenchimento",
+        input.deniesContinuousMedicationUse === true,
         input.admissionSummary?.trim() || null,
         input.roundSummary?.trim() || null,
         input.roundSummaryDate?.trim() || null,
@@ -2605,20 +2617,21 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
           admission_date = $2,
           bed = $3,
           admission_reason = $4,
-          admission_summary = $5,
-          round_summary = $6,
-          round_summary_date = $7,
-          admission_import_excerpt = $8,
-          interview_information_quality = $9,
-          interview_information_source_type = $10,
-          interview_information_source_name = $11,
-          interview_information_source_relationship = $12,
-          interview_intervention_motive = $13,
-          interview_subjective = $14,
-          interview_relevant_symptoms = $15,
-          interview_pending_issues = $16,
-          interview_plan = $17,
-          team_id = $18
+          denies_continuous_medication_use = $5,
+          admission_summary = $6,
+          round_summary = $7,
+          round_summary_date = $8,
+          admission_import_excerpt = $9,
+          interview_information_quality = $10,
+          interview_information_source_type = $11,
+          interview_information_source_name = $12,
+          interview_information_source_relationship = $13,
+          interview_intervention_motive = $14,
+          interview_subjective = $15,
+          interview_relevant_symptoms = $16,
+          interview_pending_issues = $17,
+          interview_plan = $18,
+          team_id = $19
         WHERE id = $1
         RETURNING id, patient_id
       `,
@@ -2627,6 +2640,7 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
         input.admissionDate,
         input.bed.trim(),
         input.admissionReason?.trim() || "Pendente de preenchimento",
+        input.deniesContinuousMedicationUse === true,
         input.admissionSummary?.trim() || null,
         input.roundSummary?.trim() || null,
         input.roundSummaryDate?.trim() || null,
@@ -3879,6 +3893,7 @@ export async function listPatients(
       la.admission_date::text AS latest_admission_date,
       la.bed AS latest_admission_bed,
       la.admission_reason AS latest_admission_reason,
+      la.denies_continuous_medication_use AS latest_admission_denies_continuous_medication_use,
       la.admission_summary AS latest_admission_summary,
       la.round_summary AS latest_admission_round_summary,
       la.round_summary_date::text AS latest_admission_round_summary_date,
@@ -3910,6 +3925,7 @@ export async function listPatients(
       NULL::text AS latest_admission_date,
       NULL::text AS latest_admission_bed,
       NULL::text AS latest_admission_reason,
+      NULL::boolean AS latest_admission_denies_continuous_medication_use,
       NULL::text AS latest_admission_summary,
       NULL::text AS latest_admission_round_summary,
       NULL::text AS latest_admission_round_summary_date,
@@ -3945,6 +3961,7 @@ export async function listPatients(
         a.admission_date,
         a.bed,
         a.admission_reason,
+        a.denies_continuous_medication_use,
         a.admission_summary,
         a.round_summary,
         a.round_summary_date,
@@ -4071,6 +4088,7 @@ export async function listRecentAdmissions(
         a.admission_date::text AS admission_date,
         a.bed,
         a.admission_reason,
+        a.denies_continuous_medication_use,
         a.admission_summary,
         a.round_summary,
         a.round_summary_date::text AS round_summary_date,
@@ -4136,6 +4154,7 @@ async function getAdmissionById(admissionId: number): Promise<AdmissionRecord | 
         a.admission_date::text AS admission_date,
         a.bed,
         a.admission_reason,
+        a.denies_continuous_medication_use,
         a.admission_summary,
         a.round_summary,
         a.round_summary_date::text AS round_summary_date,

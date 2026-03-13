@@ -185,6 +185,7 @@ export type AdmissionRecord = {
   admissionDate: string;
   bed: string;
   admissionReason: string;
+  deniesContinuousMedicationUse: boolean;
   admissionSummary: string | null;
   roundSummary: string | null;
   roundSummaryDate: string | null;
