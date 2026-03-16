@@ -227,6 +227,11 @@ export type AddMedicalPrescriptionInput = {
   externalValidationCandidate?: boolean;
 };
 
+export type RemoveMedicalPrescriptionSetInput = {
+  patientId: number;
+  prescriptionIds: number[];
+};
+
 export type AddPatientExamImportInput = {
   patientId: number;
   fileName: string;
@@ -3819,6 +3824,65 @@ export async function addMedicalPrescription(
     if (postgresError.code === "23503") {
       throw new Error("Paciente, internação ou medicamento inválido.");
     }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function removeMedicalPrescriptionSet(
+  input: RemoveMedicalPrescriptionSetInput
+): Promise<number[]> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await ensurePatientExists(client, input.patientId);
+
+    const prescriptionIds = Array.from(
+      new Set(
+        input.prescriptionIds.filter(
+          (value): value is number => Number.isInteger(value) && value > 0
+        )
+      )
+    );
+
+    if (prescriptionIds.length === 0) {
+      throw new Error("Nenhuma linha válida foi informada para apagar a prescrição.");
+    }
+
+    const existingResult = await client.query(
+      `
+        SELECT id
+        FROM medical_prescriptions
+        WHERE patient_id = $1 AND id = ANY($2::int[])
+      `,
+      [input.patientId, prescriptionIds]
+    );
+
+    if (existingResult.rows.length !== prescriptionIds.length) {
+      throw new Error("Algumas linhas da prescrição não pertencem a este paciente.");
+    }
+
+    const deletedResult = await client.query(
+      `
+        DELETE FROM medical_prescriptions
+        WHERE patient_id = $1 AND id = ANY($2::int[])
+        RETURNING id
+      `,
+      [input.patientId, prescriptionIds]
+    );
+
+    if (deletedResult.rowCount === 0) {
+      throw new Error("Nenhuma linha da prescrição foi encontrada para exclusão.");
+    }
+
+    await client.query("COMMIT");
+    return deletedResult.rows.map((row) => toNumber((row as DbRow).id));
+  } catch (error) {
+    await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();

@@ -667,6 +667,14 @@ function getPrescriptionReferenceDateKey(prescription: MedicalPrescriptionRecord
   );
 }
 
+function buildPrescriptionGroupKey(prescription: MedicalPrescriptionRecord): string {
+  return [
+    prescription.admissionId ?? "sem-admissao",
+    getPrescriptionReferenceDateKey(prescription),
+    prescription.validationStatus ?? "sem-status"
+  ].join("|");
+}
+
 function getPrescriptionRecordSortTime(prescription: MedicalPrescriptionRecord): number {
   return new Date(
     prescription.validationStartAt ?? prescription.validationEndAt ?? prescription.createdAt
@@ -771,11 +779,7 @@ function groupPrescriptionRecordsBySet(
   >();
 
   for (const prescription of prescriptions) {
-    const key = [
-      prescription.admissionId ?? "sem-admissao",
-      getPrescriptionReferenceDateKey(prescription),
-      prescription.validationStatus ?? "sem-status"
-    ].join("|");
+    const key = buildPrescriptionGroupKey(prescription);
 
     const currentGroup = groups.get(key);
     if (currentGroup) {
@@ -3674,6 +3678,7 @@ export default function DashboardConsole({
   const [prescriptionInterventionOpenId, setPrescriptionInterventionOpenId] = useState<number | null>(
     null
   );
+  const [prescriptionGroupRemovingKey, setPrescriptionGroupRemovingKey] = useState<string | null>(null);
   const [prescriptionInterventionSavingId, setPrescriptionInterventionSavingId] = useState<number | null>(
     null
   );
@@ -6457,6 +6462,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }));
   }
 
+  function removePrescriptionSetLocally(patientId: number, prescriptionIds: number[]): void {
+    const idsToRemove = new Set(prescriptionIds);
+    setPrescriptions((current) => current.filter((prescription) => !idsToRemove.has(prescription.id)));
+    mutateCachedPatientDetails(patientId, (details) => ({
+      ...details,
+      prescriptions: details.prescriptions.filter((prescription) => !idsToRemove.has(prescription.id))
+    }));
+  }
+
   function appendExamImportLocally(nextExamImport: PatientExamImportRecord): void {
     setExamImports((current) => upsertRecordById(current, nextExamImport));
     mutateCachedPatientDetails(nextExamImport.patientId, (details) => ({
@@ -8431,6 +8445,76 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       updatePrescriptionLocally(result.prescription);
     } finally {
       setPrescriptionInterventionSavingId(null);
+    }
+  }
+
+  async function handleRemovePrescriptionGroup(group: MedicalPrescriptionGroup): Promise<void> {
+    if (!selectedPatient) {
+      setPrescriptionFeedback({
+        type: "error",
+        message: "Selecione um paciente para apagar a prescrição."
+      });
+      return;
+    }
+
+    const prescriptionIds = selectedPatientPrescriptions
+      .filter((prescription) => buildPrescriptionGroupKey(prescription) === group.key)
+      .map((prescription) => prescription.id);
+
+    if (prescriptionIds.length === 0) {
+      setPrescriptionFeedback({
+        type: "error",
+        message: "Nenhuma linha encontrada para apagar este conjunto de prescrição."
+      });
+      return;
+    }
+
+    const referenceDate =
+      group.validationEndAt ?? group.validationStartAt ?? group.prescriptions[0]?.createdAt ?? "";
+    const confirmationLabel = formatPrescriptionValidityDate(referenceDate);
+    const confirmed = window.confirm(
+      `Apagar toda a prescrição de ${confirmationLabel} do paciente ${selectedPatient.fullName}?`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setPrescriptionFeedback(null);
+    setPrescriptionGroupRemovingKey(group.key);
+
+    try {
+      const response = await fetch(`/api/patients/${selectedPatient.id}/prescriptions`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prescriptionIds })
+      });
+
+      const result = (await response.json()) as {
+        message?: string;
+        deletedIds?: number[];
+      };
+
+      if (!response.ok) {
+        setPrescriptionFeedback({
+          type: "error",
+          message: result.message ?? "Falha ao apagar a prescrição."
+        });
+        return;
+      }
+
+      const deletedIds = (result.deletedIds ?? []).filter((value) => Number.isInteger(value));
+      removePrescriptionSetLocally(selectedPatient.id, deletedIds.length > 0 ? deletedIds : prescriptionIds);
+      setPrescriptionFeedback({
+        type: "success",
+        message: "Conjunto de prescrição apagado com sucesso."
+      });
+    } catch {
+      setPrescriptionFeedback({
+        type: "error",
+        message: "Erro de conexão ao apagar a prescrição."
+      });
+    } finally {
+      setPrescriptionGroupRemovingKey(null);
     }
   }
 
@@ -12107,7 +12191,19 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
                                     return (
                                     <div key={group.key} className="dashboard-subsection-block">
-                                      <h3>Conjunto de prescrição {groupNumber}</h3>
+                                      <div className="dashboard-inline-actions dashboard-inline-actions-spread">
+                                        <h3>Conjunto de prescrição {groupNumber}</h3>
+                                        <button
+                                          type="button"
+                                          className="dashboard-chip-remove"
+                                          onClick={() => handleRemovePrescriptionGroup(group)}
+                                          disabled={prescriptionGroupRemovingKey === group.key}
+                                        >
+                                          {prescriptionGroupRemovingKey === group.key
+                                            ? "Apagando..."
+                                            : "Apagar prescrição"}
+                                        </button>
+                                      </div>
                                       <p className="dashboard-muted">
                                         Internação:
                                         {" "}

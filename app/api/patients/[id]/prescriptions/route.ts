@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
-import { addMedicalPrescription, updateMedicalPrescriptionValidation } from "@/lib/db";
+import {
+  addMedicalPrescription,
+  removeMedicalPrescriptionSet,
+  updateMedicalPrescriptionValidation
+} from "@/lib/db";
 import {
   MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS,
   PRESCRIPTION_INTERVENTION_CONTACT_OPTIONS,
@@ -164,6 +168,50 @@ export async function POST(
     return NextResponse.json({ ok: true, prescription });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao cadastrar prescrição.";
+    return NextResponse.json({ message }, { status: 400 });
+  }
+}
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+): Promise<NextResponse> {
+  const session = await getCurrentSession();
+  if (!session) {
+    return NextResponse.json({ message: "Sessão inválida." }, { status: 401 });
+  }
+
+  const routeParams = await params;
+  const patientId = Number(routeParams.id);
+  if (!Number.isInteger(patientId) || patientId <= 0) {
+    return NextResponse.json({ message: "Paciente inválido." }, { status: 400 });
+  }
+
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return NextResponse.json({ message: "Corpo inválido." }, { status: 400 });
+  }
+
+  const body = payload as Record<string, unknown>;
+  const prescriptionIdsRaw = Array.isArray(body.prescriptionIds) ? body.prescriptionIds : [];
+  const prescriptionIds = prescriptionIdsRaw
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value) && value > 0);
+
+  if (prescriptionIds.length === 0) {
+    return NextResponse.json(
+      { message: "Nenhuma linha válida da prescrição foi informada." },
+      { status: 400 }
+    );
+  }
+
+  try {
+    const deletedIds = await removeMedicalPrescriptionSet({ patientId, prescriptionIds });
+    return NextResponse.json({ ok: true, deletedIds });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Falha ao apagar a prescrição.";
     return NextResponse.json({ message }, { status: 400 });
   }
 }
