@@ -834,6 +834,15 @@ body {
   gap: 8px;
 }
 
+.dashboard-table-name-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.dashboard-table-name-editor span {
+  font-weight: 600;
+}
+
 .dashboard-allergy-suggestions {
   border: 1px solid #d3e0f1;
   border-radius: 12px;

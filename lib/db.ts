@@ -196,6 +196,7 @@ export type AddPriorMedicationInput = {
 export type UpdatePriorMedicationInput = {
   patientId: number;
   priorMedicationId: number;
+  medicationName?: string;
   dose: number | null;
   doseUnit: string;
   frequency: string;
@@ -1160,6 +1161,16 @@ async function setupDatabase(): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS prior_medication_name_corrections (
+      id SERIAL PRIMARY KEY,
+      normalized_source_name TEXT NOT NULL UNIQUE,
+      source_name TEXT NOT NULL,
+      corrected_medication_id INTEGER REFERENCES medication_catalog(id) ON DELETE SET NULL,
+      corrected_name TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS medical_prescriptions (
       id SERIAL PRIMARY KEY,
       patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
@@ -1232,6 +1243,7 @@ async function setupDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_allergies_patient_latest ON patient_allergies (patient_id, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_prior_medications_patient_id ON patient_prior_medications (patient_id);
     CREATE INDEX IF NOT EXISTS idx_prior_medications_patient_latest ON patient_prior_medications (patient_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_prior_medication_name_corrections_source ON prior_medication_name_corrections (normalized_source_name);
     CREATE INDEX IF NOT EXISTS idx_prescriptions_patient_id ON medical_prescriptions (patient_id);
     CREATE INDEX IF NOT EXISTS idx_prescriptions_admission_id ON medical_prescriptions (admission_id);
     CREATE INDEX IF NOT EXISTS idx_prescriptions_patient_latest ON medical_prescriptions (patient_id, created_at DESC, id DESC);
@@ -1359,6 +1371,21 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE patient_prior_medications
     ADD COLUMN IF NOT EXISTS reconciliation_prescription_id INTEGER;
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS prior_medication_name_corrections (
+      id SERIAL PRIMARY KEY,
+      normalized_source_name TEXT NOT NULL UNIQUE,
+      source_name TEXT NOT NULL,
+      corrected_medication_id INTEGER REFERENCES medication_catalog(id) ON DELETE SET NULL,
+      corrected_name TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_prior_medication_name_corrections_source
+      ON prior_medication_name_corrections (normalized_source_name);
   `);
 
   await pool.query(`
@@ -2129,6 +2156,131 @@ async function findMedicationCatalogBySearchText(
   return null;
 }
 
+async function findMedicationCatalogExactMatchBySearchText(
+  client: PoolClient,
+  searchText: string
+): Promise<MedicationRecord | null> {
+  const normalizedSearch = normalizeClinicalSearchValue(searchText);
+  if (!normalizedSearch) {
+    return null;
+  }
+
+  const catalogRows = await client.query(
+    `
+      SELECT
+        id,
+        name,
+        default_unit,
+        active_ingredients,
+        therapeutic_class,
+        search_aliases,
+        created_at
+      FROM medication_catalog
+    `
+  );
+
+  for (const row of catalogRows.rows) {
+    const catalogRow = row as DbRow;
+    const catalogMedicationName = String(catalogRow.name ?? "").trim();
+    const activeIngredients = String(catalogRow.active_ingredients ?? "").trim();
+    const therapeuticClass = String(catalogRow.therapeutic_class ?? "").trim();
+    const aliases = String(catalogRow.search_aliases ?? "").trim();
+
+    if (normalizeClinicalSearchValue(catalogMedicationName) === normalizedSearch) {
+      return mapMedication(catalogRow);
+    }
+
+    if (
+      splitClinicalTerms(activeIngredients).some((term) => term.normalized === normalizedSearch) ||
+      splitClinicalTerms(aliases).some((term) => term.normalized === normalizedSearch) ||
+      normalizeClinicalSearchValue(therapeuticClass) === normalizedSearch
+    ) {
+      return mapMedication(catalogRow);
+    }
+  }
+
+  return null;
+}
+
+async function findPriorMedicationNameCorrection(
+  client: PoolClient,
+  sourceName: string
+): Promise<{ correctedMedicationId: number | null; correctedName: string } | null> {
+  const normalizedSourceName = normalizeClinicalSearchValue(normalizeMedicationCatalogName(sourceName));
+  if (!normalizedSourceName) {
+    return null;
+  }
+
+  const result = await client.query(
+    `
+      SELECT
+        pmnc.corrected_medication_id,
+        COALESCE(mc.name, pmnc.corrected_name) AS corrected_name
+      FROM prior_medication_name_corrections pmnc
+      LEFT JOIN medication_catalog mc ON mc.id = pmnc.corrected_medication_id
+      WHERE pmnc.normalized_source_name = $1
+      LIMIT 1
+    `,
+    [normalizedSourceName]
+  );
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  const row = result.rows[0] as DbRow;
+  return {
+    correctedMedicationId:
+      row.corrected_medication_id === null ? null : toNumber(row.corrected_medication_id),
+    correctedName: String(row.corrected_name ?? "").trim()
+  };
+}
+
+async function upsertPriorMedicationNameCorrection(
+  client: PoolClient,
+  sourceName: string,
+  correctedMedicationId: number | null,
+  correctedName: string
+): Promise<void> {
+  const normalizedSourceName = normalizeClinicalSearchValue(normalizeMedicationCatalogName(sourceName));
+  const normalizedCorrectedName = normalizeClinicalSearchValue(
+    normalizeMedicationCatalogName(correctedName)
+  );
+
+  if (
+    !normalizedSourceName ||
+    !normalizedCorrectedName ||
+    normalizedSourceName === normalizedCorrectedName
+  ) {
+    return;
+  }
+
+  await client.query(
+    `
+      INSERT INTO prior_medication_name_corrections (
+        normalized_source_name,
+        source_name,
+        corrected_medication_id,
+        corrected_name,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (normalized_source_name)
+      DO UPDATE SET
+        source_name = EXCLUDED.source_name,
+        corrected_medication_id = EXCLUDED.corrected_medication_id,
+        corrected_name = EXCLUDED.corrected_name,
+        updated_at = NOW()
+    `,
+    [
+      normalizedSourceName,
+      normalizeMedicationCatalogName(sourceName),
+      correctedMedicationId,
+      normalizeMedicationCatalogName(correctedName)
+    ]
+  );
+}
+
 async function resolveMedicationData(
   client: PoolClient,
   medicationId: number | undefined,
@@ -2156,6 +2308,42 @@ async function resolveMedicationData(
   const normalizedName = fallbackMedicationName.trim();
   if (!normalizedName) {
     throw new Error("Informe o nome do medicamento.");
+  }
+
+  return {
+    medicationId: null,
+    medicationName: normalizedName
+  };
+}
+
+async function resolvePriorMedicationData(
+  client: PoolClient,
+  medicationId: number | undefined,
+  fallbackMedicationName: string
+): Promise<{ medicationId: number | null; medicationName: string }> {
+  if (medicationId && Number.isInteger(medicationId) && medicationId > 0) {
+    return resolveMedicationData(client, medicationId, fallbackMedicationName);
+  }
+
+  const normalizedName = normalizeMedicationCatalogName(fallbackMedicationName);
+  if (!normalizedName) {
+    throw new Error("Informe o nome do medicamento.");
+  }
+
+  const learnedCorrection = await findPriorMedicationNameCorrection(client, normalizedName);
+  if (learnedCorrection) {
+    return {
+      medicationId: learnedCorrection.correctedMedicationId,
+      medicationName: learnedCorrection.correctedName
+    };
+  }
+
+  const exactCatalogMedication = await findMedicationCatalogExactMatchBySearchText(client, normalizedName);
+  if (exactCatalogMedication) {
+    return {
+      medicationId: exactCatalogMedication.id,
+      medicationName: exactCatalogMedication.name
+    };
   }
 
   return {
@@ -2941,7 +3129,11 @@ export async function addPriorMedication(
   try {
     await client.query("BEGIN");
     await ensurePatientExists(client, input.patientId);
-    const medicationData = await resolveMedicationData(client, input.medicationId, input.medicationName);
+    const medicationData = await resolvePriorMedicationData(
+      client,
+      input.medicationId,
+      input.medicationName
+    );
 
     const inserted = await client.query(
       `
@@ -3064,6 +3256,38 @@ export async function updatePriorMedication(
     await client.query("BEGIN");
     await ensurePatientExists(client, input.patientId);
 
+    const currentPriorMedicationResult = await client.query(
+      `
+        SELECT medication_id, medication_name
+        FROM patient_prior_medications
+        WHERE id = $1 AND patient_id = $2
+        LIMIT 1
+      `,
+      [input.priorMedicationId, input.patientId]
+    );
+
+    if (currentPriorMedicationResult.rows.length === 0) {
+      throw new Error("Medicamento prévio não encontrado para este paciente.");
+    }
+
+    const currentPriorMedicationRow = currentPriorMedicationResult.rows[0] as DbRow;
+    const previousMedicationId =
+      currentPriorMedicationRow.medication_id === null
+        ? null
+        : toNumber(currentPriorMedicationRow.medication_id);
+    const previousMedicationName = String(currentPriorMedicationRow.medication_name ?? "").trim();
+    const requestedMedicationName = input.medicationName?.trim() ?? previousMedicationName;
+    const medicationNameChanged =
+      input.medicationName !== undefined &&
+      normalizeClinicalSearchValue(requestedMedicationName) !==
+        normalizeClinicalSearchValue(previousMedicationName);
+    const medicationData = medicationNameChanged
+      ? await resolvePriorMedicationData(client, undefined, requestedMedicationName)
+      : {
+          medicationId: previousMedicationId,
+          medicationName: previousMedicationName
+        };
+
     let linkedPrescriptionMedicationId: number | null = null;
     let linkedPrescriptionMedicationName = "";
     if (
@@ -3097,16 +3321,20 @@ export async function updatePriorMedication(
       `
         UPDATE patient_prior_medications
         SET
-          dose = $1,
-          dose_unit = $2,
-          frequency = $3,
-          shifts = $4,
-          reconciliation_manual_status = $5,
-          reconciliation_prescription_id = $6
-        WHERE id = $7 AND patient_id = $8
+          medication_id = $1,
+          medication_name = $2,
+          dose = $3,
+          dose_unit = $4,
+          frequency = $5,
+          shifts = $6,
+          reconciliation_manual_status = $7,
+          reconciliation_prescription_id = $8
+        WHERE id = $9 AND patient_id = $10
         RETURNING id
       `,
       [
+        medicationData.medicationId,
+        medicationData.medicationName,
         input.dose !== null && Number.isFinite(input.dose) && input.dose > 0 ? input.dose : 0,
         input.doseUnit.trim(),
         input.frequency.trim(),
@@ -3123,6 +3351,23 @@ export async function updatePriorMedication(
     }
 
     let learnedMedication: MedicationRecord | null = null;
+    if (medicationNameChanged && previousMedicationName) {
+      if (medicationData.medicationId !== null) {
+        learnedMedication = await appendMedicationCatalogAlias(
+          client,
+          medicationData.medicationId,
+          previousMedicationName
+        );
+      }
+
+      await upsertPriorMedicationNameCorrection(
+        client,
+        previousMedicationName,
+        medicationData.medicationId,
+        medicationData.medicationName
+      );
+    }
+
     if (
       input.reconciliationManualStatus === true &&
       (linkedPrescriptionMedicationId !== null || linkedPrescriptionMedicationName)
@@ -3145,11 +3390,15 @@ export async function updatePriorMedication(
         }
 
         if (linkedPrescriptionMedicationId !== null) {
-        learnedMedication = await appendMedicationCatalogAlias(
-          client,
-          linkedPrescriptionMedicationId,
-          aliasName
-        );
+          learnedMedication =
+            (await appendMedicationCatalogAlias(client, linkedPrescriptionMedicationId, aliasName)) ??
+            learnedMedication;
+          await upsertPriorMedicationNameCorrection(
+            client,
+            aliasName,
+            linkedPrescriptionMedicationId,
+            linkedPrescriptionMedicationName || learnedMedication?.name || aliasName
+          );
         }
       }
     }

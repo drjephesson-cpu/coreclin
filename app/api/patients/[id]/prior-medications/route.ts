@@ -184,6 +184,8 @@ export async function PUT(
 
   const body = payload as Record<string, unknown>;
   const priorMedicationId = Number(body.priorMedicationId);
+  const medicationNameRaw =
+    typeof body.medicationName === "string" ? body.medicationName.trim() : undefined;
   const dose = parseOptionalDecimalInput(body.dose);
   const doseUnit = typeof body.doseUnit === "string" ? body.doseUnit.trim() : "";
   const frequency = typeof body.frequency === "string" ? body.frequency.trim() : "";
@@ -224,6 +226,13 @@ export async function PUT(
     return NextResponse.json({ message: "Informe a unidade da dose." }, { status: 400 });
   }
 
+  if (medicationNameRaw !== undefined && !medicationNameRaw) {
+    return NextResponse.json(
+      { message: "Informe o nome corrigido do medicamento." },
+      { status: 400 }
+    );
+  }
+
   if (reconciliationManualStatus === "invalid") {
     return NextResponse.json(
       { message: "Situação manual da reconciliação inválida." },
@@ -245,6 +254,7 @@ export async function PUT(
     const result = await updatePriorMedication({
       patientId,
       priorMedicationId,
+      medicationName: medicationNameRaw,
       dose,
       doseUnit,
       frequency,

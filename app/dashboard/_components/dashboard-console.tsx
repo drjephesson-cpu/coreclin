@@ -408,6 +408,7 @@ type StockValidationFormState = {
 };
 
 type PriorMedicationReconciliationFormState = {
+  medicationName: string;
   dose: string;
   frequency: string;
   shifts: string;
@@ -492,6 +493,7 @@ function createEmptyAdmissionFormState() {
 function createPriorMedicationReconciliationFormState(
   priorMedication?: Pick<
     PriorMedicationRecord,
+    | "medicationName"
     | "dose"
     | "doseUnit"
     | "frequency"
@@ -506,6 +508,7 @@ function createPriorMedicationReconciliationFormState(
       : "";
 
   return {
+    medicationName: priorMedication?.medicationName ?? "",
     dose: formattedDose,
     frequency: priorMedication?.frequency ?? "",
     shifts: priorMedication?.shifts ?? "",
@@ -527,6 +530,7 @@ function arePriorMedicationReconciliationFormsEqual(
   formState: PriorMedicationReconciliationFormState,
   reference: Pick<
     PriorMedicationRecord,
+    | "medicationName"
     | "dose"
     | "doseUnit"
     | "frequency"
@@ -539,6 +543,7 @@ function arePriorMedicationReconciliationFormsEqual(
     reference.dose > 0 ? `${formatNumber(reference.dose)} ${reference.doseUnit}`.trim() : "";
 
   return (
+    normalizeMedicationName(formState.medicationName) === normalizeMedicationName(reference.medicationName) &&
     formState.dose.trim() === formattedReferenceDose &&
     formState.frequency.trim() === (reference.frequency ?? "") &&
     formState.shifts.trim() === (reference.shifts ?? "") &&
@@ -3657,6 +3662,7 @@ export default function DashboardConsole({
   const [priorMedicationRemovingId, setPriorMedicationRemovingId] = useState<number | null>(null);
   const [priorMedicationUpdatingId, setPriorMedicationUpdatingId] = useState<number | null>(null);
   const [priorMedicationBatchSaving, setPriorMedicationBatchSaving] = useState(false);
+  const [priorMedicationEditingId, setPriorMedicationEditingId] = useState<number | null>(null);
   const [priorMedicationReconciliationForm, setPriorMedicationReconciliationForm] = useState<
     Record<number, PriorMedicationReconciliationFormState>
   >({});
@@ -5826,6 +5832,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setPrescriptionInterventionOpenId(null);
   }, [selectedPatientPrescriptions]);
 
+  useEffect(() => {
+    setPriorMedicationEditingId(null);
+  }, [selectedPatient?.id]);
+
   const selectedPatientPrescriptionGroups = useMemo(
     () => groupPrescriptionRecordsBySet(selectedPatientPrescriptions),
     [selectedPatientPrescriptions]
@@ -5937,6 +5947,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           createPriorMedicationReconciliationFormState(row.priorMedication);
         const draftPriorMedication = {
           ...row.priorMedication,
+          medicationName: formState.medicationName.trim() || row.priorMedication.medicationName,
           reconciliationManualStatus:
             formState.reconciliationManualStatus === "sim"
               ? true
@@ -6573,15 +6584,36 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   function updatePriorMedicationReconciliationField(
     priorMedicationId: number,
     field: keyof PriorMedicationReconciliationFormState,
-    value: string
+    value: string,
+    priorMedication?: PriorMedicationRecord
   ): void {
     setPriorMedicationReconciliationForm((current) => ({
       ...current,
       [priorMedicationId]: {
-        ...(current[priorMedicationId] ?? createPriorMedicationReconciliationFormState()),
+        ...(current[priorMedicationId] ?? createPriorMedicationReconciliationFormState(priorMedication)),
         [field]: value
       }
     }));
+  }
+
+  function startPriorMedicationNameEdit(priorMedication: PriorMedicationRecord): void {
+    setPriorMedicationReconciliationForm((current) => ({
+      ...current,
+      [priorMedication.id]:
+        current[priorMedication.id] ?? createPriorMedicationReconciliationFormState(priorMedication)
+    }));
+    setPriorMedicationEditingId(priorMedication.id);
+  }
+
+  function cancelPriorMedicationNameEdit(priorMedication: PriorMedicationRecord): void {
+    setPriorMedicationReconciliationForm((current) => ({
+      ...current,
+      [priorMedication.id]: {
+        ...(current[priorMedication.id] ?? createPriorMedicationReconciliationFormState(priorMedication)),
+        medicationName: priorMedication.medicationName
+      }
+    }));
+    setPriorMedicationEditingId((current) => (current === priorMedication.id ? null : current));
   }
 
   function updateMedicationValidationField(
@@ -7831,8 +7863,16 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     | { ok: true; priorMedication: PriorMedicationRecord; learnedMedication: MedicationRecord | null }
     | { ok: false; message: string }
   > {
+    const trimmedMedicationName = formState.medicationName.trim();
     const trimmedDose = formState.dose.trim();
     const parsedDose = parseDosePart(trimmedDose);
+
+    if (!trimmedMedicationName) {
+      return {
+        ok: false,
+        message: "Informe o nome do medicamento de uso prévio."
+      };
+    }
 
     if (trimmedDose && parsedDose.dose === null) {
       return {
@@ -7847,6 +7887,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           priorMedicationId,
+          medicationName: trimmedMedicationName,
           dose: parsedDose.dose,
           doseUnit:
             parsedDose.dose !== null
@@ -7926,6 +7967,16 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         message: "Reconciliação do medicamento prévio atualizada."
       });
       updatePriorMedicationLocally(result.priorMedication);
+      setPriorMedicationEditingId((current) => (current === priorMedicationId ? null : current));
+      if (result.priorMedication.medicationId === null) {
+        setManualPriorMedicationOptions((current) => {
+          const normalizedMedicationName = normalizeMedicationName(result.priorMedication.medicationName);
+          if (current.some((item) => normalizeMedicationName(item) === normalizedMedicationName)) {
+            return current;
+          }
+          return [...current, result.priorMedication.medicationName];
+        });
+      }
       const learnedMedication = result.learnedMedication;
       if (learnedMedication) {
         setMedications((current) => upsertRecordById(current, learnedMedication));
@@ -8035,6 +8086,21 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       successfulUpdates.forEach((priorMedication) => {
         updatePriorMedicationLocally(priorMedication);
       });
+      setManualPriorMedicationOptions((current) => {
+        const nextOptions = [...current];
+        successfulUpdates.forEach((priorMedication) => {
+          if (priorMedication.medicationId !== null) {
+            return;
+          }
+
+          const normalizedMedicationName = normalizeMedicationName(priorMedication.medicationName);
+          if (!nextOptions.some((item) => normalizeMedicationName(item) === normalizedMedicationName)) {
+            nextOptions.push(priorMedication.medicationName);
+          }
+        });
+        return nextOptions;
+      });
+      setPriorMedicationEditingId(null);
       learnedMedications.forEach((medication) => {
         setMedications((current) => upsertRecordById(current, medication));
       });
@@ -11443,7 +11509,53 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         key={row.priorMedication.id}
                                         className={row.latestReconciled ? "" : "dashboard-row-missing"}
                                       >
-                                        <td>{row.priorMedication.medicationName}</td>
+                                        <td>
+                                          <div className="dashboard-table-name-editor">
+                                            {priorMedicationEditingId === row.priorMedication.id ? (
+                                              <input
+                                                value={row.formState.medicationName}
+                                                onChange={(event) =>
+                                                  updatePriorMedicationReconciliationField(
+                                                    row.priorMedication.id,
+                                                    "medicationName",
+                                                    event.target.value,
+                                                    row.priorMedication
+                                                  )
+                                                }
+                                                placeholder="Nome do medicamento"
+                                              />
+                                            ) : (
+                                              <span>
+                                                {row.formState.medicationName.trim() ||
+                                                  row.priorMedication.medicationName}
+                                              </span>
+                                            )}
+                                            <div className="dashboard-inline-actions">
+                                              {priorMedicationEditingId === row.priorMedication.id ? (
+                                                <button
+                                                  type="button"
+                                                  className="dashboard-mini-button dashboard-mini-button-inline"
+                                                  onClick={() => cancelPriorMedicationNameEdit(row.priorMedication)}
+                                                  disabled={
+                                                    priorMedicationUpdatingId === row.priorMedication.id ||
+                                                    priorMedicationBatchSaving
+                                                  }
+                                                >
+                                                  Cancelar nome
+                                                </button>
+                                              ) : (
+                                                <button
+                                                  type="button"
+                                                  className="dashboard-mini-button dashboard-mini-button-inline"
+                                                  onClick={() => startPriorMedicationNameEdit(row.priorMedication)}
+                                                  disabled={priorMedicationBatchSaving}
+                                                >
+                                                  Editar
+                                                </button>
+                                              )}
+                                            </div>
+                                          </div>
+                                        </td>
                                         <td>
                                           <input
                                             placeholder="Dose (ex.: 100 mg)"
@@ -11452,7 +11564,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                               updatePriorMedicationReconciliationField(
                                                 row.priorMedication.id,
                                                 "dose",
-                                                event.target.value
+                                                event.target.value,
+                                                row.priorMedication
                                               )
                                             }
                                           />
@@ -11464,7 +11577,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                               updatePriorMedicationReconciliationField(
                                                 row.priorMedication.id,
                                                 "frequency",
-                                                event.target.value
+                                                event.target.value,
+                                                row.priorMedication
                                               )
                                             }
                                           />
@@ -11476,7 +11590,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                               updatePriorMedicationReconciliationField(
                                                 row.priorMedication.id,
                                                 "shifts",
-                                                event.target.value
+                                                event.target.value,
+                                                row.priorMedication
                                               )
                                             }
                                           />
