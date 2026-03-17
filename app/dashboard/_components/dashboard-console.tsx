@@ -5862,9 +5862,19 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     [prescriptions, selectedPatient, selectedPatientCachedDetails]
   );
 
+  const selectedPatientPrescriptionGroups = useMemo(
+    () => groupPrescriptionRecordsBySet(selectedPatientPrescriptions),
+    [selectedPatientPrescriptions]
+  );
+
+  const latestMedicationValidationPrescriptionGroup = useMemo(
+    () => selectedPatientPrescriptionGroups[0] ?? null,
+    [selectedPatientPrescriptionGroups]
+  );
+
   const selectedPatientMedicationValidationRows = useMemo(
     () =>
-      selectedPatientPrescriptions
+      (latestMedicationValidationPrescriptionGroup?.prescriptions ?? [])
         .filter((prescription) => isPrescriptionMedicationValidationCandidate(prescription))
         .map((prescription) => {
           const dailyTabletUse = calculateDailyTabletUse({
@@ -5881,7 +5891,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             durationDays: calculateDurationDays(prescription.quantityTablets, dailyTabletUse)
           };
         }),
-    [selectedPatientPrescriptions]
+    [latestMedicationValidationPrescriptionGroup]
   );
 
   const selectedPrescriptionMedicationReferenceName = useMemo(
@@ -5918,11 +5928,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   useEffect(() => {
     setPriorMedicationEditingId(null);
   }, [selectedPatient?.id]);
-
-  const selectedPatientPrescriptionGroups = useMemo(
-    () => groupPrescriptionRecordsBySet(selectedPatientPrescriptions),
-    [selectedPatientPrescriptions]
-  );
 
   const recentPrescriptionGroups = useMemo(
     () => selectedPatientPrescriptionGroups.slice(0, 3),
