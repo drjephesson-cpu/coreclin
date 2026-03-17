@@ -1373,8 +1373,14 @@ function mergeMandatoryEntriesIntoPayload(
         mandatory: true,
         assignedTeamId:
           shouldResetWorkflow ? assignedTeamId ?? null : currentWorkflow.assignedTeamId ?? assignedTeamId ?? null,
-        updatedByProfessionalName,
-        updatedByProfessionalLogin,
+        updatedByProfessionalName:
+          shouldResetWorkflow
+            ? currentWorkflow.updatedByProfessionalName ?? updatedByProfessionalName
+            : updatedByProfessionalName,
+        updatedByProfessionalLogin:
+          shouldResetWorkflow
+            ? currentWorkflow.updatedByProfessionalLogin ?? updatedByProfessionalLogin
+            : updatedByProfessionalLogin,
         updatedAt: new Date().toISOString()
       };
       continue;
