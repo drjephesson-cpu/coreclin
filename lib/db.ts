@@ -183,6 +183,7 @@ export type AddPriorMedicationInput = {
   patientId: number;
   medicationId?: number;
   medicationName: string;
+  preserveTypedName?: boolean;
   dose: number | null;
   doseUnit: string;
   frequency: string;
@@ -196,7 +197,9 @@ export type AddPriorMedicationInput = {
 export type UpdatePriorMedicationInput = {
   patientId: number;
   priorMedicationId: number;
+  medicationId?: number;
   medicationName?: string;
+  preserveTypedName?: boolean;
   dose: number | null;
   doseUnit: string;
   frequency: string;
@@ -2324,15 +2327,32 @@ async function resolveMedicationData(
 async function resolvePriorMedicationData(
   client: PoolClient,
   medicationId: number | undefined,
-  fallbackMedicationName: string
+  fallbackMedicationName: string,
+  preserveTypedName = false
 ): Promise<{ medicationId: number | null; medicationName: string }> {
   if (medicationId && Number.isInteger(medicationId) && medicationId > 0) {
-    return resolveMedicationData(client, medicationId, fallbackMedicationName);
+    const resolvedMedication = await resolveMedicationData(client, medicationId, fallbackMedicationName);
+    const typedMedicationName = normalizeMedicationCatalogName(fallbackMedicationName);
+
+    return {
+      medicationId: resolvedMedication.medicationId,
+      medicationName:
+        preserveTypedName && typedMedicationName
+          ? typedMedicationName
+          : resolvedMedication.medicationName
+    };
   }
 
   const normalizedName = normalizeMedicationCatalogName(fallbackMedicationName);
   if (!normalizedName) {
     throw new Error("Informe o nome do medicamento.");
+  }
+
+  if (preserveTypedName) {
+    return {
+      medicationId: null,
+      medicationName: normalizedName
+    };
   }
 
   const learnedCorrection = await findPriorMedicationNameCorrection(client, normalizedName);
@@ -2359,7 +2379,8 @@ async function resolvePriorMedicationData(
 
 async function resolveMedicationNameFromCatalog(
   client: PoolClient,
-  medicationName: string
+  medicationName: string,
+  preserveMatchedInput = false
 ): Promise<string> {
   const normalizedMedicationName = normalizeMedicationCatalogName(medicationName);
   if (!normalizedMedicationName) {
@@ -2429,19 +2450,19 @@ async function resolveMedicationNameFromCatalog(
   }
 
   if (medicationMatch) {
-    return medicationMatch;
+    return preserveMatchedInput ? normalizedMedicationName : medicationMatch;
   }
 
   if (activeIngredientMatch) {
-    return activeIngredientMatch;
+    return preserveMatchedInput ? normalizedMedicationName : activeIngredientMatch;
   }
 
   if (therapeuticClassMatch) {
-    return therapeuticClassMatch;
+    return preserveMatchedInput ? normalizedMedicationName : therapeuticClassMatch;
   }
 
   if (aliasMatch) {
-    return aliasMatch;
+    return preserveMatchedInput ? normalizedMedicationName : aliasMatch;
   }
 
   throw new Error(
@@ -2926,7 +2947,11 @@ export async function addPatientAllergy(input: AddPatientAllergyInput): Promise<
     await client.query("BEGIN");
     await ensurePatientExists(client, input.patientId);
 
-    const normalizedAllergy = await resolveMedicationNameFromCatalog(client, input.allergyName);
+    const normalizedAllergy = await resolveMedicationNameFromCatalog(
+      client,
+      input.allergyName,
+      true
+    );
     const inserted = await client.query(
       `
         INSERT INTO patient_allergies (patient_id, allergy_name, reaction_description)
@@ -3137,7 +3162,8 @@ export async function addPriorMedication(
     const medicationData = await resolvePriorMedicationData(
       client,
       input.medicationId,
-      input.medicationName
+      input.medicationName,
+      input.preserveTypedName === true
     );
 
     const inserted = await client.query(
@@ -3287,7 +3313,12 @@ export async function updatePriorMedication(
       normalizeClinicalSearchValue(requestedMedicationName) !==
         normalizeClinicalSearchValue(previousMedicationName);
     const medicationData = medicationNameChanged
-      ? await resolvePriorMedicationData(client, undefined, requestedMedicationName)
+      ? await resolvePriorMedicationData(
+          client,
+          input.medicationId,
+          requestedMedicationName,
+          input.preserveTypedName === true
+        )
       : {
           medicationId: previousMedicationId,
           medicationName: previousMedicationName

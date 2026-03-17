@@ -5205,6 +5205,34 @@ function resolveAllergyConflict(medicationName: string): AllergyConflictResult |
     return null;
   }
 
+  function findExactCatalogMedicationMatchByName(medicationName: string) {
+    const searchTerms = collectMedicationMatchTerms(medicationName);
+    if (searchTerms.length === 0) {
+      return null;
+    }
+
+    const findUniqueMedicationMatch = (
+      extractor: (descriptor: (typeof medicationDescriptors)[number]) => string[]
+    ) => {
+      const matches = medicationDescriptors.filter((descriptor) =>
+        extractor(descriptor).some((candidateTerm) => candidateTerm && searchTerms.includes(candidateTerm))
+      );
+
+      const uniqueMatches = Array.from(
+        new Map(matches.map((descriptor) => [descriptor.medication.id, descriptor.medication])).values()
+      );
+      return uniqueMatches.length === 1 ? uniqueMatches[0] : null;
+    };
+
+    return (
+      findUniqueMedicationMatch((descriptor) => [normalizeMedicationName(descriptor.medication.name)]) ??
+      findUniqueMedicationMatch((descriptor) => descriptor.aliasTerms.map((aliasTerm) => aliasTerm.normalized)) ??
+      findUniqueMedicationMatch((descriptor) =>
+        descriptor.activeIngredientTerms.map((ingredientTerm) => ingredientTerm.normalized)
+      )
+    );
+  }
+
   function findCatalogMedicationsMentionedInText(searchText: string) {
     const normalizedSearchText = normalizeMedicationName(searchText);
     if (!normalizedSearchText) {
@@ -5820,7 +5848,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   }, [selectedPatientPriorMedications]);
 
   const priorMedicationCatalogMatch = useMemo(
-    () => findCatalogMedicationMatchByName(priorMedicationForm.medicationName),
+    () => findExactCatalogMedicationMatchByName(priorMedicationForm.medicationName),
     [priorMedicationForm.medicationName, medications]
   );
 
@@ -7858,11 +7886,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       return;
     }
 
-    const matchedCatalogMedication = findCatalogMedicationMatchByName(typedMedicationName);
+    const matchedCatalogMedication = findExactCatalogMedicationMatchByName(typedMedicationName);
     const medicationIdToSave = matchedCatalogMedication ? String(matchedCatalogMedication.id) : "";
-    const medicationNameToSave = matchedCatalogMedication
-      ? matchedCatalogMedication.name
-      : typedMedicationName;
+    const medicationNameToSave = typedMedicationName;
     const doseToSave = parseOptionalDecimalInput(priorMedicationForm.dose);
 
     if (priorMedicationForm.dose.trim() && doseToSave === undefined) {
@@ -7881,6 +7907,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         body: JSON.stringify({
           medicationId: medicationIdToSave,
           medicationName: medicationNameToSave,
+          preserveTypedName: true,
           dose: doseToSave,
           doseUnit: priorMedicationForm.doseUnit,
           frequency: priorMedicationForm.frequency,
@@ -7979,12 +8006,15 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
 
     try {
+      const matchedCatalogMedication = findExactCatalogMedicationMatchByName(trimmedMedicationName);
       const response = await fetch(`/api/patients/${patientId}/prior-medications`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           priorMedicationId,
+          medicationId: matchedCatalogMedication?.id ?? null,
           medicationName: trimmedMedicationName,
+          preserveTypedName: true,
           dose: parsedDose.dose,
           doseUnit:
             parsedDose.dose !== null
@@ -8849,7 +8879,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   }
 
   function handlePriorMedicationNameChange(nextMedicationName: string): void {
-    const selectedCatalogMedication = findCatalogMedicationMatchByName(nextMedicationName);
+    const selectedCatalogMedication = findExactCatalogMedicationMatchByName(nextMedicationName);
 
     setPriorMedicationForm((current) => ({
       ...current,
@@ -11553,7 +11583,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     priorMedicationCatalogMatch
                                       ? "Vinculado ao cadastro de medicamentos"
                                       : priorMedicationForm.medicationName.trim()
-                                        ? "Fora do cadastro: será incluído na lista rápida"
+                                        ? "Digitado manualmente: será salvo como escrito"
                                         : "Sem medicamento selecionado"
                                   }
                                   disabled

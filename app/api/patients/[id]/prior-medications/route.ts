@@ -56,6 +56,8 @@ export async function POST(
       ? undefined
       : Number(medicationIdRaw);
   const medicationName = typeof body.medicationName === "string" ? body.medicationName.trim() : "";
+  const preserveTypedName =
+    body.preserveTypedName === true || body.preserveTypedName === "true";
   const dose = parseOptionalDecimalInput(body.dose);
   const doseUnit = typeof body.doseUnit === "string" ? body.doseUnit.trim() : "";
   const frequency = typeof body.frequency === "string" ? body.frequency.trim() : "";
@@ -105,6 +107,7 @@ export async function POST(
       patientId,
       medicationId,
       medicationName,
+      preserveTypedName,
       dose,
       doseUnit,
       frequency,
@@ -184,8 +187,15 @@ export async function PUT(
 
   const body = payload as Record<string, unknown>;
   const priorMedicationId = Number(body.priorMedicationId);
+  const medicationIdRaw = body.medicationId;
+  const medicationId =
+    medicationIdRaw === undefined || medicationIdRaw === null || medicationIdRaw === ""
+      ? undefined
+      : Number(medicationIdRaw);
   const medicationNameRaw =
     typeof body.medicationName === "string" ? body.medicationName.trim() : undefined;
+  const preserveTypedName =
+    body.preserveTypedName === true || body.preserveTypedName === "true";
   const dose = parseOptionalDecimalInput(body.dose);
   const doseUnit = typeof body.doseUnit === "string" ? body.doseUnit.trim() : "";
   const frequency = typeof body.frequency === "string" ? body.frequency.trim() : "";
@@ -216,6 +226,10 @@ export async function PUT(
 
   if (!Number.isInteger(priorMedicationId) || priorMedicationId <= 0) {
     return NextResponse.json({ message: "Medicamento prévio inválido." }, { status: 400 });
+  }
+
+  if (medicationId !== undefined && (!Number.isInteger(medicationId) || medicationId <= 0)) {
+    return NextResponse.json({ message: "Medicamento inválido." }, { status: 400 });
   }
 
   if (dose === "invalid" || (dose !== null && dose <= 0)) {
@@ -254,7 +268,9 @@ export async function PUT(
     const result = await updatePriorMedication({
       patientId,
       priorMedicationId,
+      medicationId,
       medicationName: medicationNameRaw,
+      preserveTypedName,
       dose,
       doseUnit,
       frequency,
