@@ -1343,12 +1343,13 @@ function mergeMandatoryEntriesIntoPayload(
   payload: InpatientWorkflowStoragePayload,
   manualEntries: InpatientEntry[],
   entriesToPending: Map<string, number | null>,
+  entriesToReset: Set<string>,
   updatedByProfessionalName: string,
   updatedByProfessionalLogin: string
 ): InpatientWorkflowStoragePayload {
   const nextTrackedEntriesByKey = new Map(payload.trackedEntries.map((entry) => [entry.key, entry]));
   for (const manualEntry of manualEntries) {
-    if (!nextTrackedEntriesByKey.has(manualEntry.key)) {
+    if (entriesToReset.has(manualEntry.key) || !nextTrackedEntriesByKey.has(manualEntry.key)) {
       nextTrackedEntriesByKey.set(manualEntry.key, manualEntry);
     }
   }
@@ -1356,11 +1357,25 @@ function mergeMandatoryEntriesIntoPayload(
   const nextWorkflowByKey = { ...payload.workflowByKey };
   for (const [entryKey, assignedTeamId] of entriesToPending.entries()) {
     const currentWorkflow = nextWorkflowByKey[entryKey];
+    const shouldResetWorkflow = entriesToReset.has(entryKey);
     if (currentWorkflow) {
       nextWorkflowByKey[entryKey] = {
-        ...currentWorkflow,
+        ...(shouldResetWorkflow
+          ? {
+              status: "Pendente" as InpatientWorkflowStatus,
+              firstVisitCompletedAt: null,
+              evolutionGeneratedAt: null,
+              reviewedBySupervisorName: null,
+              reviewedBySupervisorLogin: null,
+              reviewedBySupervisorAt: null
+            }
+          : currentWorkflow),
         mandatory: true,
-        assignedTeamId: currentWorkflow.assignedTeamId ?? assignedTeamId ?? null
+        assignedTeamId:
+          shouldResetWorkflow ? assignedTeamId ?? null : currentWorkflow.assignedTeamId ?? assignedTeamId ?? null,
+        updatedByProfessionalName,
+        updatedByProfessionalLogin,
+        updatedAt: new Date().toISOString()
       };
       continue;
     }
@@ -3353,6 +3368,62 @@ function buildInpatientEntryFromAdmission(
   };
 }
 
+function refersToSameAdmission(
+  firstEntry: Pick<InpatientEntry, "admissionDate" | "bed"> | null | undefined,
+  secondEntry: Pick<InpatientEntry, "admissionDate" | "bed"> | null | undefined
+): boolean {
+  if (!firstEntry || !secondEntry) {
+    return false;
+  }
+
+  return (
+    normalizeAdmissionDateValue(firstEntry.admissionDate) ===
+      normalizeAdmissionDateValue(secondEntry.admissionDate) &&
+    normalizeSearchValue(firstEntry.bed) === normalizeSearchValue(secondEntry.bed)
+  );
+}
+
+function buildReadmissionAdmissionPayload(
+  patient: PatientRecord,
+  admissionDate: string,
+  bed: string
+): Record<string, unknown> {
+  const latestAdmission = patient.latestAdmission;
+  const latestMeasurement = patient.latestMeasurement;
+  const hasMeasurement =
+    latestMeasurement !== null &&
+    latestMeasurement.weightKg > 0 &&
+    latestMeasurement.heightCm > 0 &&
+    latestMeasurement.bmiFormula !== null &&
+    latestMeasurement.bsaFormula !== null;
+
+  return {
+    patientId: patient.id,
+    admissionDate,
+    bed,
+    admissionReason: latestAdmission?.admissionReason ?? "",
+    deniesContinuousMedicationUse: latestAdmission?.deniesContinuousMedicationUse ?? false,
+    admissionSummary: latestAdmission?.admissionSummary ?? "",
+    roundSummary: "",
+    roundSummaryDate: "",
+    admissionImportExcerpt: latestAdmission?.admissionImportExcerpt ?? "",
+    interviewInformationQuality: latestAdmission?.interviewInformationQuality ?? "",
+    interviewInformationSourceType: latestAdmission?.interviewInformationSourceType ?? "",
+    interviewInformationSourceName: latestAdmission?.interviewInformationSourceName ?? "",
+    interviewInformationSourceRelationship: latestAdmission?.interviewInformationSourceRelationship ?? "",
+    interviewInterventionMotive: latestAdmission?.interviewInterventionMotive ?? "",
+    interviewSubjective: latestAdmission?.interviewSubjective ?? "",
+    interviewRelevantSymptoms: latestAdmission?.interviewRelevantSymptoms ?? "",
+    interviewPendingIssues: latestAdmission?.interviewPendingIssues ?? "",
+    interviewPlan: latestAdmission?.interviewPlan ?? "",
+    teamId: latestAdmission?.teamId ?? undefined,
+    weightKg: hasMeasurement ? latestMeasurement.weightKg : undefined,
+    heightCm: hasMeasurement ? latestMeasurement.heightCm : undefined,
+    bmiFormula: hasMeasurement ? latestMeasurement.bmiFormula : undefined,
+    bsaFormula: hasMeasurement ? latestMeasurement.bsaFormula : undefined
+  };
+}
+
 export default function DashboardConsole({
   currentLogin,
   data,
@@ -3569,6 +3640,7 @@ export default function DashboardConsole({
   const [mandatoryRawInput, setMandatoryRawInput] = useState("");
   const [mandatoryFeedback, setMandatoryFeedback] = useState<FeedbackState>(null);
   const [mandatoryLoading, setMandatoryLoading] = useState(false);
+  const [mandatoryRemovingKey, setMandatoryRemovingKey] = useState<string | null>(null);
   const [mandatoryEvolutionPreviewLoadingKey, setMandatoryEvolutionPreviewLoadingKey] = useState<
     string | null
   >(null);
@@ -8857,6 +8929,28 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     });
   }
 
+  async function handleRemoveFromMandatoryList(entry: InpatientEntry): Promise<void> {
+    const confirmed = window.confirm(
+      `Excluir ${entry.patientName} da sua lista diária? Os dados já preenchidos do paciente serão mantidos.`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setMandatoryRemovingKey(entry.key);
+    setMandatoryFeedback(null);
+
+    try {
+      setTrackedInpatientEntries((current) => current.filter((trackedEntry) => trackedEntry.key !== entry.key));
+      setMandatoryFeedback({
+        type: "success",
+        message: `${entry.patientName} saiu da sua lista diária.`
+      });
+    } finally {
+      setMandatoryRemovingKey(null);
+    }
+  }
+
   async function handleGenerateMandatoryEvolution(entry: InpatientEntry): Promise<void> {
     const currentWorkflow = resolveInpatientWorkflow(entry);
     if (!currentWorkflow.firstVisitCompletedAt && currentWorkflow.status !== "Concluído") {
@@ -9058,6 +9152,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
       const nextManualEntriesByKey = new Map<string, InpatientEntry>();
       const entriesToPending = new Map<string, number | null>();
+      const entriesToReset = new Set<string>();
       const createdPatients: PatientRecord[] = [];
       const createdAdmissions: AdmissionRecord[] = [];
       let createdPatientsCount = 0;
@@ -9138,27 +9233,38 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         const admissionKey = `${patientRecord.id}:${admissionDate}:${normalizeSearchValue(bed)}`;
         const existingTrackedEntry =
           nextManualEntriesByKey.get(entryKey) ?? trackedEntriesByKey.get(entryKey) ?? null;
-        if (existingTrackedEntry) {
-          nextManualEntriesByKey.set(entryKey, existingTrackedEntry);
-          linkedCount += 1;
-          continue;
-        }
+        const existingWorkflow = workflowByInpatientKey[entryKey] ?? null;
+        const hasNewAdmissionForTrackedEntry =
+          existingTrackedEntry !== null &&
+          !refersToSameAdmission(existingTrackedEntry, { admissionDate, bed });
+        const hasNewAdmissionForLatestAdmission =
+          patientRecord.latestAdmission !== null &&
+          !refersToSameAdmission(
+            {
+              admissionDate: patientRecord.latestAdmission.admissionDate,
+              bed: patientRecord.latestAdmission.bed
+            },
+            { admissionDate, bed }
+          );
+        const shouldRestartTrackedEntry =
+          (hasNewAdmissionForTrackedEntry || hasNewAdmissionForLatestAdmission) &&
+          (existingWorkflow?.status === "Concluído" || existingWorkflow?.status === "Alta");
 
         const matchedActiveInpatient = activeInpatientByPatientId.get(patientRecord.id) ?? null;
         const matchedTeamId = matchedActiveInpatient?.teamId ?? null;
         const matchedTeamName = matchedActiveInpatient?.teamName ?? null;
 
+        if (existingTrackedEntry && !shouldRestartTrackedEntry) {
+          nextManualEntriesByKey.set(entryKey, existingTrackedEntry);
+          linkedCount += 1;
+          continue;
+        }
+
         if (!knownAdmissionKeys.has(admissionKey)) {
           const admissionResponse = await fetch("/api/admissions", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              patientId: patientRecord.id,
-              admissionDate,
-              bed,
-              admissionReason: "",
-              teamId: undefined
-            })
+            body: JSON.stringify(buildReadmissionAdmissionPayload(patientRecord, admissionDate, bed))
           });
 
           const admissionResult = (await admissionResponse.json()) as {
@@ -9174,10 +9280,21 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           }
 
           createdAdmissions.push(admissionResult.admission);
+          patientRecord = mergePatientWithAdmission(patientRecord, admissionResult.admission);
+          if (normalizedChart) {
+            patientsByChart.set(normalizedChart, patientRecord);
+          }
+          if (normalizedName) {
+            patientsByName.set(normalizedName, patientRecord);
+          }
           knownAdmissionKeys.add(admissionKey);
           createdAdmissionsCount += 1;
         } else {
           linkedCount += 1;
+        }
+
+        if (shouldRestartTrackedEntry) {
+          entriesToReset.add(entryKey);
         }
 
         nextManualEntriesByKey.set(entryKey, {
@@ -9221,6 +9338,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           },
           manualEntries,
           entriesToPending,
+          entriesToReset,
           currentWorkflowEditorName,
           currentWorkflowEditorLogin
         );
@@ -10172,12 +10290,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     <th>Origem</th>
                                     <th>Último farmacêutico</th>
                                     <th>Detalhes</th>
+                                    <th>Ações</th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {mandatoryOverviewRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={11}>Nenhum paciente na sua lista diária.</td>
+                                      <td colSpan={12}>Nenhum paciente na sua lista diária.</td>
                                     </tr>
                                   ) : (
                                     mandatoryOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
@@ -10248,6 +10367,18 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                           ) : (
                                             "-"
                                           )}
+                                        </td>
+                                        <td>
+                                          <button
+                                            type="button"
+                                            className="dashboard-chip-remove"
+                                            onClick={() => void handleRemoveFromMandatoryList(entry)}
+                                            disabled={mandatoryRemovingKey === entry.key}
+                                          >
+                                            {mandatoryRemovingKey === entry.key
+                                              ? "Excluindo..."
+                                              : "Excluir da lista"}
+                                          </button>
                                         </td>
                                       </tr>
                                     ))
