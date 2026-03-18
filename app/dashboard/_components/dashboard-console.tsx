@@ -1,6 +1,16 @@
 "use client";
 
-import { FormEvent, Fragment, memo, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import {
+  ChangeEvent,
+  FormEvent,
+  Fragment,
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition
+} from "react";
 import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -5445,23 +5455,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     setAdmissionSummarySelection(selectedText);
   }
 
-  async function handleExamPdfImport(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
+  async function importExamPdfFile(file: File): Promise<void> {
     setExamImportFeedback(null);
 
     if (!selectedPatient) {
       setExamImportFeedback({
         type: "error",
         message: "Selecione um paciente antes de importar os exames."
-      });
-      return;
-    }
-
-    const file = examPdfInputRef.current?.files?.[0] ?? null;
-    if (!file) {
-      setExamImportFeedback({
-        type: "error",
-        message: "Selecione um PDF de exames para extrair os dados."
       });
       return;
     }
@@ -5528,6 +5528,17 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         examPdfInputRef.current.value = "";
       }
     }
+  }
+
+  async function handleExamPdfFileSelection(
+    event: ChangeEvent<HTMLInputElement>
+  ): Promise<void> {
+    const file = event.target.files?.[0] ?? null;
+    if (!file) {
+      return;
+    }
+
+    await importExamPdfFile(file);
   }
 
   async function handleRemoveExamImport(examImport: PatientExamImportRecord): Promise<void> {
@@ -6996,34 +7007,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     });
 
     return { drafts, detectedSet };
-  }
-
-  function handleProcessRawPrescription(): void {
-    setRawPrescriptionFeedback(null);
-    const { drafts } = buildRawPrescriptionDrafts(rawPrescriptionInput, {
-      startAt: "",
-      endAt: "",
-      status: "Validado"
-    });
-
-    if (drafts.length === 0) {
-      setRawPrescriptionFeedback({
-        type: "error",
-        message: "Cole ao menos uma linha de prescrição bruta para tratar."
-      });
-      setRawPrescriptionDrafts([]);
-      return;
-    }
-
-    const validCount = drafts.filter((draft) => draft.isValid).length;
-    setRawPrescriptionDrafts(drafts);
-    setRawPrescriptionFeedback({
-      type: validCount > 0 ? "success" : "error",
-      message:
-        validCount > 0
-          ? `${validCount} linha(s) tratada(s) e pronta(s) para importação.`
-          : "Nenhuma linha válida encontrada. Ajuste o formato e tente novamente."
-    });
   }
 
   function handleAddInitialPatientAllergy(): void {
@@ -8798,11 +8781,27 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       return;
     }
 
-    const validDrafts = rawPrescriptionDrafts.filter((draft) => draft.isValid);
+    const { drafts } = buildRawPrescriptionDrafts(rawPrescriptionInput, {
+      startAt: "",
+      endAt: "",
+      status: "Validado"
+    });
+
+    if (drafts.length === 0) {
+      setRawPrescriptionDrafts([]);
+      setRawPrescriptionFeedback({
+        type: "error",
+        message: "Cole ao menos uma linha de prescrição bruta para importar."
+      });
+      return;
+    }
+
+    setRawPrescriptionDrafts(drafts);
+    const validDrafts = drafts.filter((draft) => draft.isValid);
     if (validDrafts.length === 0) {
       setRawPrescriptionFeedback({
         type: "error",
-        message: "Não há linhas válidas para importar."
+        message: "Nenhuma linha válida encontrada. Ajuste o formato e tente novamente."
       });
       return;
     }
@@ -8857,7 +8856,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       if (failedLines.length > 0) {
         setRawPrescriptionFeedback({
           type: "error",
-          message: `Algumas linhas falharam na importação: ${failedLines.join(", ")}.`
+          message: `${importedPrescriptions.length} linha(s) importada(s). Algumas falharam: ${failedLines.join(", ")}.`
         });
       } else {
         setRawPrescriptionFeedback({
@@ -11351,12 +11350,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               permanecem vinculados ao paciente.
                             </p>
 
-                            <form className="dashboard-form" onSubmit={handleExamPdfImport}>
+                            <div className="dashboard-form">
                               <input
                                 ref={examPdfInputRef}
                                 type="file"
                                 accept="application/pdf"
                                 aria-label="Importar PDF de exames"
+                                onChange={(event) => void handleExamPdfFileSelection(event)}
                               />
 
                               {examImportFeedback ? (
@@ -11365,10 +11365,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 </p>
                               ) : null}
 
-                              <button type="submit" disabled={examImportLoading}>
-                                {examImportLoading ? "Extraindo..." : "Extrair dados do PDF"}
-                              </button>
-                            </form>
+                              <p className="dashboard-muted">
+                                Ao anexar o PDF, a extração começa automaticamente.
+                              </p>
+                              {examImportLoading ? <p className="dashboard-muted">Extraindo PDF...</p> : null}
+                            </div>
 
                             {shouldShowLatestExamImportPreview && examImportResult ? (
                               <>
@@ -12274,19 +12275,12 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   <button
                                     type="button"
                                     className="dashboard-mini-button"
-                                    onClick={handleProcessRawPrescription}
-                                  >
-                                    Tratar prescrição
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="dashboard-mini-button"
                                     onClick={handleImportRawPrescriptions}
                                     disabled={rawPrescriptionLoading}
                                   >
                                     {rawPrescriptionLoading
-                                      ? "Importando..."
-                                      : "Salvar linhas válidas"}
+                                      ? "Tratando e importando..."
+                                      : "Tratar e salvar prescrição"}
                                   </button>
                                 </div>
 
