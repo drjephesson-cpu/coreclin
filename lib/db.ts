@@ -3830,6 +3830,8 @@ export async function addMedicalPrescription(
     await ensurePatientExists(client, input.patientId);
 
     const medicationData = await resolveMedicationData(client, input.medicationId, input.medicationName);
+    const typedMedicationName = input.medicationName.trim();
+    const storedMedicationName = typedMedicationName || medicationData.medicationName;
     let safeAdmissionId: number | null = null;
     if (input.admissionId && Number.isInteger(input.admissionId) && input.admissionId > 0) {
       const admissionResult = await client.query(
@@ -3893,7 +3895,7 @@ export async function addMedicalPrescription(
         input.patientId,
         safeAdmissionId,
         medicationData.medicationId,
-        medicationData.medicationName,
+        storedMedicationName,
         input.dose,
         input.doseUnit.trim(),
         input.administrationRoute?.trim() ? input.administrationRoute.trim() : null,
