@@ -37,12 +37,16 @@ export async function POST(
   }
 
   try {
-    const allergy = await addPatientAllergy({
+    const result = await addPatientAllergy({
       patientId,
       allergyName,
       reactionDescription: reactionDescription || null
     });
-    return NextResponse.json({ ok: true, allergy });
+    return NextResponse.json({
+      ok: true,
+      allergy: result.allergy,
+      learnedMedication: result.learnedMedication
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao cadastrar alergia.";
     return NextResponse.json({ message }, { status: 400 });
@@ -111,6 +115,7 @@ export async function PUT(
 
   const body = payload as Record<string, unknown>;
   const allergyId = Number(body.allergyId);
+  const allergyName = typeof body.allergyName === "string" ? body.allergyName.trim() : "";
   const reactionDescription =
     typeof body.reactionDescription === "string" ? body.reactionDescription.trim() : "";
 
@@ -119,12 +124,17 @@ export async function PUT(
   }
 
   try {
-    const allergy = await updatePatientAllergy({
+    const result = await updatePatientAllergy({
       patientId,
       allergyId,
+      allergyName: allergyName || null,
       reactionDescription: reactionDescription || null
     });
-    return NextResponse.json({ ok: true, allergy });
+    return NextResponse.json({
+      ok: true,
+      allergy: result.allergy,
+      learnedMedication: result.learnedMedication
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao atualizar alergia.";
     return NextResponse.json({ message }, { status: 400 });

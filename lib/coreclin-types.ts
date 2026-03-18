@@ -247,6 +247,8 @@ export type PatientAllergyRecord = {
   createdAt: string;
 };
 
+export type PriorMedicationIntentionalStatus = "sim" | "nao" | "nao-se-aplica";
+
 export type PriorMedicationRecord = {
   id: number;
   patientId: number;
@@ -262,6 +264,7 @@ export type PriorMedicationRecord = {
   expirationDate: string | null;
   manufacturer: string | null;
   reconciliationManualStatus: boolean | null;
+  reconciliationIntentionalStatus: PriorMedicationIntentionalStatus | null;
   reconciliationPrescriptionId: number | null;
   reconciliationPrescriptionMedicationName: string | null;
   createdAt: string;

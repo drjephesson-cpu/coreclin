@@ -216,6 +216,26 @@ export async function PUT(
             reconciliationManualStatusRaw === "não"
           ? false
           : "invalid";
+  const reconciliationIntentionalStatusRaw =
+    typeof body.reconciliationIntentionalStatus === "string"
+      ? body.reconciliationIntentionalStatus.trim().toLowerCase()
+      : body.reconciliationIntentionalStatus === null
+        ? ""
+        : "";
+  const reconciliationIntentionalStatus =
+    reconciliationIntentionalStatusRaw === "" || reconciliationIntentionalStatusRaw === undefined
+      ? null
+      : reconciliationIntentionalStatusRaw === "sim" ||
+          reconciliationIntentionalStatusRaw === "nao" ||
+          reconciliationIntentionalStatusRaw === "não"
+        ? reconciliationIntentionalStatusRaw === "não"
+          ? "nao"
+          : reconciliationIntentionalStatusRaw
+        : reconciliationIntentionalStatusRaw === "nao-se-aplica" ||
+            reconciliationIntentionalStatusRaw === "não se aplica" ||
+            reconciliationIntentionalStatusRaw === "nao se aplica"
+          ? "nao-se-aplica"
+          : "invalid";
   const reconciliationPrescriptionIdRaw = body.reconciliationPrescriptionId;
   const reconciliationPrescriptionId =
     reconciliationPrescriptionIdRaw === undefined ||
@@ -254,6 +274,13 @@ export async function PUT(
     );
   }
 
+  if (reconciliationIntentionalStatus === "invalid") {
+    return NextResponse.json(
+      { message: "Situação intencional da reconciliação inválida." },
+      { status: 400 }
+    );
+  }
+
   if (
     reconciliationPrescriptionId !== null &&
     (!Number.isInteger(reconciliationPrescriptionId) || reconciliationPrescriptionId <= 0)
@@ -276,6 +303,7 @@ export async function PUT(
       frequency,
       shifts,
       reconciliationManualStatus,
+      reconciliationIntentionalStatus,
       reconciliationPrescriptionId
     });
 

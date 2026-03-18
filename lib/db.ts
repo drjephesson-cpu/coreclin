@@ -148,7 +148,13 @@ export type AddPatientAllergyInput = {
 export type UpdatePatientAllergyInput = {
   patientId: number;
   allergyId: number;
+  allergyName?: string | null;
   reactionDescription?: string | null;
+};
+
+export type SavePatientAllergyResult = {
+  allergy: PatientAllergyRecord;
+  learnedMedication: MedicationRecord | null;
 };
 
 export type RemovePatientAllergyInput = {
@@ -205,6 +211,7 @@ export type UpdatePriorMedicationInput = {
   frequency: string;
   shifts: string;
   reconciliationManualStatus?: boolean | null;
+  reconciliationIntentionalStatus?: "sim" | "nao" | "nao-se-aplica" | null;
   reconciliationPrescriptionId?: number | null;
 };
 
@@ -558,6 +565,10 @@ function mapPatientAllergy(row: DbRow): PatientAllergyRecord {
 }
 
 function mapPriorMedication(row: DbRow): PriorMedicationRecord {
+  const reconciliationIntentionalStatusRaw = String(
+    row.reconciliation_intentional_status ?? ""
+  ).trim();
+
   return {
     id: toNumber(row.id),
     patientId: toNumber(row.patient_id),
@@ -576,6 +587,12 @@ function mapPriorMedication(row: DbRow): PriorMedicationRecord {
       row.reconciliation_manual_status === null
         ? null
         : Boolean(row.reconciliation_manual_status),
+    reconciliationIntentionalStatus:
+      reconciliationIntentionalStatusRaw === "sim" ||
+      reconciliationIntentionalStatusRaw === "nao" ||
+      reconciliationIntentionalStatusRaw === "nao-se-aplica"
+        ? reconciliationIntentionalStatusRaw
+        : null,
     reconciliationPrescriptionId:
       row.reconciliation_prescription_id === null
         ? null
@@ -1165,6 +1182,7 @@ async function setupDatabase(): Promise<void> {
       expiration_date DATE,
       manufacturer TEXT,
       reconciliation_manual_status BOOLEAN,
+      reconciliation_intentional_status TEXT,
       reconciliation_prescription_id INTEGER,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -1376,6 +1394,9 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE patient_prior_medications
     ADD COLUMN IF NOT EXISTS reconciliation_manual_status BOOLEAN;
+
+    ALTER TABLE patient_prior_medications
+    ADD COLUMN IF NOT EXISTS reconciliation_intentional_status TEXT;
 
     ALTER TABLE patient_prior_medications
     ADD COLUMN IF NOT EXISTS reconciliation_prescription_id INTEGER;
@@ -2223,9 +2244,8 @@ async function findPriorMedicationNameCorrection(
     `
       SELECT
         pmnc.corrected_medication_id,
-        COALESCE(mc.name, pmnc.corrected_name) AS corrected_name
+        pmnc.corrected_name
       FROM prior_medication_name_corrections pmnc
-      LEFT JOIN medication_catalog mc ON mc.id = pmnc.corrected_medication_id
       WHERE pmnc.normalized_source_name = $1
       LIMIT 1
     `,
@@ -2287,6 +2307,33 @@ async function upsertPriorMedicationNameCorrection(
       normalizeMedicationCatalogName(correctedName)
     ]
   );
+}
+
+async function learnMedicationCorrection(
+  client: PoolClient,
+  sourceName: string,
+  correctedName: string
+): Promise<MedicationRecord | null> {
+  const normalizedSourceName = normalizeMedicationCatalogName(sourceName);
+  const normalizedCorrectedName = normalizeMedicationCatalogName(correctedName);
+
+  if (!normalizedSourceName || !normalizedCorrectedName) {
+    return null;
+  }
+
+  const matchedMedication = await findMedicationCatalogBySearchText(client, normalizedCorrectedName);
+  if (matchedMedication) {
+    await appendMedicationCatalogAlias(client, matchedMedication.id, normalizedSourceName);
+  }
+
+  await upsertPriorMedicationNameCorrection(
+    client,
+    normalizedSourceName,
+    matchedMedication?.id ?? null,
+    normalizedCorrectedName
+  );
+
+  return matchedMedication;
 }
 
 async function resolveMedicationData(
@@ -2885,38 +2932,63 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
       input.heightCm > 0;
 
     if (hasMeasurements) {
-      const indexes = calculateClinicalIndexes(
-        input.weightKg!,
-        input.heightCm!,
-        input.bmiFormula ?? "quetelet",
-        input.bsaFormula ?? "mosteller"
+      const latestMeasurementResult = await client.query(
+        `
+          SELECT
+            weight_kg::float8 AS weight_kg,
+            height_cm::float8 AS height_cm,
+            bmi_formula,
+            bsa_formula
+          FROM patient_measurements
+          WHERE admission_id = $1
+          ORDER BY recorded_at DESC, id DESC
+          LIMIT 1
+        `,
+        [input.admissionId]
       );
 
-      await client.query(
-        `
-          INSERT INTO patient_measurements (
-            patient_id,
-            admission_id,
-            weight_kg,
-            height_cm,
-            bmi,
-            bmi_formula,
-            body_surface_area,
-            bsa_formula
-          )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        `,
-        [
-          patientId,
-          input.admissionId,
-          input.weightKg,
-          input.heightCm,
-          indexes.bmi,
+      const latestMeasurementRow = latestMeasurementResult.rows[0] as DbRow | undefined;
+      const measurementChanged =
+        !latestMeasurementRow ||
+        Math.abs(toNumber(latestMeasurementRow.weight_kg) - input.weightKg!) > 0.005 ||
+        Math.abs(toNumber(latestMeasurementRow.height_cm) - input.heightCm!) > 0.005 ||
+        String(latestMeasurementRow.bmi_formula ?? "") !== (input.bmiFormula ?? "quetelet") ||
+        String(latestMeasurementRow.bsa_formula ?? "") !== (input.bsaFormula ?? "mosteller");
+
+      if (measurementChanged) {
+        const indexes = calculateClinicalIndexes(
+          input.weightKg!,
+          input.heightCm!,
           input.bmiFormula ?? "quetelet",
-          indexes.bodySurfaceArea,
           input.bsaFormula ?? "mosteller"
-        ]
-      );
+        );
+
+        await client.query(
+          `
+            INSERT INTO patient_measurements (
+              patient_id,
+              admission_id,
+              weight_kg,
+              height_cm,
+              bmi,
+              bmi_formula,
+              body_surface_area,
+              bsa_formula
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          `,
+          [
+            patientId,
+            input.admissionId,
+            input.weightKg,
+            input.heightCm,
+            indexes.bmi,
+            input.bmiFormula ?? "quetelet",
+            indexes.bodySurfaceArea,
+            input.bsaFormula ?? "mosteller"
+          ]
+        );
+      }
     }
 
     await client.query("COMMIT");
@@ -2938,7 +3010,9 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
   }
 }
 
-export async function addPatientAllergy(input: AddPatientAllergyInput): Promise<PatientAllergyRecord> {
+export async function addPatientAllergy(
+  input: AddPatientAllergyInput
+): Promise<SavePatientAllergyResult> {
   await ensureDatabaseReady();
   const pool = getPool();
   const client = await pool.connect();
@@ -2952,6 +3026,11 @@ export async function addPatientAllergy(input: AddPatientAllergyInput): Promise<
       input.allergyName,
       true
     );
+    let learnedMedication: MedicationRecord | null = null;
+    const matchedMedication = await findMedicationCatalogBySearchText(client, normalizedAllergy);
+    if (matchedMedication) {
+      learnedMedication = await learnMedicationCorrection(client, input.allergyName, normalizedAllergy);
+    }
     const inserted = await client.query(
       `
         INSERT INTO patient_allergies (patient_id, allergy_name, reaction_description)
@@ -2984,7 +3063,10 @@ export async function addPatientAllergy(input: AddPatientAllergyInput): Promise<
     );
 
     await client.query("COMMIT");
-    return mapPatientAllergy(result.rows[0] as DbRow);
+    return {
+      allergy: mapPatientAllergy(result.rows[0] as DbRow),
+      learnedMedication
+    };
   } catch (error) {
     await client.query("ROLLBACK");
     const postgresError = error as { code?: string };
@@ -3030,7 +3112,7 @@ export async function removePatientAllergy(input: RemovePatientAllergyInput): Pr
 
 export async function updatePatientAllergy(
   input: UpdatePatientAllergyInput
-): Promise<PatientAllergyRecord> {
+): Promise<SavePatientAllergyResult> {
   await ensureDatabaseReady();
   const pool = getPool();
   const client = await pool.connect();
@@ -3039,22 +3121,58 @@ export async function updatePatientAllergy(
     await client.query("BEGIN");
     await ensurePatientExists(client, input.patientId);
 
+    const currentAllergyResult = await client.query(
+      `
+        SELECT allergy_name, reaction_description
+        FROM patient_allergies
+        WHERE id = $1 AND patient_id = $2
+        LIMIT 1
+      `,
+      [input.allergyId, input.patientId]
+    );
+
+    if (currentAllergyResult.rows.length === 0) {
+      throw new Error("Alergia não encontrada para este paciente.");
+    }
+
+    const currentAllergyRow = currentAllergyResult.rows[0] as DbRow;
+    const previousAllergyName = String(currentAllergyRow.allergy_name ?? "").trim();
+    const nextAllergyNameInput = input.allergyName?.trim() ?? previousAllergyName;
+    const nextAllergyName = nextAllergyNameInput
+      ? await resolveMedicationNameFromCatalog(client, nextAllergyNameInput, true)
+      : previousAllergyName;
+
     const updated = await client.query(
       `
         UPDATE patient_allergies
-        SET reaction_description = $3
+        SET
+          allergy_name = $3,
+          reaction_description = $4
         WHERE id = $1 AND patient_id = $2
         RETURNING id
       `,
       [
         input.allergyId,
         input.patientId,
+        nextAllergyName,
         input.reactionDescription?.trim() ? input.reactionDescription.trim() : null
       ]
     );
 
     if (updated.rowCount === 0) {
       throw new Error("Alergia não encontrada para este paciente.");
+    }
+
+    let learnedMedication: MedicationRecord | null = null;
+    if (
+      previousAllergyName &&
+      normalizeClinicalSearchValue(previousAllergyName) !== normalizeClinicalSearchValue(nextAllergyName)
+    ) {
+      learnedMedication = await learnMedicationCorrection(
+        client,
+        previousAllergyName,
+        nextAllergyName
+      );
     }
 
     const result = await client.query(
@@ -3075,7 +3193,10 @@ export async function updatePatientAllergy(
     );
 
     await client.query("COMMIT");
-    return mapPatientAllergy(result.rows[0] as DbRow);
+    return {
+      allergy: mapPatientAllergy(result.rows[0] as DbRow),
+      learnedMedication
+    };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -3181,9 +3302,10 @@ export async function addPriorMedication(
           expiration_date,
           manufacturer,
           reconciliation_manual_status,
+          reconciliation_intentional_status,
           reconciliation_prescription_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL, NULL)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL, NULL, NULL)
         RETURNING id
       `,
       [
@@ -3219,6 +3341,7 @@ export async function addPriorMedication(
           pm.expiration_date::text AS expiration_date,
           pm.manufacturer,
           pm.reconciliation_manual_status,
+          pm.reconciliation_intentional_status,
           pm.reconciliation_prescription_id,
           linked_mp.medication_name AS reconciliation_prescription_medication_name,
           pm.created_at
@@ -3364,8 +3487,9 @@ export async function updatePriorMedication(
           frequency = $5,
           shifts = $6,
           reconciliation_manual_status = $7,
-          reconciliation_prescription_id = $8
-        WHERE id = $9 AND patient_id = $10
+          reconciliation_intentional_status = $8,
+          reconciliation_prescription_id = $9
+        WHERE id = $10 AND patient_id = $11
         RETURNING id
       `,
       [
@@ -3376,6 +3500,7 @@ export async function updatePriorMedication(
         input.frequency.trim(),
         input.shifts.trim(),
         input.reconciliationManualStatus ?? null,
+        input.reconciliationIntentionalStatus ?? null,
         input.reconciliationPrescriptionId ?? null,
         input.priorMedicationId,
         input.patientId
@@ -3456,6 +3581,7 @@ export async function updatePriorMedication(
           pm.expiration_date::text AS expiration_date,
           pm.manufacturer,
           pm.reconciliation_manual_status,
+          pm.reconciliation_intentional_status,
           pm.reconciliation_prescription_id,
           linked_mp.medication_name AS reconciliation_prescription_medication_name,
           pm.created_at

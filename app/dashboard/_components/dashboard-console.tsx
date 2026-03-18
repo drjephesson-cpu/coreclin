@@ -51,6 +51,7 @@ import {
   type PatientSex,
   type PrescriptionInterventionContactStatus,
   type PrescriptionInterventionErrorType,
+  type PriorMedicationIntentionalStatus,
   type PriorMedicationRecord,
   type ProfessionalRecord,
   type ProfessionOption,
@@ -423,8 +424,18 @@ type PriorMedicationReconciliationFormState = {
   frequency: string;
   shifts: string;
   reconciliationManualStatus: "" | "sim" | "nao";
+  reconciliationIntentionalStatus: "" | PriorMedicationIntentionalStatus;
   reconciliationPrescriptionId: string;
 };
+
+type DetectedAdmissionAllergyCandidate = {
+  key: string;
+  medicationName: string;
+  matchedSnippet: string;
+  matchedTerm: string;
+};
+
+type AdmissionAutosaveStatus = "idle" | "saving" | "saved";
 
 type PrescriptionInterventionFormState = {
   interventionNotes: string;
@@ -500,6 +511,63 @@ function createEmptyAdmissionFormState() {
   };
 }
 
+function normalizeComparableDateInput(input: string): string {
+  const normalizedDate = normalizeAdmissionDateValue(input);
+  return normalizedDate ? formatAdmissionDateValue(normalizedDate) : input.trim();
+}
+
+function buildAdmissionAutosaveSnapshot(input: {
+  admissionId?: string;
+  admissionDate: string;
+  bed: string;
+  admissionReason: string;
+  deniesContinuousMedicationUse: boolean;
+  admissionSummary: string;
+  admissionImportExcerpt: string;
+  interviewInformationQuality: string;
+  interviewInformationSourceType: string;
+  interviewInformationSourceName: string;
+  interviewInformationSourceRelationship: string;
+  interviewInterventionMotive: string;
+  interviewSubjective: string;
+  interviewRelevantSymptoms: string;
+  interviewPendingIssues: string;
+  interviewPlan: string;
+  teamId: string;
+  weightKg: string;
+  heightCm: string;
+  bmiFormula: string;
+  bsaFormula: string;
+  patientBirthDate: string;
+  patientSex: string;
+}): string {
+  return JSON.stringify({
+    admissionId: input.admissionId?.trim() ?? "",
+    admissionDate: normalizeComparableDateInput(input.admissionDate),
+    bed: input.bed.trim(),
+    admissionReason: input.admissionReason.trim(),
+    deniesContinuousMedicationUse: input.deniesContinuousMedicationUse,
+    admissionSummary: input.admissionSummary.trim(),
+    admissionImportExcerpt: input.admissionImportExcerpt.trim(),
+    interviewInformationQuality: input.interviewInformationQuality.trim(),
+    interviewInformationSourceType: input.interviewInformationSourceType.trim(),
+    interviewInformationSourceName: input.interviewInformationSourceName.trim(),
+    interviewInformationSourceRelationship: input.interviewInformationSourceRelationship.trim(),
+    interviewInterventionMotive: input.interviewInterventionMotive.trim(),
+    interviewSubjective: input.interviewSubjective.trim(),
+    interviewRelevantSymptoms: input.interviewRelevantSymptoms.trim(),
+    interviewPendingIssues: input.interviewPendingIssues.trim(),
+    interviewPlan: input.interviewPlan.trim(),
+    teamId: input.teamId.trim(),
+    weightKg: formatEditableDecimalInput(input.weightKg),
+    heightCm: formatEditableDecimalInput(input.heightCm),
+    bmiFormula: input.bmiFormula.trim(),
+    bsaFormula: input.bsaFormula.trim(),
+    patientBirthDate: normalizeComparableDateInput(input.patientBirthDate),
+    patientSex: input.patientSex.trim()
+  });
+}
+
 function createPriorMedicationReconciliationFormState(
   priorMedication?: Pick<
     PriorMedicationRecord,
@@ -509,6 +577,7 @@ function createPriorMedicationReconciliationFormState(
     | "frequency"
     | "shifts"
     | "reconciliationManualStatus"
+    | "reconciliationIntentionalStatus"
     | "reconciliationPrescriptionId"
   >
 ): PriorMedicationReconciliationFormState {
@@ -528,6 +597,7 @@ function createPriorMedicationReconciliationFormState(
         : priorMedication?.reconciliationManualStatus === false
           ? "nao"
           : "",
+    reconciliationIntentionalStatus: priorMedication?.reconciliationIntentionalStatus ?? "",
     reconciliationPrescriptionId:
       priorMedication?.reconciliationPrescriptionId !== null &&
       priorMedication?.reconciliationPrescriptionId !== undefined
@@ -546,6 +616,7 @@ function arePriorMedicationReconciliationFormsEqual(
     | "frequency"
     | "shifts"
     | "reconciliationManualStatus"
+    | "reconciliationIntentionalStatus"
     | "reconciliationPrescriptionId"
   >
 ): boolean {
@@ -563,6 +634,8 @@ function arePriorMedicationReconciliationFormsEqual(
         : reference.reconciliationManualStatus === false
           ? "nao"
           : "") &&
+    formState.reconciliationIntentionalStatus ===
+      (reference.reconciliationIntentionalStatus ?? "") &&
     formState.reconciliationPrescriptionId ===
       (reference.reconciliationPrescriptionId !== null &&
       reference.reconciliationPrescriptionId !== undefined
@@ -3629,6 +3702,8 @@ export default function DashboardConsole({
   const [admissionForm, setAdmissionForm] = useState(createEmptyAdmissionFormState);
   const [admissionFeedback, setAdmissionFeedback] = useState<FeedbackState>(null);
   const [admissionLoading, setAdmissionLoading] = useState(false);
+  const [admissionAutosaveStatus, setAdmissionAutosaveStatus] =
+    useState<AdmissionAutosaveStatus>("idle");
   const [roundSummaryFeedback, setRoundSummaryFeedback] = useState<FeedbackState>(null);
   const [roundSummaryLoading, setRoundSummaryLoading] = useState(false);
   const [evolutionFeedback, setEvolutionFeedback] = useState<FeedbackState>(null);
@@ -3732,9 +3807,12 @@ export default function DashboardConsole({
   const [allergyFeedback, setAllergyFeedback] = useState<FeedbackState>(null);
   const [allergyLoading, setAllergyLoading] = useState(false);
   const [allergyEditingId, setAllergyEditingId] = useState<number | null>(null);
+  const [allergyEditName, setAllergyEditName] = useState("");
   const [allergyEditReactionDescription, setAllergyEditReactionDescription] = useState("");
   const [allergyUpdatingId, setAllergyUpdatingId] = useState<number | null>(null);
   const [allergyRemovingId, setAllergyRemovingId] = useState<number | null>(null);
+  const [dismissedDetectedAdmissionAllergyKey, setDismissedDetectedAdmissionAllergyKey] =
+    useState<string | null>(null);
 
   const [priorMedicationForm, setPriorMedicationForm] = useState({
     medicationId: "",
@@ -3791,6 +3869,8 @@ export default function DashboardConsole({
   const lastPersistedInpatientWorkflowRef = useRef(
     JSON.stringify(persistedInpatientWorkflowPayload)
   );
+  const lastAdmissionAllergyPromptKeyRef = useRef<string>("");
+  const lastHydratedAdmissionKeyRef = useRef<string>("");
 
   useEffect(() => {
     if (activeSection !== "patient") {
@@ -4746,9 +4826,14 @@ export default function DashboardConsole({
     setAdmissionSummarySelection("");
     setAllergyForm({ query: "", selectedValue: "", reactionDescription: "" });
     setAllergyEditingId(null);
+    setAllergyEditName("");
     setAllergyEditReactionDescription("");
     setAllergyUpdatingId(null);
     setAllergyFeedback(null);
+    setDismissedDetectedAdmissionAllergyKey(null);
+    lastAdmissionAllergyPromptKeyRef.current = "";
+    lastHydratedAdmissionKeyRef.current = "";
+    setAdmissionAutosaveStatus("idle");
     setEvolutionFeedback(null);
     setRoundSummaryLoading(false);
     setRoundSummaryFeedback(null);
@@ -4767,6 +4852,17 @@ export default function DashboardConsole({
 
     const latestAdmission = selectedPatientAdmissions[0] ?? selectedPatient.latestAdmission;
     const latestMeasurement = selectedPatient.latestMeasurement;
+    const hydrationKey = [
+      selectedPatient.id,
+      latestAdmission?.id ?? "new",
+      selectedInpatientEntry?.key ?? ""
+    ].join(":");
+
+    if (lastHydratedAdmissionKeyRef.current === hydrationKey) {
+      return;
+    }
+
+    lastHydratedAdmissionKeyRef.current = hydrationKey;
 
     setAdmissionForm({
       ...createEmptyAdmissionFormState(),
@@ -4816,7 +4912,13 @@ export default function DashboardConsole({
     setShowAdmissionSummaryComposer(false);
     setShowAdmissionSummaryPreview(Boolean(latestAdmission?.admissionSummary?.trim()));
     setAdmissionSummarySelection("");
-  }, [canonicalTeamIdById, selectedInpatientEntry, selectedPatient, selectedPatientAdmissions]);
+  }, [
+    canonicalTeamIdById,
+    selectedCurrentAdmission?.id,
+    selectedInpatientEntry?.key,
+    selectedPatient,
+    selectedPatientAdmissions
+  ]);
 
   const medicationDescriptors = useMemo(
     () =>
@@ -4965,6 +5067,296 @@ export default function DashboardConsole({
       .map(({ item }) => item)
       .slice(0, 30);
   }, [allergySuggestionItems, allergyForm.query]);
+
+  const detectedAdmissionAllergyCandidate = useMemo<DetectedAdmissionAllergyCandidate | null>(() => {
+    const summaryText = admissionForm.admissionSummary.trim();
+    if (!summaryText) {
+      return null;
+    }
+
+    const allergyCuePattern =
+      /\b(alerg\w*|hipersens\w*|rash|urtic[áa]ria|anafil\w*|reac[aã]o(?:\s+al[ée]rgica)?)\b/i;
+    const normalizedKnownAllergies = new Set(
+      selectedPatientAllergies.map((allergy) => normalizeMedicationName(allergy.allergyName))
+    );
+    const segments = summaryText
+      .split(/\n+/)
+      .flatMap((line) => line.split(/(?<=[.;!?])/))
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+
+    for (const segment of segments) {
+      if (!allergyCuePattern.test(segment)) {
+        continue;
+      }
+
+      const candidateMedications = findCatalogMedicationsMentionedInText(segment);
+      const nextMedication = candidateMedications.find((medication) => {
+        const normalizedMedicationName = normalizeMedicationName(
+          extractMedicationIdentityLabel(medication.name) || medication.name
+        );
+        return normalizedMedicationName && !normalizedKnownAllergies.has(normalizedMedicationName);
+      });
+
+      if (!nextMedication) {
+        continue;
+      }
+
+      const displayMedicationName =
+        extractMedicationIdentityLabel(nextMedication.name) || nextMedication.name;
+      const matchTerms = [
+        displayMedicationName,
+        ...(nextMedication.activeIngredients
+          ? nextMedication.activeIngredients.split(/[;,+|/]/).map((term) => term.trim())
+          : []),
+        ...(nextMedication.searchAliases
+          ? nextMedication.searchAliases.split(/[;,+|/]/).map((term) => term.trim())
+          : [])
+      ].filter((term) => term.length > 0);
+      const matchedTerm =
+        matchTerms.find((term) =>
+          normalizeMedicationName(segment).includes(normalizeMedicationName(term))
+        ) ?? displayMedicationName;
+
+      return {
+        key: `${normalizeMedicationName(displayMedicationName)}:${normalizeMedicationName(segment)}`,
+        medicationName: displayMedicationName,
+        matchedSnippet: segment,
+        matchedTerm
+      };
+    }
+
+    return null;
+  }, [admissionForm.admissionSummary, selectedPatientAllergies]);
+
+  function prefillDetectedAdmissionAllergy(candidate: DetectedAdmissionAllergyCandidate): void {
+    setDismissedDetectedAdmissionAllergyKey(candidate.key);
+    setShowAllergyComposer(true);
+    setAllergyFeedback(null);
+    setAllergyForm({
+      query: candidate.medicationName,
+      selectedValue: candidate.medicationName,
+      reactionDescription: ""
+    });
+    openPatientView("allergies");
+  }
+
+  function renderDetectedAdmissionAllergySnippet(candidate: DetectedAdmissionAllergyCandidate) {
+    const highlightedTerm = candidate.matchedTerm.trim();
+    if (!highlightedTerm) {
+      return candidate.matchedSnippet;
+    }
+
+    const highlightedPattern = new RegExp(`(${escapeRegExp(highlightedTerm)})`, "gi");
+    return candidate.matchedSnippet.split(highlightedPattern).map((part, index) => {
+      const isHighlighted =
+        normalizeMedicationName(part) === normalizeMedicationName(highlightedTerm);
+
+      return isHighlighted ? (
+        <mark key={`${candidate.key}-${index}`} className="dashboard-admission-allergy-highlight">
+          {part}
+        </mark>
+      ) : (
+        <Fragment key={`${candidate.key}-${index}`}>{part}</Fragment>
+      );
+    });
+  }
+
+  useEffect(() => {
+    if (
+      !detectedAdmissionAllergyCandidate ||
+      dismissedDetectedAdmissionAllergyKey === detectedAdmissionAllergyCandidate.key ||
+      lastAdmissionAllergyPromptKeyRef.current === detectedAdmissionAllergyCandidate.key ||
+      patientView !== "admission-info"
+    ) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      lastAdmissionAllergyPromptKeyRef.current = detectedAdmissionAllergyCandidate.key;
+      const confirmed = window.confirm(
+        `Alergia detectada na anamnese.\n\nProvável medicamento: ${detectedAdmissionAllergyCandidate.medicationName}\n\nDeseja abrir o campo de alergia já preenchido para confirmar ou editar?`
+      );
+
+      if (confirmed) {
+        prefillDetectedAdmissionAllergy(detectedAdmissionAllergyCandidate);
+      }
+    }, 900);
+
+    return () => window.clearTimeout(timeout);
+  }, [detectedAdmissionAllergyCandidate, dismissedDetectedAdmissionAllergyKey, patientView]);
+
+  const admissionAutosaveDraftSnapshot = useMemo(
+    () =>
+      buildAdmissionAutosaveSnapshot({
+        admissionId: admissionForm.admissionId,
+        admissionDate: admissionForm.admissionDate,
+        bed: admissionForm.bed,
+        admissionReason: admissionForm.admissionReason,
+        deniesContinuousMedicationUse: admissionForm.deniesContinuousMedicationUse,
+        admissionSummary: admissionForm.admissionSummary,
+        admissionImportExcerpt: admissionForm.admissionImportExcerpt,
+        interviewInformationQuality: admissionForm.interviewInformationQuality,
+        interviewInformationSourceType: admissionForm.interviewInformationSourceType,
+        interviewInformationSourceName: admissionForm.interviewInformationSourceName,
+        interviewInformationSourceRelationship: admissionForm.interviewInformationSourceRelationship,
+        interviewInterventionMotive: admissionForm.interviewInterventionMotive,
+        interviewSubjective: admissionForm.interviewSubjective,
+        interviewRelevantSymptoms: admissionForm.interviewRelevantSymptoms,
+        interviewPendingIssues: admissionForm.interviewPendingIssues,
+        interviewPlan: admissionForm.interviewPlan,
+        teamId: admissionForm.teamId,
+        weightKg: admissionForm.weightKg,
+        heightCm: admissionForm.heightCm,
+        bmiFormula: admissionForm.bmiFormula,
+        bsaFormula: admissionForm.bsaFormula,
+        patientBirthDate: selectedPatientProfileForm.birthDate,
+        patientSex: selectedPatientProfileForm.sex
+      }),
+    [admissionForm, selectedPatientProfileForm.birthDate, selectedPatientProfileForm.sex]
+  );
+
+  const admissionAutosavePersistedSnapshot = useMemo(
+    () =>
+      buildAdmissionAutosaveSnapshot({
+        admissionId: selectedCurrentAdmission ? String(selectedCurrentAdmission.id) : "",
+        admissionDate: formatAdmissionDateValue(
+          selectedCurrentAdmission?.admissionDate ?? selectedInpatientEntry?.admissionDate ?? ""
+        ),
+        bed: selectedCurrentAdmission?.bed ?? selectedInpatientEntry?.bed ?? "",
+        admissionReason:
+          selectedCurrentAdmission?.admissionReason &&
+          selectedCurrentAdmission.admissionReason !== "Pendente de preenchimento"
+            ? selectedCurrentAdmission.admissionReason
+            : "",
+        deniesContinuousMedicationUse: selectedCurrentAdmission?.deniesContinuousMedicationUse ?? false,
+        admissionSummary: selectedCurrentAdmission?.admissionSummary ?? "",
+        admissionImportExcerpt: selectedCurrentAdmission?.admissionImportExcerpt ?? "",
+        interviewInformationQuality: selectedCurrentAdmission?.interviewInformationQuality ?? "",
+        interviewInformationSourceType: selectedCurrentAdmission?.interviewInformationSourceType ?? "",
+        interviewInformationSourceName: selectedCurrentAdmission?.interviewInformationSourceName ?? "",
+        interviewInformationSourceRelationship:
+          selectedCurrentAdmission?.interviewInformationSourceRelationship ?? "",
+        interviewInterventionMotive: selectedCurrentAdmission?.interviewInterventionMotive ?? "",
+        interviewSubjective: selectedCurrentAdmission?.interviewSubjective ?? "",
+        interviewRelevantSymptoms: selectedCurrentAdmission?.interviewRelevantSymptoms ?? "",
+        interviewPendingIssues: selectedCurrentAdmission?.interviewPendingIssues ?? "",
+        interviewPlan: selectedCurrentAdmission?.interviewPlan ?? "",
+        teamId:
+          selectedCurrentAdmission?.teamId !== null && selectedCurrentAdmission?.teamId !== undefined
+            ? String(
+                canonicalTeamIdById.get(selectedCurrentAdmission.teamId) ??
+                  selectedCurrentAdmission.teamId
+              )
+            : selectedInpatientEntry?.teamId !== null && selectedInpatientEntry?.teamId !== undefined
+              ? String(
+                  canonicalTeamIdById.get(selectedInpatientEntry.teamId) ??
+                    selectedInpatientEntry.teamId
+                )
+              : "",
+        weightKg:
+          selectedPatient?.latestMeasurement?.weightKg !== null &&
+          selectedPatient?.latestMeasurement?.weightKg !== undefined
+            ? String(selectedPatient.latestMeasurement.weightKg)
+            : "",
+        heightCm:
+          selectedPatient?.latestMeasurement?.heightCm !== null &&
+          selectedPatient?.latestMeasurement?.heightCm !== undefined
+            ? String(selectedPatient.latestMeasurement.heightCm)
+            : "",
+        bmiFormula: selectedPatient?.latestMeasurement?.bmiFormula ?? "quetelet",
+        bsaFormula: selectedPatient?.latestMeasurement?.bsaFormula ?? "mosteller",
+        patientBirthDate: formatAdmissionDateValue(selectedPatient?.birthDate ?? ""),
+        patientSex: selectedPatient?.sex ?? ""
+      }),
+    [
+      canonicalTeamIdById,
+      selectedCurrentAdmission,
+      selectedInpatientEntry?.admissionDate,
+      selectedInpatientEntry?.bed,
+      selectedInpatientEntry?.teamId,
+      selectedPatient?.birthDate,
+      selectedPatient?.latestMeasurement,
+      selectedPatient?.sex
+    ]
+  );
+
+  useEffect(() => {
+    if (!selectedPatient || !admissionForm.admissionId.trim()) {
+      setAdmissionAutosaveStatus("idle");
+      return;
+    }
+
+    if (!normalizeAdmissionDateValue(admissionForm.admissionDate)) {
+      return;
+    }
+
+    if (
+      selectedPatientProfileForm.birthDate.trim() &&
+      !normalizeAdmissionDateValue(selectedPatientProfileForm.birthDate)
+    ) {
+      return;
+    }
+
+    if (admissionAutosaveDraftSnapshot === admissionAutosavePersistedSnapshot) {
+      setAdmissionAutosaveStatus("idle");
+      return;
+    }
+
+    if (admissionLoading || roundSummaryLoading) {
+      return;
+    }
+
+    let cancelled = false;
+    let clearSavedTimeoutId: number | null = null;
+    const autosaveTimeoutId = window.setTimeout(() => {
+      void (async () => {
+        setAdmissionAutosaveStatus("saving");
+        const saved = await persistAdmissionForm({
+          analyzeSummary: false,
+          requireExistingAdmission: true,
+          missingAdmissionMessage: "Salve primeiro a internação para ativar o salvamento automático.",
+          successMessage: "Internação atualizada automaticamente.",
+          connectionErrorMessage: "Erro de conexão ao salvar automaticamente a internação.",
+          silentSuccess: true,
+          clearFeedback: false
+        });
+
+        if (cancelled) {
+          return;
+        }
+
+        if (!saved) {
+          setAdmissionAutosaveStatus("idle");
+          return;
+        }
+
+        setAdmissionAutosaveStatus("saved");
+        clearSavedTimeoutId = window.setTimeout(() => {
+          if (!cancelled) {
+            setAdmissionAutosaveStatus("idle");
+          }
+        }, 1800);
+      })();
+    }, 1200);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(autosaveTimeoutId);
+      if (clearSavedTimeoutId !== null) {
+        window.clearTimeout(clearSavedTimeoutId);
+      }
+    };
+  }, [
+    admissionAutosaveDraftSnapshot,
+    admissionAutosavePersistedSnapshot,
+    admissionForm.admissionDate,
+    admissionForm.admissionId,
+    admissionLoading,
+    roundSummaryLoading,
+    selectedPatient,
+    selectedPatientProfileForm.birthDate
+  ]);
 
   function findMedicationDescriptorsByText(searchText: string) {
     const normalizedSearchText = normalizeMedicationName(searchText);
@@ -5439,7 +5831,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }));
     setAdmissionFeedback({
       type: "success",
-      message: "Trecho selecionado salvo para importar MUC. Agora clique em Atualizar internação."
+      message:
+        "Trecho selecionado separado para o MUC. Ele fica salvo no formulário; se quiser rodar a análise agora, clique em Atualizar internação."
     });
   }
 
@@ -6081,6 +6474,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
               : formState.reconciliationManualStatus === "nao"
                 ? false
                 : null,
+          reconciliationIntentionalStatus:
+            formState.reconciliationIntentionalStatus === ""
+              ? null
+              : formState.reconciliationIntentionalStatus,
           reconciliationPrescriptionId: formState.reconciliationPrescriptionId
             ? Number(formState.reconciliationPrescriptionId)
             : null
@@ -7224,9 +7621,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     missingAdmissionMessage?: string;
     successMessage?: string;
     connectionErrorMessage?: string;
+    silentSuccess?: boolean;
+    clearFeedback?: boolean;
   }): Promise<boolean> {
-    setAdmissionFeedback(null);
-    setEvolutionFeedback(null);
+    if (options?.clearFeedback !== false) {
+      setAdmissionFeedback(null);
+      setEvolutionFeedback(null);
+    }
 
     if (!selectedPatient) {
       setAdmissionFeedback({
@@ -7346,13 +7747,17 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             : "";
       }
 
-      setAdmissionFeedback({
-        type: "success",
-        message: `${
-          options?.successMessage ??
-          (shouldUpdateAdmission ? "Internação atualizada com sucesso." : "Internação cadastrada com sucesso.")
-        }${autofillDetails ? ` Trecho de MUC analisado: ${autofillDetails}.` : ""}`
-      });
+      if (!options?.silentSuccess) {
+        setAdmissionFeedback({
+          type: "success",
+          message: `${
+            options?.successMessage ??
+            (shouldUpdateAdmission
+              ? "Internação atualizada com sucesso."
+              : "Internação cadastrada com sucesso.")
+          }${autofillDetails ? ` Trecho de MUC analisado: ${autofillDetails}.` : ""}`
+        });
+      }
       const savedAdmission = result.admission;
       const trackedInpatientEntry = buildInpatientEntryFromAdmission(
         mergePatientWithAdmission(selectedPatient, savedAdmission),
@@ -7410,7 +7815,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         };
       });
       upsertAdmissionRecordLocally(savedAdmission, selectedPatient);
-      setAdmissionForm(createEmptyAdmissionFormState());
       return true;
     } catch {
       setAdmissionFeedback({
@@ -7746,6 +8150,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       const result = (await response.json()) as {
         message?: string;
         allergy?: PatientAllergyRecord;
+        learnedMedication?: MedicationRecord | null;
       };
       if (!response.ok || !result.allergy) {
         setAllergyFeedback({ type: "error", message: result.message ?? "Falha ao cadastrar alergia." });
@@ -7756,6 +8161,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       setShowAllergyComposer(false);
       setAllergyForm({ query: "", selectedValue: "", reactionDescription: "" });
       appendPatientAllergyLocally(result.allergy);
+      if (result.learnedMedication) {
+        setMedications((current) => upsertRecordById(current, result.learnedMedication!));
+      }
     } catch {
       setAllergyFeedback({ type: "error", message: "Erro de conexão ao cadastrar alergia." });
     } finally {
@@ -7802,11 +8210,13 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   function startAllergyEdit(allergy: PatientAllergyRecord): void {
     setAllergyFeedback(null);
     setAllergyEditingId(allergy.id);
+    setAllergyEditName(allergy.allergyName);
     setAllergyEditReactionDescription(allergy.reactionDescription ?? "");
   }
 
   function cancelAllergyEdit(): void {
     setAllergyEditingId(null);
+    setAllergyEditName("");
     setAllergyEditReactionDescription("");
     setAllergyUpdatingId(null);
   }
@@ -7814,6 +8224,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   async function handleUpdateAllergy(allergy: PatientAllergyRecord): Promise<void> {
     if (!selectedPatient) {
       setAllergyFeedback({ type: "error", message: "Selecione um paciente para editar a alergia." });
+      return;
+    }
+
+    if (!allergyEditName.trim()) {
+      setAllergyFeedback({ type: "error", message: "Informe o nome da alergia." });
       return;
     }
 
@@ -7826,6 +8241,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           allergyId: allergy.id,
+          allergyName: allergyEditName,
           reactionDescription: allergyEditReactionDescription
         })
       });
@@ -7833,14 +8249,18 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       const result = (await response.json()) as {
         message?: string;
         allergy?: PatientAllergyRecord;
+        learnedMedication?: MedicationRecord | null;
       };
       if (!response.ok || !result.allergy) {
         setAllergyFeedback({ type: "error", message: result.message ?? "Falha ao atualizar alergia." });
         return;
       }
 
-      setAllergyFeedback({ type: "success", message: "Reação da alergia atualizada com sucesso." });
+      setAllergyFeedback({ type: "success", message: "Alergia atualizada com sucesso." });
       updatePatientAllergyLocally(result.allergy);
+      if (result.learnedMedication) {
+        setMedications((current) => upsertRecordById(current, result.learnedMedication!));
+      }
       cancelAllergyEdit();
     } catch {
       setAllergyFeedback({ type: "error", message: "Erro de conexão ao atualizar alergia." });
@@ -8009,6 +8429,10 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             formState.reconciliationManualStatus === ""
               ? null
               : formState.reconciliationManualStatus === "sim",
+          reconciliationIntentionalStatus:
+            formState.reconciliationIntentionalStatus === ""
+              ? null
+              : formState.reconciliationIntentionalStatus,
           reconciliationPrescriptionId: formState.reconciliationPrescriptionId
             ? Number(formState.reconciliationPrescriptionId)
             : null
@@ -10740,7 +11164,17 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     ) : (
                                       selectedPatientAllergies.map((allergy) => (
                                         <tr key={allergy.id}>
-                                          <td>{allergy.allergyName}</td>
+                                          <td>
+                                            {allergyEditingId === allergy.id ? (
+                                              <input
+                                                value={allergyEditName}
+                                                onChange={(event) => setAllergyEditName(event.target.value)}
+                                                placeholder="Nome da alergia"
+                                              />
+                                            ) : (
+                                              allergy.allergyName
+                                            )}
+                                          </td>
                                           <td>
                                             {allergyEditingId === allergy.id ? (
                                               <textarea
@@ -11087,6 +11521,58 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 </div>
                               ) : null}
 
+                              {detectedAdmissionAllergyCandidate &&
+                              dismissedDetectedAdmissionAllergyKey !==
+                                detectedAdmissionAllergyCandidate.key ? (
+                                <div className="dashboard-admission-allergy-alert" role="alert">
+                                  <div className="dashboard-admission-allergy-alert-header">
+                                    <div>
+                                      <h3>Alergia detectada na anamnese</h3>
+                                      <p>
+                                        Provável medicamento:{" "}
+                                        <strong>{detectedAdmissionAllergyCandidate.medicationName}</strong>
+                                      </p>
+                                    </div>
+                                    <span className="dashboard-status-pill is-invalid">Alerta</span>
+                                  </div>
+                                  <p className="dashboard-admission-allergy-alert-copy">
+                                    Trecho identificado:{" "}
+                                    <span className="dashboard-admission-allergy-snippet">
+                                      {renderDetectedAdmissionAllergySnippet(
+                                        detectedAdmissionAllergyCandidate
+                                      )}
+                                    </span>
+                                  </p>
+                                  <p className="dashboard-muted">
+                                    Se confirmar, o campo de alergia abre já preenchido e continua editável.
+                                  </p>
+                                  <div className="dashboard-inline-actions">
+                                    <button
+                                      type="button"
+                                      className="dashboard-mini-button"
+                                      onClick={() =>
+                                        prefillDetectedAdmissionAllergy(
+                                          detectedAdmissionAllergyCandidate
+                                        )
+                                      }
+                                    >
+                                      Confirmar e preencher alergia
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="dashboard-mini-button"
+                                      onClick={() =>
+                                        setDismissedDetectedAdmissionAllergyKey(
+                                          detectedAdmissionAllergyCandidate.key
+                                        )
+                                      }
+                                    >
+                                      Dispensar alerta
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : null}
+
                               {admissionForm.admissionSummary.trim() ? (
                                 <div className="dashboard-calculation-box">
                                   <h3>Trecho salvo para MUC</h3>
@@ -11140,6 +11626,20 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   {admissionFeedback.message}
                                 </p>
                               ) : null}
+
+                              {admissionForm.admissionId.trim() ? (
+                                <p className={`dashboard-autosave-status is-${admissionAutosaveStatus}`}>
+                                  {admissionAutosaveStatus === "saving"
+                                    ? "Salvando automaticamente..."
+                                    : admissionAutosaveStatus === "saved"
+                                      ? "Alterações salvas automaticamente."
+                                      : "Autosave ativo para esta internação."}
+                                </p>
+                              ) : (
+                                <p className="dashboard-muted">
+                                  Depois do primeiro salvamento, as alterações desta internação ficam em autosave.
+                                </p>
+                              )}
 
                               <button type="submit" disabled={admissionLoading}>
                                 {admissionLoading
@@ -11328,6 +11828,20 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   {admissionFeedback.message}
                                 </p>
                               ) : null}
+
+                              {admissionForm.admissionId.trim() ? (
+                                <p className={`dashboard-autosave-status is-${admissionAutosaveStatus}`}>
+                                  {admissionAutosaveStatus === "saving"
+                                    ? "Salvando automaticamente..."
+                                    : admissionAutosaveStatus === "saved"
+                                      ? "Entrevista salva automaticamente."
+                                      : "Autosave ativo para entrevista e dados da internação."}
+                                </p>
+                              ) : (
+                                <p className="dashboard-muted">
+                                  Após o primeiro salvamento da internação, a entrevista também entra em autosave.
+                                </p>
+                              )}
 
                               <div className="dashboard-inline-actions">
                                 <button
@@ -11661,24 +12175,27 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 quantidade por horário no padrão da tomada (ex.: 1-1-1).
                               </p>
 
-                              <label className="dashboard-inline-toggle">
-                                <input
-                                  type="checkbox"
-                                  checked={admissionForm.deniesContinuousMedicationUse}
-                                  onChange={(event) =>
-                                    setAdmissionForm((current) => ({
-                                      ...current,
-                                      deniesContinuousMedicationUse: event.target.checked
-                                    }))
-                                  }
-                                />
-                                Paciente nega uso de MUC
-                              </label>
-
-                              <p className="dashboard-muted">
-                                Use esse marcador quando não houver medicamento de uso prévio para registrar. Ele
-                                entra automaticamente na evolução após salvar.
-                              </p>
+                              <div className="dashboard-toggle-card">
+                                <label className="dashboard-inline-toggle dashboard-inline-toggle-card">
+                                  <input
+                                    type="checkbox"
+                                    checked={admissionForm.deniesContinuousMedicationUse}
+                                    onChange={(event) =>
+                                      setAdmissionForm((current) => ({
+                                        ...current,
+                                        deniesContinuousMedicationUse: event.target.checked
+                                      }))
+                                    }
+                                  />
+                                  <span className="dashboard-inline-toggle-copy">
+                                    <span>Paciente nega uso de MUC</span>
+                                    <span className="dashboard-inline-toggle-description">
+                                      Use esse marcador quando não houver medicamento de uso prévio para
+                                      registrar. Ele entra automaticamente na evolução após salvar.
+                                    </span>
+                                  </span>
+                                </label>
+                              </div>
 
                               {!admissionForm.admissionId.trim() ? (
                                 <p className="dashboard-muted">
@@ -11749,6 +12266,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                     <th>Reconciliado</th>
                                     <th>Reconciliado em todas</th>
                                     <th>Manual</th>
+                                    <th>Intencional?</th>
                                     <th>Vincular prescrição</th>
                                     <th>Histórico</th>
                                     <th>Registro</th>
@@ -11758,7 +12276,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 <tbody>
                                   {priorMedicationEditableRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={12}>Nenhum medicamento prévio cadastrado.</td>
+                                      <td colSpan={13}>Nenhum medicamento prévio cadastrado.</td>
                                     </tr>
                                   ) : (
                                     priorMedicationEditableRows.map((row) => (
@@ -11888,6 +12406,34 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                             <option value="">Automático</option>
                                             <option value="sim">Sim</option>
                                             <option value="nao">Não</option>
+                                          </select>
+                                        </td>
+                                        <td>
+                                          <select
+                                            value={row.formState.reconciliationIntentionalStatus}
+                                            onChange={(event) =>
+                                              setPriorMedicationReconciliationForm((current) => ({
+                                                ...current,
+                                                [row.priorMedication.id]: {
+                                                  ...(current[row.priorMedication.id] ??
+                                                    createPriorMedicationReconciliationFormState(
+                                                      row.priorMedication
+                                                    )),
+                                                  reconciliationIntentionalStatus:
+                                                    event.target.value as PriorMedicationReconciliationFormState["reconciliationIntentionalStatus"]
+                                                }
+                                              }))
+                                            }
+                                            disabled={row.latestReconciled !== false}
+                                          >
+                                            <option value="">
+                                              {row.latestReconciled === false
+                                                ? "Definir"
+                                                : "Só para não reconciliado"}
+                                            </option>
+                                            <option value="sim">Sim</option>
+                                            <option value="nao">Não</option>
+                                            <option value="nao-se-aplica">Não se aplica</option>
                                           </select>
                                         </td>
                                         <td>
