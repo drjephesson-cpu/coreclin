@@ -11706,34 +11706,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 quantidade por horário no padrão da tomada (ex.: 1-1-1).
                               </p>
 
-                              <div className="dashboard-toggle-card">
-                                <label className="dashboard-inline-toggle dashboard-inline-toggle-card">
-                                  <input
-                                    type="checkbox"
-                                    checked={admissionForm.deniesContinuousMedicationUse}
-                                    onChange={(event) =>
-                                      setAdmissionForm((current) => ({
-                                        ...current,
-                                        deniesContinuousMedicationUse: event.target.checked
-                                      }))
-                                    }
-                                  />
-                                  <span className="dashboard-inline-toggle-copy">
-                                    <span>Paciente nega uso de MUC</span>
-                                    <span className="dashboard-inline-toggle-description">
-                                      Use esse marcador quando não houver medicamento de uso prévio para
-                                      registrar. Ele entra automaticamente na evolução após salvar.
-                                    </span>
-                                  </span>
-                                </label>
-                              </div>
-
-                              {!admissionForm.admissionId.trim() ? (
-                                <p className="dashboard-muted">
-                                  Salve primeiro a internação para persistir o marcador de nega uso de MUC.
-                                </p>
-                              ) : null}
-
                               <div className="dashboard-two-columns">
                                 <input
                                   value={
@@ -11771,6 +11743,28 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 disabled
                                 aria-label="Reconciliado em todas as prescrições"
                               />
+
+                              <div className="dashboard-muc-negation-card">
+                                <label className="dashboard-muc-negation-control">
+                                  <input
+                                    type="checkbox"
+                                    checked={admissionForm.deniesContinuousMedicationUse}
+                                    onChange={(event) =>
+                                      setAdmissionForm((current) => ({
+                                        ...current,
+                                        deniesContinuousMedicationUse: event.target.checked
+                                      }))
+                                    }
+                                  />
+                                  <span>Paciente nega uso de MUC</span>
+                                </label>
+                              </div>
+
+                              {!admissionForm.admissionId.trim() ? (
+                                <p className="dashboard-muted">
+                                  Salve primeiro a internação para persistir o marcador de nega uso de MUC.
+                                </p>
+                              ) : null}
 
                             {priorMedicationFeedback ? (
                               <p

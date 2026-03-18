@@ -587,6 +587,30 @@ body {
   line-height: 1.45;
 }
 
+.dashboard-muc-negation-card {
+  border: 1px solid #d6e2f1;
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 12px 14px;
+}
+
+.dashboard-muc-negation-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: #173861;
+  font-size: 0.94rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dashboard-muc-negation-control input {
+  margin: 0;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
 .dashboard-exam-summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
