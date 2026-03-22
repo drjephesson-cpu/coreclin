@@ -474,6 +474,27 @@ function createEmptyStockValidationFormState(): StockValidationFormState {
   };
 }
 
+function createStockValidationFormStateFromPrescription(
+  prescription: Pick<
+    MedicalPrescriptionRecord,
+    | "quantityTablets"
+    | "lotNumber"
+    | "expirationDate"
+    | "manufacturer"
+    | "patientDidNotBring"
+    | "stockValidationNote"
+  >
+): StockValidationFormState {
+  return {
+    quantityTablets: prescription.quantityTablets === null ? "" : String(prescription.quantityTablets),
+    lotNumber: prescription.lotNumber ?? "",
+    expirationDate: prescription.expirationDate ?? "",
+    manufacturer: prescription.manufacturer ?? "",
+    patientDidNotBring: prescription.patientDidNotBring,
+    stockValidationNote: prescription.stockValidationNote ?? ""
+  };
+}
+
 function createEmptyAdmissionFormState() {
   return {
     admissionId: "",
@@ -1869,6 +1890,26 @@ function formatMedicationValidationExpiry(expirationDate: string | null): string
   })
     .format(parsed)
     .replace(".", "");
+}
+
+function formatPriorMedicationManualStatusLabel(
+  status: PriorMedicationReconciliationFormState["reconciliationManualStatus"]
+): string {
+  return status === "sim" ? "Sim" : status === "nao" ? "Não" : "Automático";
+}
+
+function formatPriorMedicationIntentionalStatusLabel(
+  status: PriorMedicationReconciliationFormState["reconciliationIntentionalStatus"]
+): string {
+  if (!status) {
+    return "Não definido";
+  }
+
+  if (status === "nao-se-aplica") {
+    return "Não se aplica";
+  }
+
+  return status === "sim" ? "Sim" : "Não";
 }
 
 function calculateMedicationRevalidationDate(
@@ -3768,6 +3809,9 @@ export default function DashboardConsole({
   >({});
   const [medicationValidationUpdatingId, setMedicationValidationUpdatingId] = useState<number | null>(null);
   const [medicationValidationBatchSaving, setMedicationValidationBatchSaving] = useState(false);
+  const [medicationValidationEditingId, setMedicationValidationEditingId] = useState<number | null>(
+    null
+  );
   const [medicationValidationForm, setMedicationValidationForm] = useState<
     Record<number, StockValidationFormState>
   >({});
@@ -5956,15 +6000,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       Object.fromEntries(
         selectedPatientMedicationValidationRows.map((row) => [
           row.prescription.id,
-          {
-            quantityTablets:
-              row.prescription.quantityTablets === null ? "" : String(row.prescription.quantityTablets),
-            lotNumber: row.prescription.lotNumber ?? "",
-            expirationDate: row.prescription.expirationDate ?? "",
-            manufacturer: row.prescription.manufacturer ?? "",
-            patientDidNotBring: row.prescription.patientDidNotBring,
-            stockValidationNote: row.prescription.stockValidationNote ?? ""
-          } satisfies StockValidationFormState
+          createStockValidationFormStateFromPrescription(row.prescription)
         ])
       )
     );
@@ -5973,6 +6009,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   useEffect(() => {
     setPrescriptionInterventionOpenId(null);
   }, [selectedPatientPrescriptions]);
+
+  useEffect(() => {
+    setPriorMedicationEditingId(null);
+    setMedicationValidationEditingId(null);
+  }, [selectedPatientId]);
 
   useEffect(() => {
     setPriorMedicationEditingId(null);
@@ -6151,6 +6192,25 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         };
       }),
     [selectedPatientMedicationValidationRows, medicationValidationForm]
+  );
+
+  const selectedPriorMedicationEditingRow = useMemo(
+    () =>
+      priorMedicationEditingId === null
+        ? null
+        : priorMedicationEditableRows.find((row) => row.priorMedication.id === priorMedicationEditingId) ??
+          null,
+    [priorMedicationEditableRows, priorMedicationEditingId]
+  );
+
+  const selectedMedicationValidationEditingRow = useMemo(
+    () =>
+      medicationValidationEditingId === null
+        ? null
+        : medicationValidationEditableRows.find(
+            (row) => row.prescription.id === medicationValidationEditingId
+          ) ?? null,
+    [medicationValidationEditableRows, medicationValidationEditingId]
   );
 
   const interviewEvolutionText = useMemo(() => {
@@ -6746,24 +6806,43 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }));
   }
 
-  function startPriorMedicationNameEdit(priorMedication: PriorMedicationRecord): void {
+  function updatePriorMedicationReconciliationSelection(
+    priorMedicationId: number,
+    patch: Partial<PriorMedicationReconciliationFormState>,
+    priorMedication?: PriorMedicationRecord
+  ): void {
     setPriorMedicationReconciliationForm((current) => ({
       ...current,
-      [priorMedication.id]:
-        current[priorMedication.id] ?? createPriorMedicationReconciliationFormState(priorMedication)
+      [priorMedicationId]: {
+        ...(current[priorMedicationId] ?? createPriorMedicationReconciliationFormState(priorMedication)),
+        ...patch
+      }
+    }));
+  }
+
+  function openPriorMedicationEditor(priorMedication: PriorMedicationRecord): void {
+    setPriorMedicationReconciliationForm((current) => ({
+      ...current,
+      [priorMedication.id]: {
+        ...(current[priorMedication.id] ?? createPriorMedicationReconciliationFormState(priorMedication))
+      }
     }));
     setPriorMedicationEditingId(priorMedication.id);
   }
 
-  function cancelPriorMedicationNameEdit(priorMedication: PriorMedicationRecord): void {
-    setPriorMedicationReconciliationForm((current) => ({
-      ...current,
-      [priorMedication.id]: {
-        ...(current[priorMedication.id] ?? createPriorMedicationReconciliationFormState(priorMedication)),
-        medicationName: priorMedication.medicationName
+  function closePriorMedicationEditor(): void {
+    if (priorMedicationEditingId !== null) {
+      const row = priorMedicationEditableRows.find(
+        (currentRow) => currentRow.priorMedication.id === priorMedicationEditingId
+      );
+      if (row) {
+        setPriorMedicationReconciliationForm((current) => ({
+          ...current,
+          [row.priorMedication.id]: createPriorMedicationReconciliationFormState(row.priorMedication)
+        }));
       }
-    }));
-    setPriorMedicationEditingId((current) => (current === priorMedication.id ? null : current));
+    }
+    setPriorMedicationEditingId(null);
   }
 
   function updateMedicationValidationField(
@@ -6799,6 +6878,34 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         [prescriptionId]: nextState
       };
     });
+  }
+
+  function openMedicationValidationEditor(prescriptionId: number): void {
+    const row = selectedPatientMedicationValidationRows.find(
+      (currentRow) => currentRow.prescription.id === prescriptionId
+    );
+    setMedicationValidationForm((current) => ({
+      ...current,
+      [prescriptionId]:
+        current[prescriptionId] ??
+        (row ? createStockValidationFormStateFromPrescription(row.prescription) : createEmptyStockValidationFormState())
+    }));
+    setMedicationValidationEditingId(prescriptionId);
+  }
+
+  function closeMedicationValidationEditor(): void {
+    if (medicationValidationEditingId !== null) {
+      const row = selectedPatientMedicationValidationRows.find(
+        (currentRow) => currentRow.prescription.id === medicationValidationEditingId
+      );
+      if (row) {
+        setMedicationValidationForm((current) => ({
+          ...current,
+          [row.prescription.id]: createStockValidationFormStateFromPrescription(row.prescription)
+        }));
+      }
+    }
+    setMedicationValidationEditingId(null);
   }
 
   function openDashboardSection(sectionId: DashboardSectionId): void {
@@ -8075,18 +8182,18 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
   }
 
-  async function handleUpdatePriorMedicationReconciliation(priorMedicationId: number): Promise<void> {
+  async function handleUpdatePriorMedicationReconciliation(priorMedicationId: number): Promise<boolean> {
     if (!selectedPatient) {
       setPriorMedicationFeedback({
         type: "error",
         message: "Selecione um paciente para atualizar o medicamento prévio."
       });
-      return;
+      return false;
     }
 
     const row = priorMedicationEditableRows.find((currentRow) => currentRow.priorMedication.id === priorMedicationId);
     if (!row) {
-      return;
+      return false;
     }
 
     setPriorMedicationFeedback(null);
@@ -8104,7 +8211,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           type: "error",
           message: result.message
         });
-        return;
+        return false;
       }
 
       setPriorMedicationFeedback({
@@ -8126,6 +8233,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       if (learnedMedication) {
         setMedications((current) => upsertRecordById(current, learnedMedication));
       }
+      return true;
     } finally {
       setPriorMedicationUpdatingId(null);
     }
@@ -8649,18 +8757,18 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     }
   }
 
-  async function handleUpdateMedicationValidation(prescriptionId: number): Promise<void> {
+  async function handleUpdateMedicationValidation(prescriptionId: number): Promise<boolean> {
     if (!selectedPatient) {
       setPrescriptionFeedback({
         type: "error",
         message: "Selecione um paciente para atualizar a validação do medicamento."
       });
-      return;
+      return false;
     }
 
     const formState = medicationValidationForm[prescriptionId];
     if (!formState) {
-      return;
+      return false;
     }
 
     setPrescriptionFeedback(null);
@@ -8677,7 +8785,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           type: "error",
           message: result.message
         });
-        return;
+        return false;
       }
 
       setPrescriptionFeedback({
@@ -8685,6 +8793,8 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         message: "Validação do medicamento atualizada."
       });
       updatePrescriptionLocally(result.prescription);
+      setMedicationValidationEditingId((current) => (current === prescriptionId ? null : current));
+      return true;
     } finally {
       setMedicationValidationUpdatingId(null);
     }
@@ -8795,6 +8905,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
         message: "Medicamento prévio removido com sucesso."
       });
       removePriorMedicationLocally(selectedPatient.id, priorMedicationId);
+      setPriorMedicationEditingId((current) => (current === priorMedicationId ? null : current));
     } catch {
       setPriorMedicationFeedback({
         type: "error",
@@ -9529,6 +9640,464 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                 onClick={() => confirmMandatoryEvolutionGeneration(mandatoryEvolutionPreview.entry)}
               >
                 Concluir geração
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {selectedPriorMedicationEditingRow ? (
+        <div className="dashboard-modal-overlay" role="dialog" aria-modal="true">
+          <div className="dashboard-modal-card">
+            <div className="dashboard-inline-actions dashboard-inline-actions-spread">
+              <div>
+                <p className="dashboard-tag">Medicamentos de uso prévio</p>
+                <h3>Editar medicamento</h3>
+                <p className="dashboard-muted">
+                  {selectedPriorMedicationEditingRow.formState.medicationName.trim() ||
+                    selectedPriorMedicationEditingRow.priorMedication.medicationName}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="dashboard-mini-button"
+                onClick={closePriorMedicationEditor}
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="dashboard-editor-modal-grid">
+              <label className="dashboard-editor-field dashboard-editor-field-full">
+                <span>Medicamento</span>
+                <input
+                  list="prior-medication-options"
+                  value={selectedPriorMedicationEditingRow.formState.medicationName}
+                  onChange={(event) =>
+                    updatePriorMedicationReconciliationField(
+                      selectedPriorMedicationEditingRow.priorMedication.id,
+                      "medicationName",
+                      event.target.value,
+                      selectedPriorMedicationEditingRow.priorMedication
+                    )
+                  }
+                  placeholder="Nome do medicamento"
+                />
+              </label>
+
+              <label className="dashboard-editor-field">
+                <span>Dose</span>
+                <input
+                  value={selectedPriorMedicationEditingRow.formState.dose}
+                  onChange={(event) =>
+                    updatePriorMedicationReconciliationField(
+                      selectedPriorMedicationEditingRow.priorMedication.id,
+                      "dose",
+                      event.target.value,
+                      selectedPriorMedicationEditingRow.priorMedication
+                    )
+                  }
+                  placeholder="Dose (ex.: 100 mg)"
+                />
+              </label>
+
+              <label className="dashboard-editor-field">
+                <span>Frequência</span>
+                <input
+                  value={selectedPriorMedicationEditingRow.formState.frequency}
+                  onChange={(event) =>
+                    updatePriorMedicationReconciliationField(
+                      selectedPriorMedicationEditingRow.priorMedication.id,
+                      "frequency",
+                      event.target.value,
+                      selectedPriorMedicationEditingRow.priorMedication
+                    )
+                  }
+                  placeholder="Ex.: 1x/dia"
+                />
+              </label>
+
+              <label className="dashboard-editor-field">
+                <span>Quantidade por horário</span>
+                <input
+                  value={selectedPriorMedicationEditingRow.formState.shifts}
+                  onChange={(event) =>
+                    updatePriorMedicationReconciliationField(
+                      selectedPriorMedicationEditingRow.priorMedication.id,
+                      "shifts",
+                      event.target.value,
+                      selectedPriorMedicationEditingRow.priorMedication
+                    )
+                  }
+                  placeholder="Ex.: manhã e noite"
+                />
+              </label>
+
+              <label className="dashboard-editor-field">
+                <span>Reconciliação manual</span>
+                <select
+                  value={selectedPriorMedicationEditingRow.formState.reconciliationManualStatus}
+                  onChange={(event) =>
+                    updatePriorMedicationReconciliationSelection(
+                      selectedPriorMedicationEditingRow.priorMedication.id,
+                      {
+                        reconciliationManualStatus:
+                          event.target.value as PriorMedicationReconciliationFormState["reconciliationManualStatus"]
+                      },
+                      selectedPriorMedicationEditingRow.priorMedication
+                    )
+                  }
+                >
+                  <option value="">Automático</option>
+                  <option value="sim">Sim</option>
+                  <option value="nao">Não</option>
+                </select>
+              </label>
+
+              <label className="dashboard-editor-field">
+                <span>Intencional?</span>
+                <select
+                  value={selectedPriorMedicationEditingRow.formState.reconciliationIntentionalStatus}
+                  onChange={(event) =>
+                    updatePriorMedicationReconciliationSelection(
+                      selectedPriorMedicationEditingRow.priorMedication.id,
+                      {
+                        reconciliationIntentionalStatus:
+                          event.target.value as PriorMedicationReconciliationFormState["reconciliationIntentionalStatus"]
+                      },
+                      selectedPriorMedicationEditingRow.priorMedication
+                    )
+                  }
+                  disabled={selectedPriorMedicationEditingRow.latestReconciled !== false}
+                >
+                  <option value="">
+                    {selectedPriorMedicationEditingRow.latestReconciled === false
+                      ? "Definir"
+                      : "Só para não reconciliado"}
+                  </option>
+                  <option value="sim">Sim</option>
+                  <option value="nao">Não</option>
+                  <option value="nao-se-aplica">Não se aplica</option>
+                </select>
+              </label>
+
+              <label className="dashboard-editor-field dashboard-editor-field-full">
+                <span>Vincular à prescrição</span>
+                <select
+                  value={selectedPriorMedicationEditingRow.formState.reconciliationPrescriptionId}
+                  onChange={(event) =>
+                    updatePriorMedicationReconciliationSelection(
+                      selectedPriorMedicationEditingRow.priorMedication.id,
+                      {
+                        reconciliationPrescriptionId: event.target.value
+                      },
+                      selectedPriorMedicationEditingRow.priorMedication
+                    )
+                  }
+                >
+                  <option value="">
+                    {priorMedicationPrescriptionLinkOptions.length > 0
+                      ? "Sem vínculo manual"
+                      : "Sem prescrições para vincular"}
+                  </option>
+                  {priorMedicationPrescriptionLinkOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="dashboard-two-columns">
+              <div className="dashboard-subsection-block">
+                <h3>Resumo da reconciliação</h3>
+                <div className="dashboard-editor-summary-list">
+                  <p>
+                    <strong>Última prescrição:</strong>{" "}
+                    {selectedPriorMedicationEditingRow.latestPrescriptionDate
+                      ? formatTimestamp(selectedPriorMedicationEditingRow.latestPrescriptionDate)
+                      : "Não encontrada"}
+                  </p>
+                  <p>
+                    <strong>Reconciliado na última:</strong>{" "}
+                    {selectedPriorMedicationEditingRow.latestReconciled ? "Sim" : "Não"}
+                  </p>
+                  <p>
+                    <strong>Reconciliado em todas:</strong>{" "}
+                    {selectedPriorMedicationEditingRow.reconciledInAllPrescriptions ? "Sim" : "Não"}
+                  </p>
+                  <p>
+                    <strong>Manual:</strong>{" "}
+                    {formatPriorMedicationManualStatusLabel(
+                      selectedPriorMedicationEditingRow.formState.reconciliationManualStatus
+                    )}
+                  </p>
+                  <p>
+                    <strong>Intencional:</strong>{" "}
+                    {formatPriorMedicationIntentionalStatusLabel(
+                      selectedPriorMedicationEditingRow.formState.reconciliationIntentionalStatus
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              <div className="dashboard-subsection-block">
+                <h3>Histórico</h3>
+                {selectedPriorMedicationEditingRow.history.length === 0 ? (
+                  <p className="dashboard-muted">Nenhuma prescrição encontrada para este medicamento.</p>
+                ) : (
+                  <div className="dashboard-editor-summary-list">
+                    {selectedPriorMedicationEditingRow.history.map((historyItem) => (
+                      <p
+                        key={`${selectedPriorMedicationEditingRow.priorMedication.id}-${historyItem.key}`}
+                      >
+                        <strong>
+                          {historyItem.prescriptionDate
+                            ? formatTimestamp(historyItem.prescriptionDate)
+                            : "Sem data"}
+                        </strong>
+                        {" | "}Reconciliado: {historyItem.reconciled ? "Sim" : "Não"}
+                        {" | "}Origem: {historyItem.source === "manual" ? "Manual" : "Automática"}
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="dashboard-inline-actions dashboard-inline-actions-spread">
+              <div className="dashboard-inline-actions">
+                <button
+                  type="button"
+                  className="dashboard-mini-button"
+                  onClick={closePriorMedicationEditor}
+                  disabled={
+                    priorMedicationUpdatingId === selectedPriorMedicationEditingRow.priorMedication.id ||
+                    priorMedicationRemovingId === selectedPriorMedicationEditingRow.priorMedication.id
+                  }
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  className="dashboard-chip-remove"
+                  onClick={() =>
+                    void handleRemovePriorMedication(
+                      selectedPriorMedicationEditingRow.priorMedication.id,
+                      selectedPriorMedicationEditingRow.priorMedication.medicationName
+                    )
+                  }
+                  disabled={
+                    priorMedicationUpdatingId === selectedPriorMedicationEditingRow.priorMedication.id ||
+                    priorMedicationRemovingId === selectedPriorMedicationEditingRow.priorMedication.id
+                  }
+                >
+                  {priorMedicationRemovingId === selectedPriorMedicationEditingRow.priorMedication.id
+                    ? "Removendo..."
+                    : "Remover"}
+                </button>
+              </div>
+              <button
+                type="button"
+                className="dashboard-primary-button"
+                onClick={() =>
+                  void handleUpdatePriorMedicationReconciliation(
+                    selectedPriorMedicationEditingRow.priorMedication.id
+                  )
+                }
+                disabled={
+                  priorMedicationUpdatingId === selectedPriorMedicationEditingRow.priorMedication.id ||
+                  priorMedicationRemovingId === selectedPriorMedicationEditingRow.priorMedication.id ||
+                  priorMedicationBatchSaving
+                }
+              >
+                {priorMedicationUpdatingId === selectedPriorMedicationEditingRow.priorMedication.id
+                  ? "Salvando..."
+                  : "Salvar medicamento"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {selectedMedicationValidationEditingRow ? (
+        <div className="dashboard-modal-overlay" role="dialog" aria-modal="true">
+          <div className="dashboard-modal-card">
+            <div className="dashboard-inline-actions dashboard-inline-actions-spread">
+              <div>
+                <p className="dashboard-tag">Validação de medicamentos</p>
+                <h3>Editar validação</h3>
+                <p className="dashboard-muted">{selectedMedicationValidationEditingRow.displayMedicationName}</p>
+              </div>
+              <button
+                type="button"
+                className="dashboard-mini-button"
+                onClick={closeMedicationValidationEditor}
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="dashboard-editor-summary-grid">
+              <div className="dashboard-editor-summary-card">
+                <span>Posologia</span>
+                <strong>
+                  {formatPrescriptionPosology(selectedMedicationValidationEditingRow.prescription) || "-"}
+                </strong>
+              </div>
+              <div className="dashboard-editor-summary-card">
+                <span>Prescrição</span>
+                <strong>
+                  {selectedMedicationValidationEditingRow.prescription.validationStartAt
+                    ? formatTimestamp(selectedMedicationValidationEditingRow.prescription.validationStartAt)
+                    : formatTimestamp(selectedMedicationValidationEditingRow.prescription.createdAt)}
+                </strong>
+              </div>
+              <div className="dashboard-editor-summary-card">
+                <span>Consumo/dia</span>
+                <strong>
+                  {selectedMedicationValidationEditingRow.dailyTabletUse !== null
+                    ? `${formatNumber(selectedMedicationValidationEditingRow.dailyTabletUse)} comp/dia`
+                    : "-"}
+                </strong>
+              </div>
+              <div className="dashboard-editor-summary-card">
+                <span>Duração</span>
+                <strong>
+                  {selectedMedicationValidationEditingRow.formState.patientDidNotBring
+                    ? "Paciente não trouxe"
+                    : formatDurationDays(selectedMedicationValidationEditingRow.currentDurationDays)}
+                </strong>
+              </div>
+            </div>
+
+            <div className="dashboard-editor-modal-grid">
+              <label className="dashboard-editor-field">
+                <span>Quantidade de comprimidos</span>
+                <input
+                  type="number"
+                  min="0"
+                  inputMode="numeric"
+                  value={selectedMedicationValidationEditingRow.formState.quantityTablets}
+                  disabled={selectedMedicationValidationEditingRow.formState.patientDidNotBring}
+                  onChange={(event) =>
+                    updateMedicationValidationField(
+                      selectedMedicationValidationEditingRow.prescription.id,
+                      "quantityTablets",
+                      event.target.value
+                    )
+                  }
+                />
+              </label>
+
+              <label className="dashboard-editor-field">
+                <span>Lote</span>
+                <input
+                  value={selectedMedicationValidationEditingRow.formState.lotNumber}
+                  disabled={selectedMedicationValidationEditingRow.formState.patientDidNotBring}
+                  onChange={(event) =>
+                    updateMedicationValidationField(
+                      selectedMedicationValidationEditingRow.prescription.id,
+                      "lotNumber",
+                      event.target.value
+                    )
+                  }
+                />
+              </label>
+
+              <label className="dashboard-editor-field">
+                <span>Validade</span>
+                <input
+                  type="date"
+                  value={selectedMedicationValidationEditingRow.formState.expirationDate}
+                  disabled={selectedMedicationValidationEditingRow.formState.patientDidNotBring}
+                  onChange={(event) =>
+                    updateMedicationValidationField(
+                      selectedMedicationValidationEditingRow.prescription.id,
+                      "expirationDate",
+                      event.target.value
+                    )
+                  }
+                />
+              </label>
+
+              <label className="dashboard-editor-field">
+                <span>Laboratório/Marca</span>
+                <input
+                  value={selectedMedicationValidationEditingRow.formState.manufacturer}
+                  disabled={selectedMedicationValidationEditingRow.formState.patientDidNotBring}
+                  onChange={(event) =>
+                    updateMedicationValidationField(
+                      selectedMedicationValidationEditingRow.prescription.id,
+                      "manufacturer",
+                      event.target.value
+                    )
+                  }
+                />
+              </label>
+
+              <label className="dashboard-editor-field dashboard-editor-field-full">
+                <span>Nota</span>
+                <textarea
+                  placeholder="Observação"
+                  value={selectedMedicationValidationEditingRow.formState.stockValidationNote}
+                  onChange={(event) =>
+                    updateMedicationValidationField(
+                      selectedMedicationValidationEditingRow.prescription.id,
+                      "stockValidationNote",
+                      event.target.value
+                    )
+                  }
+                />
+              </label>
+
+              <div className="dashboard-toggle-card dashboard-editor-field dashboard-editor-field-full">
+                <label className="dashboard-inline-toggle">
+                  <input
+                    type="checkbox"
+                    checked={selectedMedicationValidationEditingRow.formState.patientDidNotBring}
+                    onChange={(event) =>
+                      toggleMedicationDidNotBring(
+                        selectedMedicationValidationEditingRow.prescription.id,
+                        event.target.checked
+                      )
+                    }
+                  />
+                  <span>Paciente não trouxe este medicamento</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="dashboard-inline-actions dashboard-inline-actions-spread">
+              <button
+                type="button"
+                className="dashboard-mini-button"
+                onClick={closeMedicationValidationEditor}
+                disabled={
+                  medicationValidationUpdatingId ===
+                    selectedMedicationValidationEditingRow.prescription.id || medicationValidationBatchSaving
+                }
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="dashboard-primary-button"
+                onClick={() =>
+                  void handleUpdateMedicationValidation(
+                    selectedMedicationValidationEditingRow.prescription.id
+                  )
+                }
+                disabled={
+                  medicationValidationUpdatingId ===
+                    selectedMedicationValidationEditingRow.prescription.id || medicationValidationBatchSaving
+                }
+              >
+                {medicationValidationUpdatingId ===
+                selectedMedicationValidationEditingRow.prescription.id
+                  ? "Salvando..."
+                  : "Salvar validação"}
               </button>
             </div>
           </div>
@@ -11779,20 +12348,19 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                             </button>
                           </form>
 
+                            <p className="dashboard-muted">
+                              Use <strong>Editar</strong> em cada linha para abrir todos os campos do medicamento
+                              em uma caixa na tela, sem precisar arrastar a tabela.
+                            </p>
+
                             <div className="dashboard-table-wrap">
                               <table className="dashboard-table">
                                 <thead>
                                   <tr>
                                     <th>Medicamento</th>
-                                    <th>Dose</th>
-                                    <th>Frequência</th>
-                                    <th>Qtd. por horário</th>
-                                    <th>Data da prescrição</th>
-                                    <th>Reconciliado</th>
-                                    <th>Reconciliado em todas</th>
-                                    <th>Manual</th>
-                                    <th>Intencional?</th>
-                                    <th>Vincular prescrição</th>
+                                    <th>Posologia</th>
+                                    <th>Última prescrição</th>
+                                    <th>Reconciliação</th>
                                     <th>Histórico</th>
                                     <th>Registro</th>
                                     <th>Ações</th>
@@ -11801,7 +12369,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 <tbody>
                                   {priorMedicationEditableRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={13}>Nenhum medicamento prévio cadastrado.</td>
+                                      <td colSpan={7}>Nenhum medicamento prévio cadastrado.</td>
                                     </tr>
                                   ) : (
                                     priorMedicationEditableRows.map((row) => (
@@ -11810,184 +12378,51 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         className={row.latestReconciled ? "" : "dashboard-row-missing"}
                                       >
                                         <td>
-                                          <div className="dashboard-table-name-editor">
-                                            {priorMedicationEditingId === row.priorMedication.id ? (
-                                              <input
-                                                value={row.formState.medicationName}
-                                                onChange={(event) =>
-                                                  updatePriorMedicationReconciliationField(
-                                                    row.priorMedication.id,
-                                                    "medicationName",
-                                                    event.target.value,
-                                                    row.priorMedication
-                                                  )
-                                                }
-                                                placeholder="Nome do medicamento"
-                                              />
+                                          <div className="dashboard-editor-summary">
+                                            <strong>
+                                              {row.formState.medicationName.trim() ||
+                                                row.priorMedication.medicationName}
+                                            </strong>
+                                            {row.formState.dose.trim() ? (
+                                              <span>{row.formState.dose.trim()}</span>
                                             ) : (
-                                              <span>
-                                                {row.formState.medicationName.trim() ||
-                                                  row.priorMedication.medicationName}
-                                              </span>
+                                              <span>Sem dose informada</span>
                                             )}
-                                            <div className="dashboard-inline-actions">
-                                              {priorMedicationEditingId === row.priorMedication.id ? (
-                                                <button
-                                                  type="button"
-                                                  className="dashboard-mini-button dashboard-mini-button-inline"
-                                                  onClick={() => cancelPriorMedicationNameEdit(row.priorMedication)}
-                                                  disabled={
-                                                    priorMedicationUpdatingId === row.priorMedication.id ||
-                                                    priorMedicationBatchSaving
-                                                  }
-                                                >
-                                                  Cancelar nome
-                                                </button>
-                                              ) : (
-                                                <button
-                                                  type="button"
-                                                  className="dashboard-mini-button dashboard-mini-button-inline"
-                                                  onClick={() => startPriorMedicationNameEdit(row.priorMedication)}
-                                                  disabled={priorMedicationBatchSaving}
-                                                >
-                                                  Editar
-                                                </button>
-                                              )}
-                                            </div>
                                           </div>
                                         </td>
                                         <td>
-                                          <input
-                                            placeholder="Dose (ex.: 100 mg)"
-                                            value={row.formState.dose}
-                                            onChange={(event) =>
-                                              updatePriorMedicationReconciliationField(
-                                                row.priorMedication.id,
-                                                "dose",
-                                                event.target.value,
-                                                row.priorMedication
-                                              )
-                                            }
-                                          />
+                                          <div className="dashboard-editor-summary">
+                                            <strong>
+                                              {[row.formState.frequency.trim(), row.formState.shifts.trim()]
+                                                .filter((value) => value.length > 0)
+                                                .join(" | ") || "-"}
+                                            </strong>
+                                          </div>
                                         </td>
                                         <td>
-                                          <input
-                                            value={row.formState.frequency}
-                                            onChange={(event) =>
-                                              updatePriorMedicationReconciliationField(
-                                                row.priorMedication.id,
-                                                "frequency",
-                                                event.target.value,
-                                                row.priorMedication
-                                              )
-                                            }
-                                          />
-                                        </td>
-                                        <td>
-                                          <input
-                                            value={row.formState.shifts}
-                                            onChange={(event) =>
-                                              updatePriorMedicationReconciliationField(
-                                                row.priorMedication.id,
-                                                "shifts",
-                                                event.target.value,
-                                                row.priorMedication
-                                              )
-                                            }
-                                          />
-                                        </td>
-                                        <td>
-                                          {row.latestPrescriptionDate
-                                            ? formatTimestamp(row.latestPrescriptionDate)
-                                            : "-"}
+                                          {row.latestPrescriptionDate ? formatTimestamp(row.latestPrescriptionDate) : "-"}
                                         </td>
                                         <td className={row.latestReconciled ? "" : "dashboard-cell-alert"}>
-                                          {row.latestReconciled ? "Sim" : "Não"}
-                                        </td>
-                                        <td>
-                                          {row.reconciledInAllPrescriptions === null
-                                            ? "Não"
-                                            : row.reconciledInAllPrescriptions
-                                              ? "Sim"
-                                              : "Não"}
-                                        </td>
-                                        <td>
-                                          <select
-                                            value={row.formState.reconciliationManualStatus}
-                                            onChange={(event) =>
-                                              setPriorMedicationReconciliationForm((current) => ({
-                                                ...current,
-                                                [row.priorMedication.id]: {
-                                                  ...(current[row.priorMedication.id] ??
-                                                    createPriorMedicationReconciliationFormState(
-                                                      row.priorMedication
-                                                    )),
-                                                  reconciliationManualStatus: event.target.value as
-                                                    PriorMedicationReconciliationFormState["reconciliationManualStatus"]
-                                                }
-                                              }))
-                                            }
-                                          >
-                                            <option value="">Automático</option>
-                                            <option value="sim">Sim</option>
-                                            <option value="nao">Não</option>
-                                          </select>
-                                        </td>
-                                        <td>
-                                          <select
-                                            value={row.formState.reconciliationIntentionalStatus}
-                                            onChange={(event) =>
-                                              setPriorMedicationReconciliationForm((current) => ({
-                                                ...current,
-                                                [row.priorMedication.id]: {
-                                                  ...(current[row.priorMedication.id] ??
-                                                    createPriorMedicationReconciliationFormState(
-                                                      row.priorMedication
-                                                    )),
-                                                  reconciliationIntentionalStatus:
-                                                    event.target.value as PriorMedicationReconciliationFormState["reconciliationIntentionalStatus"]
-                                                }
-                                              }))
-                                            }
-                                            disabled={row.latestReconciled !== false}
-                                          >
-                                            <option value="">
-                                              {row.latestReconciled === false
-                                                ? "Definir"
-                                                : "Só para não reconciliado"}
-                                            </option>
-                                            <option value="sim">Sim</option>
-                                            <option value="nao">Não</option>
-                                            <option value="nao-se-aplica">Não se aplica</option>
-                                          </select>
-                                        </td>
-                                        <td>
-                                          <select
-                                            value={row.formState.reconciliationPrescriptionId}
-                                            onChange={(event) =>
-                                              setPriorMedicationReconciliationForm((current) => ({
-                                                ...current,
-                                                [row.priorMedication.id]: {
-                                                  ...(current[row.priorMedication.id] ??
-                                                    createPriorMedicationReconciliationFormState(
-                                                      row.priorMedication
-                                                    )),
-                                                  reconciliationPrescriptionId: event.target.value
-                                                }
-                                              }))
-                                            }
-                                          >
-                                            <option value="">
-                                              {priorMedicationPrescriptionLinkOptions.length > 0
-                                                ? "Sem vínculo manual"
-                                                : "Sem prescrições para vincular"}
-                                            </option>
-                                            {priorMedicationPrescriptionLinkOptions.map((option) => (
-                                              <option key={option.id} value={option.id}>
-                                                {option.label}
-                                              </option>
-                                            ))}
-                                          </select>
+                                          <div className="dashboard-editor-summary">
+                                            <strong>Última: {row.latestReconciled ? "Sim" : "Não"}</strong>
+                                            <span>
+                                              Todas: {row.reconciledInAllPrescriptions ? "Sim" : "Não"}
+                                            </span>
+                                            <span>
+                                              Manual:{" "}
+                                              {formatPriorMedicationManualStatusLabel(
+                                                row.formState.reconciliationManualStatus
+                                              )}
+                                            </span>
+                                            {row.latestReconciled === false ? (
+                                              <span>
+                                                Intencional:{" "}
+                                                {formatPriorMedicationIntentionalStatusLabel(
+                                                  row.formState.reconciliationIntentionalStatus
+                                                )}
+                                              </span>
+                                            ) : null}
+                                          </div>
                                         </td>
                                         <td>
                                           {row.history.length === 0 ? (
@@ -12014,36 +12449,21 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         </td>
                                         <td>{formatTimestamp(row.priorMedication.createdAt)}</td>
                                         <td>
-                                          <button
-                                            type="button"
-                                            className="dashboard-mini-button dashboard-mini-button-inline"
-                                            onClick={() =>
-                                              handleUpdatePriorMedicationReconciliation(row.priorMedication.id)
-                                            }
-                                            disabled={
-                                              priorMedicationUpdatingId === row.priorMedication.id ||
-                                              priorMedicationBatchSaving
-                                            }
-                                          >
-                                            {priorMedicationUpdatingId === row.priorMedication.id
-                                              ? "Salvando..."
-                                              : "Salvar"}
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className="dashboard-chip-remove"
-                                            onClick={() =>
-                                              handleRemovePriorMedication(
-                                                row.priorMedication.id,
-                                                row.priorMedication.medicationName
-                                              )
-                                            }
-                                            disabled={priorMedicationRemovingId === row.priorMedication.id}
-                                          >
-                                            {priorMedicationRemovingId === row.priorMedication.id
-                                              ? "Removendo..."
-                                              : "Remover"}
-                                          </button>
+                                          <div className="dashboard-editor-actions">
+                                            <button
+                                              type="button"
+                                              className="dashboard-mini-button dashboard-mini-button-inline"
+                                              onClick={() => openPriorMedicationEditor(row.priorMedication)}
+                                              disabled={priorMedicationBatchSaving}
+                                            >
+                                              Editar
+                                            </button>
+                                            {row.isDirty ? (
+                                              <span className="dashboard-editor-pending">
+                                                Alterações pendentes
+                                              </span>
+                                            ) : null}
+                                          </div>
                                         </td>
                                       </tr>
                                     ))
@@ -12083,6 +12503,11 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               </p>
                             ) : null}
 
+                            <p className="dashboard-muted">
+                              Use <strong>Editar</strong> em cada linha para abrir o preenchimento completo sem
+                              precisar arrastar a tabela no celular.
+                            </p>
+
                             <div className="dashboard-inline-actions">
                               <button
                                 type="button"
@@ -12102,96 +12527,37 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 <thead>
                                   <tr>
                                     <th>Medicamento</th>
-                                    <th>Dose</th>
-                                    <th>Frequência</th>
-                                    <th>Qtd. por horário</th>
-                                    <th>Qtd. comp.</th>
-                                    <th>Lote</th>
-                                    <th>Validade</th>
-                                    <th>Laboratório/Marca</th>
-                                    <th>Consumo/dia</th>
+                                    <th>Posologia</th>
                                     <th>Duração</th>
                                     <th>Prescrição</th>
-                                    <th>Nota</th>
-                                    <th>Não trouxe</th>
+                                    <th>Resumo</th>
                                     <th>Ações</th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {medicationValidationEditableRows.length === 0 ? (
                                     <tr>
-                                      <td colSpan={14}>
+                                      <td colSpan={6}>
                                         Nenhum medicamento não cadastrado encontrado na prescrição.
                                       </td>
                                     </tr>
                                   ) : (
                                     medicationValidationEditableRows.map((row) => (
                                       <tr key={row.prescription.id}>
-                                        <td>{row.displayMedicationName}</td>
                                         <td>
-                                          {formatNumber(row.prescription.dose)} {row.prescription.doseUnit}
-                                        </td>
-                                        <td>{row.prescription.frequency}</td>
-                                        <td>{row.prescription.shifts}</td>
-                                        <td>
-                                          <input
-                                            type="number"
-                                            min="0"
-                                            value={row.formState.quantityTablets}
-                                            disabled={row.formState.patientDidNotBring}
-                                            onChange={(event) =>
-                                              updateMedicationValidationField(
-                                                row.prescription.id,
-                                                "quantityTablets",
-                                                event.target.value
-                                              )
-                                            }
-                                          />
+                                          <div className="dashboard-editor-summary">
+                                            <strong>{row.displayMedicationName}</strong>
+                                            {row.formState.patientDidNotBring ? (
+                                              <span>Paciente não trouxe</span>
+                                            ) : row.formState.quantityTablets.trim() ? (
+                                              <span>{row.formState.quantityTablets.trim()} comp.</span>
+                                            ) : (
+                                              <span>Sem quantidade informada</span>
+                                            )}
+                                          </div>
                                         </td>
                                         <td>
-                                          <input
-                                            value={row.formState.lotNumber}
-                                            disabled={row.formState.patientDidNotBring}
-                                            onChange={(event) =>
-                                              updateMedicationValidationField(
-                                                row.prescription.id,
-                                                "lotNumber",
-                                                event.target.value
-                                              )
-                                            }
-                                          />
-                                        </td>
-                                        <td>
-                                          <input
-                                            type="date"
-                                            value={row.formState.expirationDate}
-                                            disabled={row.formState.patientDidNotBring}
-                                            onChange={(event) =>
-                                              updateMedicationValidationField(
-                                                row.prescription.id,
-                                                "expirationDate",
-                                                event.target.value
-                                              )
-                                            }
-                                          />
-                                        </td>
-                                        <td>
-                                          <input
-                                            value={row.formState.manufacturer}
-                                            disabled={row.formState.patientDidNotBring}
-                                            onChange={(event) =>
-                                              updateMedicationValidationField(
-                                                row.prescription.id,
-                                                "manufacturer",
-                                                event.target.value
-                                              )
-                                            }
-                                          />
-                                        </td>
-                                        <td>
-                                          {row.dailyTabletUse !== null
-                                            ? `${formatNumber(row.dailyTabletUse)} comp/dia`
-                                            : "-"}
+                                          {formatPrescriptionPosology(row.prescription) || "-"}
                                         </td>
                                         <td>
                                           {row.formState.patientDidNotBring
@@ -12204,48 +12570,46 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                             : formatTimestamp(row.prescription.createdAt)}
                                         </td>
                                         <td>
-                                          <input
-                                            placeholder="Observação"
-                                            value={row.formState.stockValidationNote}
-                                            onChange={(event) =>
-                                              updateMedicationValidationField(
-                                                row.prescription.id,
-                                                "stockValidationNote",
-                                                event.target.value
-                                              )
-                                            }
-                                          />
+                                          <div className="dashboard-editor-summary">
+                                            {row.formState.lotNumber.trim() ? (
+                                              <span>Lote: {row.formState.lotNumber.trim()}</span>
+                                            ) : null}
+                                            {row.formState.manufacturer.trim() ? (
+                                              <span>Lab: {row.formState.manufacturer.trim()}</span>
+                                            ) : null}
+                                            {row.formState.expirationDate ? (
+                                              <span>
+                                                Validade:{" "}
+                                                {formatMedicationValidationExpiry(
+                                                  row.formState.expirationDate
+                                                )}
+                                              </span>
+                                            ) : null}
+                                            {row.formState.stockValidationNote.trim() ? (
+                                              <span>Nota: {row.formState.stockValidationNote.trim()}</span>
+                                            ) : (
+                                              <span>Sem nota</span>
+                                            )}
+                                          </div>
                                         </td>
                                         <td>
-                                          <label className="dashboard-inline-toggle">
-                                            <input
-                                              type="checkbox"
-                                              checked={row.formState.patientDidNotBring}
-                                              onChange={(event) =>
-                                                toggleMedicationDidNotBring(
-                                                  row.prescription.id,
-                                                  event.target.checked
-                                                )
+                                          <div className="dashboard-editor-actions">
+                                            <button
+                                              type="button"
+                                              className="dashboard-mini-button dashboard-mini-button-inline"
+                                              onClick={() =>
+                                                openMedicationValidationEditor(row.prescription.id)
                                               }
-                                            />
-                                            Não trouxe
-                                          </label>
-                                        </td>
-                                        <td>
-                                          <button
-                                            type="button"
-                                            onClick={() =>
-                                              handleUpdateMedicationValidation(row.prescription.id)
-                                            }
-                                            disabled={
-                                              medicationValidationUpdatingId === row.prescription.id ||
-                                              medicationValidationBatchSaving
-                                            }
-                                          >
-                                            {medicationValidationUpdatingId === row.prescription.id
-                                              ? "Salvando..."
-                                              : "Salvar"}
-                                          </button>
+                                              disabled={medicationValidationBatchSaving}
+                                            >
+                                              Editar
+                                            </button>
+                                            {row.isDirty ? (
+                                              <span className="dashboard-editor-pending">
+                                                Alterações pendentes
+                                              </span>
+                                            ) : null}
+                                          </div>
                                         </td>
                                       </tr>
                                     ))
