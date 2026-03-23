@@ -1300,6 +1300,120 @@ body {
   overflow-x: auto;
 }
 
+.dashboard-mandatory-desktop {
+  display: block;
+}
+
+.dashboard-mandatory-mobile {
+  display: none;
+}
+
+.dashboard-patient-open-button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 800;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+
+.dashboard-patient-open-button:hover {
+  text-decoration: underline;
+}
+
+.dashboard-mandatory-card-list {
+  margin-top: 12px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(280px, 86vw);
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  scroll-snap-type: x proximity;
+}
+
+.dashboard-mandatory-card {
+  border: 1px solid #d6e2f1;
+  border-radius: 16px;
+  background: #ffffff;
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+  scroll-snap-align: start;
+  box-shadow: 0 10px 24px rgba(17, 45, 84, 0.08);
+}
+
+.dashboard-mandatory-card.dashboard-row-visited {
+  border-color: #bed2ee;
+}
+
+.dashboard-mandatory-card.dashboard-row-visited .dashboard-patient-open-button,
+.dashboard-mandatory-card.dashboard-row-visited strong {
+  font-weight: 800;
+}
+
+.dashboard-mandatory-card.dashboard-row-absent {
+  border-color: #efbcbc;
+  background: #fff3f3;
+  color: #b42318;
+}
+
+.dashboard-mandatory-card.dashboard-row-absent .dashboard-mandatory-card-item span,
+.dashboard-mandatory-card.dashboard-row-absent .dashboard-mandatory-card-meta {
+  color: #b65a5a;
+}
+
+.dashboard-mandatory-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dashboard-mandatory-bed-pill {
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: #edf4ff;
+  color: #23456f;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.dashboard-mandatory-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dashboard-mandatory-card-item,
+.dashboard-mandatory-card-field {
+  display: grid;
+  gap: 4px;
+}
+
+.dashboard-mandatory-card-item span,
+.dashboard-mandatory-card-field span {
+  color: #6b809e;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dashboard-mandatory-card-item strong,
+.dashboard-mandatory-card-meta {
+  color: #23456f;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.dashboard-mandatory-count {
+  margin-top: 10px;
+}
+
 .dashboard-table-summary {
   display: inline-block;
   max-width: 280px;
@@ -1461,6 +1575,10 @@ body {
     grid-template-columns: 1fr;
   }
 
+  .dashboard-mandatory-card-grid {
+    grid-template-columns: 1fr;
+  }
+
   .dashboard-editor-modal-grid,
   .dashboard-editor-summary-grid {
     grid-template-columns: 1fr;
@@ -1481,5 +1599,13 @@ body {
   .dashboard-panel {
     border-radius: 22px;
     padding: 16px 12px;
+  }
+
+  .dashboard-mandatory-desktop {
+    display: none;
+  }
+
+  .dashboard-mandatory-mobile {
+    display: block;
   }
 }

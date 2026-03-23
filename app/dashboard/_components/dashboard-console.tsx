@@ -186,6 +186,28 @@ function getMandatoryInpatientStatusSelectClassName(status: InpatientWorkflowSta
   return "";
 }
 
+function compareInpatientBeds(firstBed: string | null | undefined, secondBed: string | null | undefined): number {
+  const normalizedFirst = normalizeSearchValue(firstBed ?? "");
+  const normalizedSecond = normalizeSearchValue(secondBed ?? "");
+
+  if (!normalizedFirst && !normalizedSecond) {
+    return 0;
+  }
+
+  if (!normalizedFirst) {
+    return 1;
+  }
+
+  if (!normalizedSecond) {
+    return -1;
+  }
+
+  return normalizedFirst.localeCompare(normalizedSecond, "pt-BR", {
+    numeric: true,
+    sensitivity: "base"
+  });
+}
+
 const INPATIENT_SIDEBAR_ITEMS = [
   { id: "all", label: "Todos" },
   { id: "team", label: "Por equipe" },
@@ -4608,10 +4630,9 @@ export default function DashboardConsole({
             workflow.status !== "Alta"
         )
         .sort((first, second) => {
-          const firstPriority = first.workflow.firstVisitCompletedAt ? 1 : 0;
-          const secondPriority = second.workflow.firstVisitCompletedAt ? 1 : 0;
-          if (firstPriority !== secondPriority) {
-            return firstPriority - secondPriority;
+          const bedComparison = compareInpatientBeds(first.entry.bed, second.entry.bed);
+          if (bedComparison !== 0) {
+            return bedComparison;
           }
 
           return first.entry.patientName.localeCompare(second.entry.patientName, "pt-BR");
@@ -10919,117 +10940,245 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                               </p>
                             ) : null}
 
-                            <div className="dashboard-table-wrap">
-                              <table className="dashboard-table">
-                                <thead>
-                                  <tr>
-                                    <th>Paciente</th>
-                                    <th>Prontuário</th>
-                                    <th>Admissão</th>
-                                    <th>Leito</th>
-                                    <th>Equipe</th>
-                                    <th>Status</th>
-                                    <th>1ª visita</th>
-                                    <th>Evolução</th>
-                                    <th>Origem</th>
-                                    <th>Último farmacêutico</th>
-                                    <th>Detalhes</th>
-                                    <th>Ações</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {mandatoryOverviewRows.length === 0 ? (
+                            <div className="dashboard-mandatory-desktop">
+                              <div className="dashboard-table-wrap">
+                                <table className="dashboard-table">
+                                  <thead>
                                     <tr>
-                                      <td colSpan={12}>Nenhum paciente na sua lista diária.</td>
+                                      <th>Paciente</th>
+                                      <th>Prontuário</th>
+                                      <th>Admissão</th>
+                                      <th>Leito</th>
+                                      <th>Equipe</th>
+                                      <th>Status</th>
+                                      <th>1ª visita</th>
+                                      <th>Evolução</th>
+                                      <th>Origem</th>
+                                      <th>Último farmacêutico</th>
+                                      <th>Ações</th>
                                     </tr>
-                                  ) : (
-                                    mandatoryOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
-                                      <tr
-                                        key={entry.key}
-                                        className={getMandatoryInpatientRowClassName(workflow.status)}
-                                      >
-                                        <td>{entry.patientName}</td>
-                                        <td>{entry.chartNumber || "-"}</td>
-                                        <td>{formatAdmissionDate(entry.admissionDate)}</td>
-                                        <td>{entry.bed || "-"}</td>
-                                        <td>{assignedTeamName ?? formatCanonicalTeamName(entry.teamName)}</td>
-                                        <td>
-                                          <select
-                                            className={`dashboard-table-select ${getMandatoryInpatientStatusSelectClassName(
-                                              workflow.status
-                                            )}`.trim()}
-                                            value={workflow.status}
-                                            onChange={(event) =>
-                                              handleInpatientStatusChange(
-                                                entry.key,
-                                                event.target.value as InpatientWorkflowStatus
-                                              )
-                                            }
-                                          >
-                                            {INPATIENT_STATUS_OPTIONS.map((statusOption) => (
-                                              <option key={statusOption} value={statusOption}>
-                                                {statusOption}
-                                              </option>
-                                            ))}
-                                          </select>
-                                        </td>
-                                        <td>
-                                          {workflow.firstVisitCompletedAt
-                                            ? formatTimestamp(workflow.firstVisitCompletedAt)
-                                            : "Pendente"}
-                                        </td>
-                                        <td>
-                                          {workflow.evolutionGeneratedAt ? (
-                                            formatTimestamp(workflow.evolutionGeneratedAt)
-                                          ) : (
-                                            <button
-                                              type="button"
-                                              className="dashboard-mini-button"
-                                              onClick={() => void handleGenerateMandatoryEvolution(entry)}
-                                              disabled={
-                                                !workflow.firstVisitCompletedAt ||
-                                                mandatoryEvolutionPreviewLoadingKey === entry.key
+                                  </thead>
+                                  <tbody>
+                                    {mandatoryOverviewRows.length === 0 ? (
+                                      <tr>
+                                        <td colSpan={11}>Nenhum paciente na sua lista diária.</td>
+                                      </tr>
+                                    ) : (
+                                      mandatoryOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
+                                        <tr
+                                          key={entry.key}
+                                          className={getMandatoryInpatientRowClassName(workflow.status)}
+                                        >
+                                          <td>
+                                            {entry.patientId ? (
+                                              <button
+                                                type="button"
+                                                className="dashboard-patient-open-button"
+                                                onClick={() => openPatientDetails(entry.patientId!)}
+                                              >
+                                                {entry.patientName}
+                                              </button>
+                                            ) : (
+                                              entry.patientName
+                                            )}
+                                          </td>
+                                          <td>{entry.chartNumber || "-"}</td>
+                                          <td>{formatAdmissionDate(entry.admissionDate)}</td>
+                                          <td>{entry.bed || "-"}</td>
+                                          <td>{assignedTeamName ?? formatCanonicalTeamName(entry.teamName)}</td>
+                                          <td>
+                                            <select
+                                              className={`dashboard-table-select ${getMandatoryInpatientStatusSelectClassName(
+                                                workflow.status
+                                              )}`.trim()}
+                                              value={workflow.status}
+                                              onChange={(event) =>
+                                                handleInpatientStatusChange(
+                                                  entry.key,
+                                                  event.target.value as InpatientWorkflowStatus
+                                                )
                                               }
                                             >
-                                              {mandatoryEvolutionPreviewLoadingKey === entry.key
-                                                ? "Carregando..."
-                                                : "Gerar evolução"}
-                                            </button>
-                                          )}
-                                        </td>
-                                        <td>{entry.source === "active" ? "Internado ativo" : "Dados brutos"}</td>
-                                        <td>{formatWorkflowEditorLabel(workflow)}</td>
-                                        <td>
-                                          {entry.patientId ? (
+                                              {INPATIENT_STATUS_OPTIONS.map((statusOption) => (
+                                                <option key={statusOption} value={statusOption}>
+                                                  {statusOption}
+                                                </option>
+                                              ))}
+                                            </select>
+                                          </td>
+                                          <td>
+                                            {workflow.firstVisitCompletedAt
+                                              ? formatTimestamp(workflow.firstVisitCompletedAt)
+                                              : "Pendente"}
+                                          </td>
+                                          <td>
+                                            {workflow.evolutionGeneratedAt ? (
+                                              formatTimestamp(workflow.evolutionGeneratedAt)
+                                            ) : (
+                                              <button
+                                                type="button"
+                                                className="dashboard-mini-button"
+                                                onClick={() => void handleGenerateMandatoryEvolution(entry)}
+                                                disabled={
+                                                  !workflow.firstVisitCompletedAt ||
+                                                  mandatoryEvolutionPreviewLoadingKey === entry.key
+                                                }
+                                              >
+                                                {mandatoryEvolutionPreviewLoadingKey === entry.key
+                                                  ? "Carregando..."
+                                                  : "Gerar evolução"}
+                                              </button>
+                                            )}
+                                          </td>
+                                          <td>{entry.source === "active" ? "Internado ativo" : "Dados brutos"}</td>
+                                          <td>{formatWorkflowEditorLabel(workflow)}</td>
+                                          <td>
                                             <button
                                               type="button"
-                                              className="dashboard-link-button"
-                                              onClick={() => openPatientDetails(entry.patientId!)}
+                                              className="dashboard-chip-remove"
+                                              onClick={() => void handleRemoveFromMandatoryList(entry)}
+                                              disabled={mandatoryRemovingKey === entry.key}
                                             >
-                                              Abrir
+                                              {mandatoryRemovingKey === entry.key
+                                                ? "Excluindo..."
+                                                : "Excluir da lista"}
                                             </button>
-                                          ) : (
-                                            "-"
-                                          )}
-                                        </td>
-                                        <td>
+                                          </td>
+                                        </tr>
+                                      ))
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+
+                            <div className="dashboard-mandatory-mobile">
+                              {mandatoryOverviewRows.length === 0 ? (
+                                <p className="dashboard-muted">Nenhum paciente na sua lista diária.</p>
+                              ) : (
+                                <div className="dashboard-mandatory-card-list">
+                                  {mandatoryOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
+                                    <article
+                                      key={entry.key}
+                                      className={`dashboard-mandatory-card ${getMandatoryInpatientRowClassName(
+                                        workflow.status
+                                      )}`.trim()}
+                                    >
+                                      <div className="dashboard-mandatory-card-header">
+                                        {entry.patientId ? (
                                           <button
                                             type="button"
-                                            className="dashboard-chip-remove"
-                                            onClick={() => void handleRemoveFromMandatoryList(entry)}
-                                            disabled={mandatoryRemovingKey === entry.key}
+                                            className="dashboard-patient-open-button"
+                                            onClick={() => openPatientDetails(entry.patientId!)}
                                           >
-                                            {mandatoryRemovingKey === entry.key
-                                              ? "Excluindo..."
-                                              : "Excluir da lista"}
+                                            {entry.patientName}
                                           </button>
-                                        </td>
-                                      </tr>
-                                    ))
-                                  )}
-                                </tbody>
-                              </table>
+                                        ) : (
+                                          <strong>{entry.patientName}</strong>
+                                        )}
+                                        <span className="dashboard-mandatory-bed-pill">
+                                          {entry.bed || "Sem leito"}
+                                        </span>
+                                      </div>
+
+                                      <div className="dashboard-mandatory-card-grid">
+                                        <div className="dashboard-mandatory-card-item">
+                                          <span>Prontuário</span>
+                                          <strong>{entry.chartNumber || "-"}</strong>
+                                        </div>
+                                        <div className="dashboard-mandatory-card-item">
+                                          <span>Admissão</span>
+                                          <strong>{formatAdmissionDate(entry.admissionDate)}</strong>
+                                        </div>
+                                        <div className="dashboard-mandatory-card-item">
+                                          <span>Equipe</span>
+                                          <strong>
+                                            {assignedTeamName ?? formatCanonicalTeamName(entry.teamName)}
+                                          </strong>
+                                        </div>
+                                        <div className="dashboard-mandatory-card-item">
+                                          <span>Origem</span>
+                                          <strong>
+                                            {entry.source === "active" ? "Internado ativo" : "Dados brutos"}
+                                          </strong>
+                                        </div>
+                                        <div className="dashboard-mandatory-card-item">
+                                          <span>1ª visita</span>
+                                          <strong>
+                                            {workflow.firstVisitCompletedAt
+                                              ? formatTimestamp(workflow.firstVisitCompletedAt)
+                                              : "Pendente"}
+                                          </strong>
+                                        </div>
+                                        <div className="dashboard-mandatory-card-item">
+                                          <span>Último farmacêutico</span>
+                                          <strong>{formatWorkflowEditorLabel(workflow)}</strong>
+                                        </div>
+                                      </div>
+
+                                      <label className="dashboard-mandatory-card-field">
+                                        <span>Status</span>
+                                        <select
+                                          className={`dashboard-table-select ${getMandatoryInpatientStatusSelectClassName(
+                                            workflow.status
+                                          )}`.trim()}
+                                          value={workflow.status}
+                                          onChange={(event) =>
+                                            handleInpatientStatusChange(
+                                              entry.key,
+                                              event.target.value as InpatientWorkflowStatus
+                                            )
+                                          }
+                                        >
+                                          {INPATIENT_STATUS_OPTIONS.map((statusOption) => (
+                                            <option key={statusOption} value={statusOption}>
+                                              {statusOption}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </label>
+
+                                      <div className="dashboard-inline-actions">
+                                        {workflow.evolutionGeneratedAt ? (
+                                          <span className="dashboard-mandatory-card-meta">
+                                            Evolução: {formatTimestamp(workflow.evolutionGeneratedAt)}
+                                          </span>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            className="dashboard-mini-button"
+                                            onClick={() => void handleGenerateMandatoryEvolution(entry)}
+                                            disabled={
+                                              !workflow.firstVisitCompletedAt ||
+                                              mandatoryEvolutionPreviewLoadingKey === entry.key
+                                            }
+                                          >
+                                            {mandatoryEvolutionPreviewLoadingKey === entry.key
+                                              ? "Carregando..."
+                                              : "Gerar evolução"}
+                                          </button>
+                                        )}
+                                      </div>
+
+                                      <button
+                                        type="button"
+                                        className="dashboard-chip-remove"
+                                        onClick={() => void handleRemoveFromMandatoryList(entry)}
+                                        disabled={mandatoryRemovingKey === entry.key}
+                                      >
+                                        {mandatoryRemovingKey === entry.key
+                                          ? "Excluindo..."
+                                          : "Excluir da lista"}
+                                      </button>
+                                    </article>
+                                  ))}
+                                </div>
+                              )}
                             </div>
+
+                            <p className="dashboard-muted dashboard-mandatory-count">
+                              {mandatoryOverviewRows.length} paciente(s) na lista diária.
+                            </p>
                           </div>
                         </section>
                       ) : null}
