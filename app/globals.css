@@ -1308,6 +1308,10 @@ body {
   display: none;
 }
 
+.dashboard-mandatory-import {
+  display: grid;
+}
+
 .dashboard-patient-open-button {
   border: 0;
   background: transparent;
@@ -1323,15 +1327,10 @@ body {
   text-decoration: underline;
 }
 
-.dashboard-mandatory-card-list {
+.dashboard-mandatory-card-stage {
   margin-top: 12px;
   display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(280px, 86vw);
   gap: 12px;
-  overflow-x: auto;
-  padding-bottom: 6px;
-  scroll-snap-type: x proximity;
 }
 
 .dashboard-mandatory-card {
@@ -1341,7 +1340,6 @@ body {
   padding: 14px;
   display: grid;
   gap: 12px;
-  scroll-snap-align: start;
   box-shadow: 0 10px 24px rgba(17, 45, 84, 0.08);
 }
 
@@ -1407,6 +1405,47 @@ body {
 .dashboard-mandatory-card-meta {
   color: #23456f;
   font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.dashboard-mandatory-card-counter {
+  color: #5f7694;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.dashboard-mandatory-mobile-list {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.dashboard-mandatory-list-card {
+  border: 1px solid #d6e2f1;
+  border-radius: 14px;
+  background: #ffffff;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.dashboard-mandatory-list-card.dashboard-row-absent {
+  border-color: #efbcbc;
+  background: #fff3f3;
+  color: #b42318;
+}
+
+.dashboard-mandatory-list-card.dashboard-row-visited .dashboard-patient-open-button,
+.dashboard-mandatory-list-card.dashboard-row-visited strong {
+  font-weight: 800;
+}
+
+.dashboard-mandatory-list-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #5f7694;
+  font-size: 0.82rem;
   line-height: 1.4;
 }
 
@@ -1607,5 +1646,9 @@ body {
 
   .dashboard-mandatory-mobile {
     display: block;
+  }
+
+  .dashboard-mandatory-import {
+    display: none;
   }
 }

@@ -3724,6 +3724,8 @@ export default function DashboardConsole({
     useState<InpatientOverviewMode>(requestedInpatientMode);
   const [inpatientTeamFilter, setInpatientTeamFilter] = useState("all");
   const [mandatoryRawInput, setMandatoryRawInput] = useState("");
+  const [mandatoryMobileViewMode, setMandatoryMobileViewMode] = useState<"cards" | "list">("cards");
+  const [mandatoryMobileCardIndex, setMandatoryMobileCardIndex] = useState(0);
   const [mandatoryFeedback, setMandatoryFeedback] = useState<FeedbackState>(null);
   const [mandatoryLoading, setMandatoryLoading] = useState(false);
   const [mandatoryRemovingKey, setMandatoryRemovingKey] = useState<string | null>(null);
@@ -4640,6 +4642,18 @@ export default function DashboardConsole({
     },
     [inpatientEntriesWithWorkflow, trackedInpatientEntryIdentities]
   );
+
+  useEffect(() => {
+    setMandatoryMobileCardIndex((current) => {
+      if (mandatoryOverviewRows.length === 0) {
+        return 0;
+      }
+
+      return Math.min(current, mandatoryOverviewRows.length - 1);
+    });
+  }, [mandatoryOverviewRows.length]);
+
+  const selectedMandatoryMobileRow = mandatoryOverviewRows[mandatoryMobileCardIndex] ?? null;
 
   const dischargedOverviewRows = useMemo(
     () =>
@@ -10921,7 +10935,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                           <div className="dashboard-subsection-block">
                             <h3>Lista diária</h3>
 
-                            <div className="dashboard-form">
+                            <div className="dashboard-form dashboard-mandatory-import">
                               <textarea
                                 placeholder="Cole várias linhas do sistema para montar sua lista diária"
                                 value={mandatoryRawInput}
@@ -10939,6 +10953,29 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 {mandatoryFeedback.message}
                               </p>
                             ) : null}
+
+                            <div className="dashboard-mandatory-mobile">
+                              <div className="dashboard-inline-actions">
+                                <button
+                                  type="button"
+                                  className={`dashboard-mini-button ${
+                                    mandatoryMobileViewMode === "cards" ? "is-active" : ""
+                                  }`}
+                                  onClick={() => setMandatoryMobileViewMode("cards")}
+                                >
+                                  Cards
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`dashboard-mini-button ${
+                                    mandatoryMobileViewMode === "list" ? "is-active" : ""
+                                  }`}
+                                  onClick={() => setMandatoryMobileViewMode("list")}
+                                >
+                                  Lista
+                                </button>
+                              </div>
+                            </div>
 
                             <div className="dashboard-mandatory-desktop">
                               <div className="dashboard-table-wrap">
@@ -11055,16 +11092,185 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                             <div className="dashboard-mandatory-mobile">
                               {mandatoryOverviewRows.length === 0 ? (
                                 <p className="dashboard-muted">Nenhum paciente na sua lista diária.</p>
-                              ) : (
-                                <div className="dashboard-mandatory-card-list">
-                                  {mandatoryOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
+                              ) : mandatoryMobileViewMode === "cards" ? (
+                                selectedMandatoryMobileRow ? (
+                                  <div className="dashboard-mandatory-card-stage">
+                                    <div className="dashboard-inline-actions dashboard-inline-actions-spread">
+                                      <button
+                                        type="button"
+                                        className="dashboard-mini-button"
+                                        onClick={() =>
+                                          setMandatoryMobileCardIndex((current) =>
+                                            current > 0 ? current - 1 : current
+                                          )
+                                        }
+                                        disabled={mandatoryMobileCardIndex === 0}
+                                      >
+                                        Anterior
+                                      </button>
+                                      <span className="dashboard-mandatory-card-counter">
+                                        {mandatoryMobileCardIndex + 1} de {mandatoryOverviewRows.length}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        className="dashboard-mini-button"
+                                        onClick={() =>
+                                          setMandatoryMobileCardIndex((current) =>
+                                            current < mandatoryOverviewRows.length - 1 ? current + 1 : current
+                                          )
+                                        }
+                                        disabled={mandatoryMobileCardIndex >= mandatoryOverviewRows.length - 1}
+                                      >
+                                        Próximo
+                                      </button>
+                                    </div>
+
                                     <article
-                                      key={entry.key}
                                       className={`dashboard-mandatory-card ${getMandatoryInpatientRowClassName(
-                                        workflow.status
+                                        selectedMandatoryMobileRow.workflow.status
                                       )}`.trim()}
                                     >
                                       <div className="dashboard-mandatory-card-header">
+                                        {selectedMandatoryMobileRow.entry.patientId ? (
+                                          <button
+                                            type="button"
+                                            className="dashboard-patient-open-button"
+                                            onClick={() =>
+                                              openPatientDetails(selectedMandatoryMobileRow.entry.patientId!)
+                                            }
+                                          >
+                                            {selectedMandatoryMobileRow.entry.patientName}
+                                          </button>
+                                        ) : (
+                                          <strong>{selectedMandatoryMobileRow.entry.patientName}</strong>
+                                        )}
+                                        <span className="dashboard-mandatory-bed-pill">
+                                          {selectedMandatoryMobileRow.entry.bed || "Sem leito"}
+                                        </span>
+                                      </div>
+
+                                      <div className="dashboard-mandatory-card-grid">
+                                        <div className="dashboard-mandatory-card-item">
+                                          <span>Prontuário</span>
+                                          <strong>{selectedMandatoryMobileRow.entry.chartNumber || "-"}</strong>
+                                        </div>
+                                        <div className="dashboard-mandatory-card-item">
+                                          <span>Admissão</span>
+                                          <strong>
+                                            {formatAdmissionDate(selectedMandatoryMobileRow.entry.admissionDate)}
+                                          </strong>
+                                        </div>
+                                        <div className="dashboard-mandatory-card-item">
+                                          <span>Equipe</span>
+                                          <strong>
+                                            {selectedMandatoryMobileRow.assignedTeamName ??
+                                              formatCanonicalTeamName(selectedMandatoryMobileRow.entry.teamName)}
+                                          </strong>
+                                        </div>
+                                        <div className="dashboard-mandatory-card-item">
+                                          <span>Origem</span>
+                                          <strong>
+                                            {selectedMandatoryMobileRow.entry.source === "active"
+                                              ? "Internado ativo"
+                                              : "Dados brutos"}
+                                          </strong>
+                                        </div>
+                                        <div className="dashboard-mandatory-card-item">
+                                          <span>1ª visita</span>
+                                          <strong>
+                                            {selectedMandatoryMobileRow.workflow.firstVisitCompletedAt
+                                              ? formatTimestamp(
+                                                  selectedMandatoryMobileRow.workflow.firstVisitCompletedAt
+                                                )
+                                              : "Pendente"}
+                                          </strong>
+                                        </div>
+                                        <div className="dashboard-mandatory-card-item">
+                                          <span>Último farmacêutico</span>
+                                          <strong>
+                                            {formatWorkflowEditorLabel(selectedMandatoryMobileRow.workflow)}
+                                          </strong>
+                                        </div>
+                                      </div>
+
+                                      <label className="dashboard-mandatory-card-field">
+                                        <span>Status</span>
+                                        <select
+                                          className={`dashboard-table-select ${getMandatoryInpatientStatusSelectClassName(
+                                            selectedMandatoryMobileRow.workflow.status
+                                          )}`.trim()}
+                                          value={selectedMandatoryMobileRow.workflow.status}
+                                          onChange={(event) =>
+                                            handleInpatientStatusChange(
+                                              selectedMandatoryMobileRow.entry.key,
+                                              event.target.value as InpatientWorkflowStatus
+                                            )
+                                          }
+                                        >
+                                          {INPATIENT_STATUS_OPTIONS.map((statusOption) => (
+                                            <option key={statusOption} value={statusOption}>
+                                              {statusOption}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </label>
+
+                                      <div className="dashboard-inline-actions">
+                                        {selectedMandatoryMobileRow.workflow.evolutionGeneratedAt ? (
+                                          <span className="dashboard-mandatory-card-meta">
+                                            Evolução:{" "}
+                                            {formatTimestamp(
+                                              selectedMandatoryMobileRow.workflow.evolutionGeneratedAt
+                                            )}
+                                          </span>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            className="dashboard-mini-button"
+                                            onClick={() =>
+                                              void handleGenerateMandatoryEvolution(
+                                                selectedMandatoryMobileRow.entry
+                                              )
+                                            }
+                                            disabled={
+                                              !selectedMandatoryMobileRow.workflow.firstVisitCompletedAt ||
+                                              mandatoryEvolutionPreviewLoadingKey ===
+                                                selectedMandatoryMobileRow.entry.key
+                                            }
+                                          >
+                                            {mandatoryEvolutionPreviewLoadingKey ===
+                                            selectedMandatoryMobileRow.entry.key
+                                              ? "Carregando..."
+                                              : "Gerar evolução"}
+                                          </button>
+                                        )}
+                                      </div>
+
+                                      <button
+                                        type="button"
+                                        className="dashboard-chip-remove"
+                                        onClick={() =>
+                                          void handleRemoveFromMandatoryList(selectedMandatoryMobileRow.entry)
+                                        }
+                                        disabled={mandatoryRemovingKey === selectedMandatoryMobileRow.entry.key}
+                                      >
+                                        {mandatoryRemovingKey === selectedMandatoryMobileRow.entry.key
+                                          ? "Excluindo..."
+                                          : "Excluir da lista"}
+                                      </button>
+                                    </article>
+                                  </div>
+                                ) : null
+                              ) : (
+                                <div className="dashboard-mandatory-mobile-list">
+                                  {mandatoryOverviewRows.map(({ entry, workflow, assignedTeamName }) => (
+                                    <article
+                                      key={entry.key}
+                                      className={`dashboard-mandatory-list-card ${getMandatoryInpatientRowClassName(
+                                        workflow.status
+                                      )}`.trim()}
+                                    >
+                                      <div className="dashboard-inline-actions dashboard-inline-actions-spread">
                                         {entry.patientId ? (
                                           <button
                                             type="button"
@@ -11081,39 +11287,12 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                         </span>
                                       </div>
 
-                                      <div className="dashboard-mandatory-card-grid">
-                                        <div className="dashboard-mandatory-card-item">
-                                          <span>Prontuário</span>
-                                          <strong>{entry.chartNumber || "-"}</strong>
-                                        </div>
-                                        <div className="dashboard-mandatory-card-item">
-                                          <span>Admissão</span>
-                                          <strong>{formatAdmissionDate(entry.admissionDate)}</strong>
-                                        </div>
-                                        <div className="dashboard-mandatory-card-item">
-                                          <span>Equipe</span>
-                                          <strong>
-                                            {assignedTeamName ?? formatCanonicalTeamName(entry.teamName)}
-                                          </strong>
-                                        </div>
-                                        <div className="dashboard-mandatory-card-item">
-                                          <span>Origem</span>
-                                          <strong>
-                                            {entry.source === "active" ? "Internado ativo" : "Dados brutos"}
-                                          </strong>
-                                        </div>
-                                        <div className="dashboard-mandatory-card-item">
-                                          <span>1ª visita</span>
-                                          <strong>
-                                            {workflow.firstVisitCompletedAt
-                                              ? formatTimestamp(workflow.firstVisitCompletedAt)
-                                              : "Pendente"}
-                                          </strong>
-                                        </div>
-                                        <div className="dashboard-mandatory-card-item">
-                                          <span>Último farmacêutico</span>
-                                          <strong>{formatWorkflowEditorLabel(workflow)}</strong>
-                                        </div>
+                                      <div className="dashboard-mandatory-list-meta">
+                                        <span>Prontuário {entry.chartNumber || "-"}</span>
+                                        <span>{formatAdmissionDate(entry.admissionDate)}</span>
+                                        <span>
+                                          {assignedTeamName ?? formatCanonicalTeamName(entry.teamName)}
+                                        </span>
                                       </div>
 
                                       <label className="dashboard-mandatory-card-field">
@@ -11137,39 +11316,6 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                           ))}
                                         </select>
                                       </label>
-
-                                      <div className="dashboard-inline-actions">
-                                        {workflow.evolutionGeneratedAt ? (
-                                          <span className="dashboard-mandatory-card-meta">
-                                            Evolução: {formatTimestamp(workflow.evolutionGeneratedAt)}
-                                          </span>
-                                        ) : (
-                                          <button
-                                            type="button"
-                                            className="dashboard-mini-button"
-                                            onClick={() => void handleGenerateMandatoryEvolution(entry)}
-                                            disabled={
-                                              !workflow.firstVisitCompletedAt ||
-                                              mandatoryEvolutionPreviewLoadingKey === entry.key
-                                            }
-                                          >
-                                            {mandatoryEvolutionPreviewLoadingKey === entry.key
-                                              ? "Carregando..."
-                                              : "Gerar evolução"}
-                                          </button>
-                                        )}
-                                      </div>
-
-                                      <button
-                                        type="button"
-                                        className="dashboard-chip-remove"
-                                        onClick={() => void handleRemoveFromMandatoryList(entry)}
-                                        disabled={mandatoryRemovingKey === entry.key}
-                                      >
-                                        {mandatoryRemovingKey === entry.key
-                                          ? "Excluindo..."
-                                          : "Excluir da lista"}
-                                      </button>
                                     </article>
                                   ))}
                                 </div>
