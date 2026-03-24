@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
-import { createTeam } from "@/lib/db";
+import { createTeam, recordAuditLogSafely } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -26,6 +26,18 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   try {
     const team = await createTeam(name);
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "team_created",
+      resourceType: "team",
+      resourceId: team.id,
+      metadata: {
+        source: "api_teams_create",
+        teamName: team.name
+      }
+    });
+
     return NextResponse.json({ ok: true, team });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao cadastrar equipe.";

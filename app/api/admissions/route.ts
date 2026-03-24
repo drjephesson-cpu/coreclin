@@ -11,7 +11,7 @@ import {
   type InterviewInformationQuality,
   type InterviewInformationSourceType
 } from "@/lib/coreclin-types";
-import { createAdmission, updateAdmission } from "@/lib/db";
+import { createAdmission, recordAuditLogSafely, updateAdmission } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -237,6 +237,23 @@ export async function POST(request: Request): Promise<NextResponse> {
       responsibleLogin: sessionUsername
     });
 
+    await recordAuditLogSafely({
+      actorLogin: sessionUsername,
+      action: "admission_created",
+      resourceType: "admission",
+      resourceId: admission.id,
+      patientId: admission.patientId,
+      patientNameSnapshot: admission.patientName,
+      metadata: {
+        source: "api_admissions_create",
+        teamId,
+        bed,
+        hasMeasurements,
+        hasAdmissionSummary: Boolean(admissionSummary),
+        hasRoundSummary: Boolean(roundSummary)
+      }
+    });
+
     return NextResponse.json({ ok: true, admission });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao cadastrar internação.";
@@ -360,6 +377,23 @@ export async function PUT(request: Request): Promise<NextResponse> {
       interviewPendingIssues,
       interviewPlan,
       responsibleLogin: sessionUsername
+    });
+
+    await recordAuditLogSafely({
+      actorLogin: sessionUsername,
+      action: "admission_updated",
+      resourceType: "admission",
+      resourceId: admission.id,
+      patientId: admission.patientId,
+      patientNameSnapshot: admission.patientName,
+      metadata: {
+        source: "api_admissions_update",
+        teamId,
+        bed,
+        hasMeasurements,
+        hasAdmissionSummary: Boolean(admissionSummary),
+        hasRoundSummary: Boolean(roundSummary)
+      }
     });
 
     return NextResponse.json({ ok: true, admission });

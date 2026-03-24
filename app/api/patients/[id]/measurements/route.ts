@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
-import { addPatientMeasurement } from "@/lib/db";
+import { addPatientMeasurement, recordAuditLogSafely } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -39,6 +39,21 @@ export async function POST(
 
   try {
     const measurement = await addPatientMeasurement(patientId, weightKg, heightCm);
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "patient_measurement_recorded",
+      resourceType: "patient_measurement",
+      resourceId: measurement.id,
+      patientId,
+      patientNameSnapshot: measurement.patientName,
+      metadata: {
+        source: "api_patient_measurements_create",
+        weightKg,
+        heightCm
+      }
+    });
+
     return NextResponse.json({ ok: true, measurement });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao atualizar medidas.";

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
-import { addPriorMedication, removePriorMedication, updatePriorMedication } from "@/lib/db";
+import { addPriorMedication, recordAuditLogSafely, removePriorMedication, updatePriorMedication } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -118,6 +118,20 @@ export async function POST(
       manufacturer
     });
 
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "prior_medication_created",
+      resourceType: "prior_medication",
+      resourceId: priorMedication.id,
+      patientId,
+      patientNameSnapshot: priorMedication.patientName,
+      metadata: {
+        source: "api_prior_medications_create",
+        medicationName: priorMedication.medicationName,
+        reconciliationLinked: Boolean(priorMedication.reconciliationPrescriptionId)
+      }
+    });
+
     return NextResponse.json({ ok: true, priorMedication });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao cadastrar medicamento prévio.";
@@ -156,6 +170,18 @@ export async function DELETE(
 
   try {
     await removePriorMedication({ patientId, priorMedicationId });
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "prior_medication_deleted",
+      resourceType: "prior_medication",
+      resourceId: priorMedicationId,
+      patientId,
+      metadata: {
+        source: "api_prior_medications_delete"
+      }
+    });
+
     return NextResponse.json({ ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao remover medicamento prévio.";
@@ -305,6 +331,20 @@ export async function PUT(
       reconciliationManualStatus,
       reconciliationIntentionalStatus,
       reconciliationPrescriptionId
+    });
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "prior_medication_updated",
+      resourceType: "prior_medication",
+      resourceId: result.priorMedication.id,
+      patientId,
+      patientNameSnapshot: result.priorMedication.patientName,
+      metadata: {
+        source: "api_prior_medications_update",
+        medicationName: result.priorMedication.medicationName,
+        reconciliationLinked: Boolean(result.priorMedication.reconciliationPrescriptionId)
+      }
     });
 
     return NextResponse.json({

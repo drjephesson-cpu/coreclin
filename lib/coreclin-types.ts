@@ -112,6 +112,20 @@ export type ProfessionalRecord = {
   createdAt: string;
 };
 
+export type AuditLogAction = "patient_dashboard_viewed" | "patient_evolution_preview_viewed";
+
+export type AuditLogRecord = {
+  id: number;
+  actorLogin: string;
+  action: AuditLogAction | string;
+  resourceType: string;
+  resourceId: string | null;
+  patientId: number | null;
+  patientNameSnapshot: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
 export type TeamRecord = {
   id: number;
   name: string;

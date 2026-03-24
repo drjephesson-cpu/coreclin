@@ -7,7 +7,8 @@ import {
   listPatientAllergies,
   listPatientExamImports,
   listPatients,
-  listPriorMedications
+  listPriorMedications,
+  recordAuditLogSafely
 } from "@/lib/db";
 import { buildProfessionalSignatureLines } from "@/lib/professional-display";
 
@@ -46,6 +47,18 @@ export async function GET(
     if (!patient) {
       return NextResponse.json({ message: "Paciente não encontrado." }, { status: 404 });
     }
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "patient_evolution_preview_viewed",
+      resourceType: "patient_evolution_preview",
+      resourceId: patientId,
+      patientId,
+      patientNameSnapshot: patient.fullName,
+      metadata: {
+        source: "api_patient_evolution_preview"
+      }
+    });
 
     return NextResponse.json({
       ok: true,

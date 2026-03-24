@@ -8,7 +8,8 @@ import {
   listPatientExamImports,
   listPatients,
   listPriorMedications,
-  listRecentAdmissions
+  listRecentAdmissions,
+  recordAuditLogSafely
 } from "@/lib/db";
 import { type PatientDashboardDetails } from "@/lib/coreclin-types";
 
@@ -58,6 +59,18 @@ export async function GET(
       roundNotes,
       prescriptions
     };
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "patient_dashboard_viewed",
+      resourceType: "patient_dashboard",
+      resourceId: patientId,
+      patientId,
+      patientNameSnapshot: patient.fullName,
+      metadata: {
+        source: "api_patients_dashboard"
+      }
+    });
 
     return NextResponse.json({ patientDetails });
   } catch (error) {

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
-import { addAdmissionRoundNote } from "@/lib/db";
+import { addAdmissionRoundNote, recordAuditLogSafely } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -82,6 +82,20 @@ export async function POST(
       roundDate,
       note,
       responsibleLogin: session.username
+    });
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "admission_round_note_created",
+      resourceType: "admission_round_note",
+      resourceId: roundNote.id,
+      patientId: roundNote.patientId,
+      patientNameSnapshot: roundNote.patientName,
+      metadata: {
+        source: "api_admission_round_notes_create",
+        admissionId,
+        roundDate
+      }
     });
 
     return NextResponse.json({ ok: true, roundNote });

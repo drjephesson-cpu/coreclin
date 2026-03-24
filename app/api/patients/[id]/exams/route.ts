@@ -4,6 +4,7 @@ import { getCurrentSession } from "@/lib/auth";
 import {
   addPatientExamImport,
   getPatientExamImportById,
+  recordAuditLogSafely,
   removePatientExamImport,
   removePatientExamRecord
 } from "@/lib/db";
@@ -202,6 +203,21 @@ export async function POST(
       importedByLogin: session.username
     });
 
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "patient_exam_import_created",
+      resourceType: "patient_exam_import",
+      resourceId: examImport.id,
+      patientId,
+      patientNameSnapshot: examImport.patientName,
+      metadata: {
+        source: "api_patient_exams_create",
+        fileName: examImport.fileName,
+        pageCount: examImport.pageCount,
+        recordCount: examImport.records.length
+      }
+    });
+
     return NextResponse.json({ ok: true, examImport });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao salvar importação de exames.";
@@ -235,10 +251,37 @@ export async function DELETE(
 
     if (recordKey) {
       const examImport = await removePatientExamRecord({ patientId, examImportId, recordKey });
+
+      await recordAuditLogSafely({
+        actorLogin: session.username,
+        action: "patient_exam_record_deleted",
+        resourceType: "patient_exam_import",
+        resourceId: examImport.id,
+        patientId,
+        patientNameSnapshot: examImport.patientName,
+        metadata: {
+          source: "api_patient_exams_delete_record",
+          examImportId,
+          recordKey
+        }
+      });
+
       return NextResponse.json({ ok: true, examImport });
     }
 
     await removePatientExamImport({ patientId, examImportId });
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "patient_exam_import_deleted",
+      resourceType: "patient_exam_import",
+      resourceId: examImportId,
+      patientId,
+      metadata: {
+        source: "api_patient_exams_delete_import"
+      }
+    });
+
     return NextResponse.json({ ok: true });
   } catch (error) {
     const message =

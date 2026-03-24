@@ -481,6 +481,7 @@ type MandatoryEvolutionPreviewState = {
 
 type DashboardConsoleProps = {
   currentLogin: string;
+  canViewAuditLogs: boolean;
   data: DashboardData | null;
   dbError: string | null;
 };
@@ -3512,6 +3513,7 @@ function buildReadmissionAdmissionPayload(
 
 export default function DashboardConsole({
   currentLogin,
+  canViewAuditLogs,
   data,
   dbError
 }: DashboardConsoleProps) {
@@ -10147,7 +10149,14 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
             Login ativo: <strong>{currentLogin}</strong>
           </p>
         </div>
-        <LogoutButton />
+        <div className="dashboard-inline-actions">
+          {canViewAuditLogs ? (
+            <a href="/dashboard/auditoria" className="dashboard-mini-button">
+              Ver auditoria
+            </a>
+          ) : null}
+          <LogoutButton />
+        </div>
       </header>
 
       {dbError ? (

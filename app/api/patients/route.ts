@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
 import { PATIENT_SEX_OPTIONS, type PatientSex } from "@/lib/coreclin-types";
-import { createPatient } from "@/lib/db";
+import { createPatient, recordAuditLogSafely } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -43,6 +43,21 @@ export async function POST(request: Request): Promise<NextResponse> {
       sex,
       responsibleLogin: session.username,
       allergies
+    });
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "patient_created",
+      resourceType: "patient",
+      resourceId: patient.id,
+      patientId: patient.id,
+      patientNameSnapshot: patient.fullName,
+      metadata: {
+        source: "api_patients_create",
+        hasBirthDate: Boolean(patient.birthDate),
+        sex: patient.sex,
+        allergyCount: allergies.length
+      }
     });
 
     return NextResponse.json({ ok: true, patient });

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 
 import DashboardConsole from "@/app/dashboard/_components/dashboard-console";
+import { canViewAuditLogs } from "@/lib/audit";
 import { getCurrentSession } from "@/lib/auth";
 import { type DashboardData } from "@/lib/coreclin-types";
 import { getDashboardData, isDatabaseConfigured } from "@/lib/db";
@@ -59,7 +60,12 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 
   return (
     <main className="dashboard-shell">
-      <DashboardConsole currentLogin={session.username} data={data} dbError={dbError} />
+      <DashboardConsole
+        currentLogin={session.username}
+        canViewAuditLogs={canViewAuditLogs(session.username)}
+        data={data}
+        dbError={dbError}
+      />
     </main>
   );
 }

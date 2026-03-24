@@ -9,6 +9,7 @@ import {
 } from "@/lib/coreclin-types";
 import {
   createProfessional,
+  recordAuditLogSafely,
   updateProfessional,
 } from "@/lib/db";
 
@@ -141,6 +142,19 @@ export async function POST(request: Request): Promise<NextResponse> {
       supervisingPharmacistId: normalized.supervisingPharmacistId
     });
 
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "professional_created",
+      resourceType: "professional",
+      resourceId: professional.id,
+      metadata: {
+        source: "api_professionals_create",
+        login: professional.login,
+        profession: professional.profession,
+        isTrainee: professional.isTrainee
+      }
+    });
+
     return NextResponse.json({ ok: true, professional });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao cadastrar profissional.";
@@ -186,6 +200,19 @@ export async function PUT(request: Request): Promise<NextResponse> {
       institution: normalized.institution,
       isTrainee: normalized.isTrainee,
       supervisingPharmacistId: normalized.supervisingPharmacistId
+    });
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "professional_updated",
+      resourceType: "professional",
+      resourceId: professional.id,
+      metadata: {
+        source: "api_professionals_update",
+        login: professional.login,
+        profession: professional.profession,
+        isTrainee: professional.isTrainee
+      }
     });
 
     return NextResponse.json({ ok: true, professional });

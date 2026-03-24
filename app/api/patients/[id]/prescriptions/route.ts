@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getCurrentSession } from "@/lib/auth";
 import {
   addMedicalPrescription,
+  recordAuditLogSafely,
   removeMedicalPrescriptionSet,
   updateMedicalPrescriptionValidation
 } from "@/lib/db";
@@ -165,6 +166,21 @@ export async function POST(
       externalValidationCandidate
     });
 
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "medical_prescription_created",
+      resourceType: "medical_prescription",
+      resourceId: prescription.id,
+      patientId,
+      patientNameSnapshot: prescription.patientName,
+      metadata: {
+        source: "api_prescriptions_create",
+        medicationName: prescription.medicationName,
+        admissionId: prescription.admissionId,
+        hasValidationWindow: Boolean(prescription.validationStartAt || prescription.validationEndAt)
+      }
+    });
+
     return NextResponse.json({ ok: true, prescription });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao cadastrar prescrição.";
@@ -209,6 +225,19 @@ export async function DELETE(
 
   try {
     const deletedIds = await removeMedicalPrescriptionSet({ patientId, prescriptionIds });
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "medical_prescriptions_deleted",
+      resourceType: "medical_prescription",
+      resourceId: deletedIds.join(","),
+      patientId,
+      metadata: {
+        source: "api_prescriptions_delete",
+        deletedCount: deletedIds.length
+      }
+    });
+
     return NextResponse.json({ ok: true, deletedIds });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao apagar a prescrição.";
@@ -409,6 +438,25 @@ export async function PUT(
         ? { responsibleLogin: session.username }
         : {}),
       ...(hasInterventionResponse ? { interventionResponse: safeInterventionResponse } : {})
+    });
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "medical_prescription_validation_updated",
+      resourceType: "medical_prescription",
+      resourceId: prescription.id,
+      patientId,
+      patientNameSnapshot: prescription.patientName,
+      metadata: {
+        source: "api_prescriptions_update",
+        updatedStockValidation: hasStockValidationField,
+        updatedIntervention:
+          hasInterventionNotes ||
+          hasInterventionErrorType ||
+          hasInterventionContactStatus ||
+          hasInterventionRequestedToPrescriber ||
+          hasInterventionResponse
+      }
     });
 
     return NextResponse.json({ ok: true, prescription });

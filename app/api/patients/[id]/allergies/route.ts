@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
-import { addPatientAllergy, removePatientAllergy, updatePatientAllergy } from "@/lib/db";
+import { addPatientAllergy, recordAuditLogSafely, removePatientAllergy, updatePatientAllergy } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -42,6 +42,21 @@ export async function POST(
       allergyName,
       reactionDescription: reactionDescription || null
     });
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "patient_allergy_created",
+      resourceType: "patient_allergy",
+      resourceId: result.allergy.id,
+      patientId,
+      patientNameSnapshot: result.allergy.patientName,
+      metadata: {
+        source: "api_patient_allergies_create",
+        allergyName: result.allergy.allergyName,
+        hasReactionDescription: Boolean(result.allergy.reactionDescription)
+      }
+    });
+
     return NextResponse.json({
       ok: true,
       allergy: result.allergy,
@@ -84,6 +99,18 @@ export async function DELETE(
 
   try {
     await removePatientAllergy({ patientId, allergyId });
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "patient_allergy_deleted",
+      resourceType: "patient_allergy",
+      resourceId: allergyId,
+      patientId,
+      metadata: {
+        source: "api_patient_allergies_delete"
+      }
+    });
+
     return NextResponse.json({ ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha ao remover alergia.";
@@ -130,6 +157,21 @@ export async function PUT(
       allergyName: allergyName || null,
       reactionDescription: reactionDescription || null
     });
+
+    await recordAuditLogSafely({
+      actorLogin: session.username,
+      action: "patient_allergy_updated",
+      resourceType: "patient_allergy",
+      resourceId: result.allergy.id,
+      patientId,
+      patientNameSnapshot: result.allergy.patientName,
+      metadata: {
+        source: "api_patient_allergies_update",
+        allergyName: result.allergy.allergyName,
+        hasReactionDescription: Boolean(result.allergy.reactionDescription)
+      }
+    });
+
     return NextResponse.json({
       ok: true,
       allergy: result.allergy,

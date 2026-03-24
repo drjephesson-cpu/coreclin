@@ -14,6 +14,7 @@ import {
   type BmiFormulaId,
   type BsaFormulaId,
   type CouncilOption,
+  type AuditLogRecord,
   type DashboardData,
   type InpatientEntry,
   type InpatientWorkflowState,
@@ -258,6 +259,16 @@ export type SaveInpatientWorkflowSnapshotInput = {
   priorityTeamIds: number[];
 };
 
+export type RecordAuditLogInput = {
+  actorLogin: string;
+  action: string;
+  resourceType: string;
+  resourceId?: string | number | null;
+  patientId?: number | null;
+  patientNameSnapshot?: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
 export type UpdateMedicalPrescriptionValidationInput = {
   patientId: number;
   prescriptionId: number;
@@ -448,6 +459,21 @@ function mapTeam(row: DbRow): TeamRecord {
   return {
     id: toNumber(row.id),
     name: String(row.name ?? ""),
+    createdAt: toIso(row.created_at)
+  };
+}
+
+function mapAuditLog(row: DbRow): AuditLogRecord {
+  return {
+    id: toNumber(row.id),
+    actorLogin: String(row.actor_login ?? ""),
+    action: String(row.action ?? ""),
+    resourceType: String(row.resource_type ?? ""),
+    resourceId: row.resource_id === null ? null : String(row.resource_id ?? ""),
+    patientId: row.patient_id === null ? null : toNumber(row.patient_id),
+    patientNameSnapshot:
+      row.patient_name_snapshot === null ? null : String(row.patient_name_snapshot ?? ""),
+    metadata: parseJsonValue<Record<string, unknown>>(row.metadata, {}),
     createdAt: toIso(row.created_at)
   };
 }
@@ -1260,6 +1286,18 @@ async function setupDatabase(): Promise<void> {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id BIGSERIAL PRIMARY KEY,
+      actor_login TEXT NOT NULL,
+      action TEXT NOT NULL,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT,
+      patient_id INTEGER,
+      patient_name_snapshot TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE INDEX IF NOT EXISTS idx_admissions_patient_id ON admissions (patient_id);
     CREATE INDEX IF NOT EXISTS idx_admissions_date ON admissions (admission_date DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_admissions_patient_latest ON admissions (patient_id, admission_date DESC, created_at DESC, id DESC);
@@ -1279,6 +1317,10 @@ async function setupDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_round_notes_admission_id ON admission_round_notes (admission_id, round_date DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_round_notes_patient_id ON admission_round_notes (patient_id, round_date DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_inpatient_workflow_updated_at ON inpatient_workflow_snapshots (updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs (created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_login ON audit_logs (actor_login, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_patient_id ON audit_logs (patient_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs (action, created_at DESC, id DESC);
   `);
 
   await pool.query(`
@@ -1646,6 +1688,102 @@ export async function authenticateProfessional(
   }
 
   return mapProfessional(row);
+}
+
+export async function recordAuditLog(input: RecordAuditLogInput): Promise<void> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const actorLogin = input.actorLogin.trim().toLowerCase();
+  const action = input.action.trim();
+  const resourceType = input.resourceType.trim();
+  const resourceId =
+    input.resourceId === null || input.resourceId === undefined
+      ? null
+      : String(input.resourceId).trim() || null;
+  const patientId =
+    Number.isInteger(input.patientId) && Number(input.patientId) > 0 ? Number(input.patientId) : null;
+  const patientNameSnapshot = input.patientNameSnapshot?.trim() || null;
+
+  if (!actorLogin || !action || !resourceType) {
+    return;
+  }
+
+  await pool.query(
+    `
+      INSERT INTO audit_logs (
+        actor_login,
+        action,
+        resource_type,
+        resource_id,
+        patient_id,
+        patient_name_snapshot,
+        metadata
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+    `,
+    [
+      actorLogin,
+      action,
+      resourceType,
+      resourceId,
+      patientId,
+      patientNameSnapshot,
+      JSON.stringify(input.metadata ?? {})
+    ]
+  );
+}
+
+export async function recordAuditLogSafely(input: RecordAuditLogInput): Promise<void> {
+  try {
+    await recordAuditLog(input);
+  } catch (error) {
+    console.error("Falha ao registrar log de auditoria.", error);
+  }
+}
+
+export async function listAuditLogs(options?: {
+  limit?: number | null;
+  actorLogin?: string | null;
+  patientId?: number | null;
+}): Promise<AuditLogRecord[]> {
+  await ensureDatabaseReady();
+  const pool = getPool();
+  const safeLimit =
+    Number.isInteger(options?.limit) && Number(options?.limit) > 0
+      ? Math.min(Number(options?.limit), 500)
+      : 200;
+  const clauses: string[] = [];
+  const values: Array<string | number> = [];
+
+  if (options?.actorLogin?.trim()) {
+    clauses.push(`actor_login = $${values.push(options.actorLogin.trim().toLowerCase())}`);
+  }
+
+  if (Number.isInteger(options?.patientId) && Number(options?.patientId) > 0) {
+    clauses.push(`patient_id = $${values.push(Number(options?.patientId))}`);
+  }
+
+  const result = await pool.query(
+    `
+      SELECT
+        id,
+        actor_login,
+        action,
+        resource_type,
+        resource_id,
+        patient_id,
+        patient_name_snapshot,
+        metadata,
+        created_at
+      FROM audit_logs
+      ${clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : ""}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${values.push(safeLimit)}
+    `,
+    values
+  );
+
+  return result.rows.map((row) => mapAuditLog(row as DbRow));
 }
 
 export async function listProfessionals(): Promise<ProfessionalRecord[]> {
@@ -5090,6 +5228,24 @@ export async function getDashboardData(
         })
       : Promise.resolve([])
   ]);
+
+  const loadedPatient = isPatientDetailsPage ? (patients[0] ?? null) : null;
+  if (loadedPatient && selectedPatientId !== null) {
+    await recordAuditLogSafely({
+      actorLogin: currentLogin,
+      action: "patient_dashboard_viewed",
+      resourceType: "patient_dashboard",
+      resourceId: selectedPatientId,
+      patientId: selectedPatientId,
+      patientNameSnapshot: loadedPatient.fullName,
+      metadata: {
+        source: "dashboard_page",
+        section,
+        patientView: options?.patientView ?? null,
+        inpatientMode: options?.inpatientMode ?? null
+      }
+    });
+  }
 
   return {
     currentProfessional,
