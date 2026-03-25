@@ -7,9 +7,11 @@ import {
   type BmiFormulaId,
   INTERVIEW_INFORMATION_QUALITY_OPTIONS,
   INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS,
+  LAMG_PROPHYLAXIS_AGENT_OPTIONS,
   type BsaFormulaId,
   type InterviewInformationQuality,
-  type InterviewInformationSourceType
+  type InterviewInformationSourceType,
+  type LamgProphylaxisAgent
 } from "@/lib/coreclin-types";
 import { createAdmission, recordAuditLogSafely, updateAdmission } from "@/lib/db";
 
@@ -29,6 +31,10 @@ function isInterviewInformationQuality(value: string): value is InterviewInforma
 
 function isInterviewInformationSourceType(value: string): value is InterviewInformationSourceType {
   return INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS.some((option) => option === value);
+}
+
+function isLamgProphylaxisAgent(value: string): value is LamgProphylaxisAgent {
+  return LAMG_PROPHYLAXIS_AGENT_OPTIONS.some((option) => option === value);
 }
 
 async function parseAdmissionRequest(request: Request): Promise<
@@ -76,6 +82,27 @@ function parseBooleanFlag(value: unknown): boolean {
   }
 
   return false;
+}
+
+function parseOptionalBooleanFlag(value: unknown): boolean | null {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+    if (normalized === "true" || normalized === "1" || normalized === "sim") {
+      return true;
+    }
+    if (normalized === "false" || normalized === "0" || normalized === "nao" || normalized === "não") {
+      return false;
+    }
+  }
+
+  return null;
 }
 
 function buildIsoAdmissionDate(year: number, month: number, day: number): string | null {
@@ -151,6 +178,32 @@ export async function POST(request: Request): Promise<NextResponse> {
   const interviewInformationSourceRelationship = parseOptionalTrimmedString(
     body.interviewInformationSourceRelationship
   );
+  const interviewAmbulates = parseOptionalBooleanFlag(body.interviewAmbulates);
+  const interviewIsIntubated = parseOptionalBooleanFlag(body.interviewIsIntubated);
+  const paduaActiveCancer = parseOptionalBooleanFlag(body.paduaActiveCancer);
+  const paduaPreviousVte = parseOptionalBooleanFlag(body.paduaPreviousVte);
+  const paduaKnownThrombophilia = parseOptionalBooleanFlag(body.paduaKnownThrombophilia);
+  const paduaRecentTraumaOrSurgery = parseOptionalBooleanFlag(body.paduaRecentTraumaOrSurgery);
+  const paduaHeartOrRespiratoryFailure = parseOptionalBooleanFlag(
+    body.paduaHeartOrRespiratoryFailure
+  );
+  const paduaAcuteMiOrIschemicStroke = parseOptionalBooleanFlag(body.paduaAcuteMiOrIschemicStroke);
+  const paduaAcuteInfectionOrRheumatologicDisorder = parseOptionalBooleanFlag(
+    body.paduaAcuteInfectionOrRheumatologicDisorder
+  );
+  const paduaHormonalTreatment = parseOptionalBooleanFlag(body.paduaHormonalTreatment);
+  const paduaContraindicationToPharmacologicProphylaxis = parseOptionalBooleanFlag(
+    body.paduaContraindicationToPharmacologicProphylaxis
+  );
+  const paduaNotes = parseOptionalTrimmedString(body.paduaNotes);
+  const lamgCriticallyIll = parseOptionalBooleanFlag(body.lamgCriticallyIll);
+  const lamgShock = parseOptionalBooleanFlag(body.lamgShock);
+  const lamgCoagulopathy = parseOptionalBooleanFlag(body.lamgCoagulopathy);
+  const lamgChronicLiverDisease = parseOptionalBooleanFlag(body.lamgChronicLiverDisease);
+  const lamgNeurocritical = parseOptionalBooleanFlag(body.lamgNeurocritical);
+  const lamgEnteralNutrition = parseOptionalBooleanFlag(body.lamgEnteralNutrition);
+  const lamgAgentRaw = typeof body.lamgAgent === "string" ? body.lamgAgent.trim().toLowerCase() : "";
+  const lamgNotes = parseOptionalTrimmedString(body.lamgNotes);
   const interviewInterventionMotive = parseOptionalTrimmedString(body.interviewInterventionMotive);
   const interviewSubjective = parseOptionalTrimmedString(body.interviewSubjective);
   const interviewRelevantSymptoms = parseOptionalTrimmedString(body.interviewRelevantSymptoms);
@@ -200,6 +253,10 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ message: "Fonte da informação inválida." }, { status: 400 });
   }
 
+  if (lamgAgentRaw && !isLamgProphylaxisAgent(lamgAgentRaw)) {
+    return NextResponse.json({ message: "Agente de profilaxia para LAMG inválido." }, { status: 400 });
+  }
+
   const bmiFormula = hasMeasurements ? (bmiFormulaRaw as BmiFormulaId) : undefined;
   const bsaFormula = hasMeasurements ? (bsaFormulaRaw as BsaFormulaId) : undefined;
   const interviewInformationQuality = interviewInformationQualityRaw
@@ -208,6 +265,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const interviewInformationSourceType = interviewInformationSourceTypeRaw
     ? (interviewInformationSourceTypeRaw as InterviewInformationSourceType)
     : undefined;
+  const lamgAgent = lamgAgentRaw ? (lamgAgentRaw as LamgProphylaxisAgent) : undefined;
 
   try {
     const admission = await createAdmission({
@@ -229,6 +287,26 @@ export async function POST(request: Request): Promise<NextResponse> {
       interviewInformationSourceType,
       interviewInformationSourceName,
       interviewInformationSourceRelationship,
+      interviewAmbulates,
+      interviewIsIntubated,
+      paduaActiveCancer,
+      paduaPreviousVte,
+      paduaKnownThrombophilia,
+      paduaRecentTraumaOrSurgery,
+      paduaHeartOrRespiratoryFailure,
+      paduaAcuteMiOrIschemicStroke,
+      paduaAcuteInfectionOrRheumatologicDisorder,
+      paduaHormonalTreatment,
+      paduaContraindicationToPharmacologicProphylaxis,
+      paduaNotes,
+      lamgCriticallyIll,
+      lamgShock,
+      lamgCoagulopathy,
+      lamgChronicLiverDisease,
+      lamgNeurocritical,
+      lamgEnteralNutrition,
+      lamgAgent,
+      lamgNotes,
       interviewInterventionMotive,
       interviewSubjective,
       interviewRelevantSymptoms,
@@ -297,6 +375,32 @@ export async function PUT(request: Request): Promise<NextResponse> {
   const interviewInformationSourceRelationship = parseOptionalTrimmedString(
     body.interviewInformationSourceRelationship
   );
+  const interviewAmbulates = parseOptionalBooleanFlag(body.interviewAmbulates);
+  const interviewIsIntubated = parseOptionalBooleanFlag(body.interviewIsIntubated);
+  const paduaActiveCancer = parseOptionalBooleanFlag(body.paduaActiveCancer);
+  const paduaPreviousVte = parseOptionalBooleanFlag(body.paduaPreviousVte);
+  const paduaKnownThrombophilia = parseOptionalBooleanFlag(body.paduaKnownThrombophilia);
+  const paduaRecentTraumaOrSurgery = parseOptionalBooleanFlag(body.paduaRecentTraumaOrSurgery);
+  const paduaHeartOrRespiratoryFailure = parseOptionalBooleanFlag(
+    body.paduaHeartOrRespiratoryFailure
+  );
+  const paduaAcuteMiOrIschemicStroke = parseOptionalBooleanFlag(body.paduaAcuteMiOrIschemicStroke);
+  const paduaAcuteInfectionOrRheumatologicDisorder = parseOptionalBooleanFlag(
+    body.paduaAcuteInfectionOrRheumatologicDisorder
+  );
+  const paduaHormonalTreatment = parseOptionalBooleanFlag(body.paduaHormonalTreatment);
+  const paduaContraindicationToPharmacologicProphylaxis = parseOptionalBooleanFlag(
+    body.paduaContraindicationToPharmacologicProphylaxis
+  );
+  const paduaNotes = parseOptionalTrimmedString(body.paduaNotes);
+  const lamgCriticallyIll = parseOptionalBooleanFlag(body.lamgCriticallyIll);
+  const lamgShock = parseOptionalBooleanFlag(body.lamgShock);
+  const lamgCoagulopathy = parseOptionalBooleanFlag(body.lamgCoagulopathy);
+  const lamgChronicLiverDisease = parseOptionalBooleanFlag(body.lamgChronicLiverDisease);
+  const lamgNeurocritical = parseOptionalBooleanFlag(body.lamgNeurocritical);
+  const lamgEnteralNutrition = parseOptionalBooleanFlag(body.lamgEnteralNutrition);
+  const lamgAgentRaw = typeof body.lamgAgent === "string" ? body.lamgAgent.trim().toLowerCase() : "";
+  const lamgNotes = parseOptionalTrimmedString(body.lamgNotes);
   const interviewInterventionMotive = parseOptionalTrimmedString(body.interviewInterventionMotive);
   const interviewSubjective = parseOptionalTrimmedString(body.interviewSubjective);
   const interviewRelevantSymptoms = parseOptionalTrimmedString(body.interviewRelevantSymptoms);
@@ -342,6 +446,10 @@ export async function PUT(request: Request): Promise<NextResponse> {
     return NextResponse.json({ message: "Fonte da informação inválida." }, { status: 400 });
   }
 
+  if (lamgAgentRaw && !isLamgProphylaxisAgent(lamgAgentRaw)) {
+    return NextResponse.json({ message: "Agente de profilaxia para LAMG inválido." }, { status: 400 });
+  }
+
   const bmiFormula = hasMeasurements ? (bmiFormulaRaw as BmiFormulaId) : undefined;
   const bsaFormula = hasMeasurements ? (bsaFormulaRaw as BsaFormulaId) : undefined;
   const interviewInformationQuality = interviewInformationQualityRaw
@@ -350,6 +458,7 @@ export async function PUT(request: Request): Promise<NextResponse> {
   const interviewInformationSourceType = interviewInformationSourceTypeRaw
     ? (interviewInformationSourceTypeRaw as InterviewInformationSourceType)
     : undefined;
+  const lamgAgent = lamgAgentRaw ? (lamgAgentRaw as LamgProphylaxisAgent) : undefined;
 
   try {
     const admission = await updateAdmission({
@@ -371,6 +480,26 @@ export async function PUT(request: Request): Promise<NextResponse> {
       interviewInformationSourceType,
       interviewInformationSourceName,
       interviewInformationSourceRelationship,
+      interviewAmbulates,
+      interviewIsIntubated,
+      paduaActiveCancer,
+      paduaPreviousVte,
+      paduaKnownThrombophilia,
+      paduaRecentTraumaOrSurgery,
+      paduaHeartOrRespiratoryFailure,
+      paduaAcuteMiOrIschemicStroke,
+      paduaAcuteInfectionOrRheumatologicDisorder,
+      paduaHormonalTreatment,
+      paduaContraindicationToPharmacologicProphylaxis,
+      paduaNotes,
+      lamgCriticallyIll,
+      lamgShock,
+      lamgCoagulopathy,
+      lamgChronicLiverDisease,
+      lamgNeurocritical,
+      lamgEnteralNutrition,
+      lamgAgent,
+      lamgNotes,
       interviewInterventionMotive,
       interviewSubjective,
       interviewRelevantSymptoms,

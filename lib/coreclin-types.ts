@@ -77,6 +77,7 @@ export const PRESCRIPTION_INTERVENTION_ERROR_TYPE_OPTIONS = [
 export const INTERVIEW_INFORMATION_QUALITY_OPTIONS = ["baixa", "media", "alta"] as const;
 export const INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS = ["patient", "informant"] as const;
 export const PATIENT_SEX_OPTIONS = ["female", "male"] as const;
+export const LAMG_PROPHYLAXIS_AGENT_OPTIONS = ["none", "ppi", "h2ra", "other"] as const;
 
 export type ProfessionOption = (typeof PROFESSION_OPTIONS)[number];
 export type CouncilOption = (typeof COUNCIL_OPTIONS)[number];
@@ -93,6 +94,7 @@ export type InterviewInformationQuality =
 export type InterviewInformationSourceType =
   (typeof INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS)[number];
 export type PatientSex = (typeof PATIENT_SEX_OPTIONS)[number];
+export type LamgProphylaxisAgent = (typeof LAMG_PROPHYLAXIS_AGENT_OPTIONS)[number];
 
 export type ProfessionalRecord = {
   id: number;
@@ -211,6 +213,26 @@ export type AdmissionRecord = {
   interviewInformationSourceType: InterviewInformationSourceType | null;
   interviewInformationSourceName: string | null;
   interviewInformationSourceRelationship: string | null;
+  interviewAmbulates: boolean | null;
+  interviewIsIntubated: boolean | null;
+  paduaActiveCancer: boolean | null;
+  paduaPreviousVte: boolean | null;
+  paduaKnownThrombophilia: boolean | null;
+  paduaRecentTraumaOrSurgery: boolean | null;
+  paduaHeartOrRespiratoryFailure: boolean | null;
+  paduaAcuteMiOrIschemicStroke: boolean | null;
+  paduaAcuteInfectionOrRheumatologicDisorder: boolean | null;
+  paduaHormonalTreatment: boolean | null;
+  paduaContraindicationToPharmacologicProphylaxis: boolean | null;
+  paduaNotes: string | null;
+  lamgCriticallyIll: boolean | null;
+  lamgShock: boolean | null;
+  lamgCoagulopathy: boolean | null;
+  lamgChronicLiverDisease: boolean | null;
+  lamgNeurocritical: boolean | null;
+  lamgEnteralNutrition: boolean | null;
+  lamgAgent: LamgProphylaxisAgent | null;
+  lamgNotes: string | null;
   interviewInterventionMotive: string | null;
   interviewSubjective: string | null;
   interviewRelevantSymptoms: string | null;

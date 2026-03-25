@@ -15,7 +15,11 @@ import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import LogoutButton from "@/app/_components/logout-button";
-import { calculateClinicalIndexes } from "@/lib/clinical";
+import {
+  calculateClinicalIndexes,
+  calculateLamgAssessment,
+  calculatePaduaAssessment
+} from "@/lib/clinical";
 import {
   type AdmissionRecord,
   type AdmissionRoundNoteRecord,
@@ -23,6 +27,7 @@ import {
   BMI_FORMULA_OPTIONS,
   INTERVIEW_INFORMATION_QUALITY_OPTIONS,
   INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS,
+  LAMG_PROPHYLAXIS_AGENT_OPTIONS,
   COUNCIL_OPTIONS,
   MEDICAL_PRESCRIPTION_INTERVENTION_RESPONSE_OPTIONS,
   PATIENT_SEX_OPTIONS,
@@ -38,6 +43,7 @@ import {
   type InpatientWorkflowStatus,
   type InterviewInformationQuality,
   type InterviewInformationSourceType,
+  type LamgProphylaxisAgent,
   type LatestMeasurement,
   type MedicationRecord,
   type MedicalPrescriptionRecord,
@@ -220,6 +226,7 @@ const PATIENT_VIEW_ITEMS = [
   { id: "allergies", label: "Alergias" },
   { id: "admission-info", label: "Informações da internação" },
   { id: "interview", label: "Entrevista" },
+  { id: "analysis", label: "Análise do paciente" },
   { id: "exams", label: "Exames" },
   { id: "prior-use", label: "Medicamentos de uso prévio" },
   { id: "medication-validation", label: "Validação de medicamentos" },
@@ -258,6 +265,109 @@ const INTERVIEW_INFORMATION_QUALITY_LABELS: Record<InterviewInformationQuality, 
   media: "Média",
   alta: "Alta"
 };
+
+type InterviewBooleanChoice = "" | "sim" | "nao";
+type LamgAgentChoice = "" | LamgProphylaxisAgent;
+type AdmissionBooleanField =
+  | "interviewAmbulates"
+  | "interviewIsIntubated"
+  | "paduaActiveCancer"
+  | "paduaPreviousVte"
+  | "paduaKnownThrombophilia"
+  | "paduaRecentTraumaOrSurgery"
+  | "paduaHeartOrRespiratoryFailure"
+  | "paduaAcuteMiOrIschemicStroke"
+  | "paduaAcuteInfectionOrRheumatologicDisorder"
+  | "paduaHormonalTreatment"
+  | "paduaContraindicationToPharmacologicProphylaxis"
+  | "lamgCriticallyIll"
+  | "lamgShock"
+  | "lamgCoagulopathy"
+  | "lamgChronicLiverDisease"
+  | "lamgNeurocritical"
+  | "lamgEnteralNutrition";
+
+function formatInterviewBooleanChoice(value: boolean | null | undefined): InterviewBooleanChoice {
+  if (value === true) {
+    return "sim";
+  }
+
+  if (value === false) {
+    return "nao";
+  }
+
+  return "";
+}
+
+function parseInterviewBooleanChoice(value: string): boolean | null {
+  if (value === "sim") {
+    return true;
+  }
+
+  if (value === "nao") {
+    return false;
+  }
+
+  return null;
+}
+
+function formatInterviewBooleanSummary(label: string, value: boolean | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  return `${label}: ${value ? "Sim" : "Não"}`;
+}
+
+function formatBooleanStatus(value: boolean | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "Nao informado";
+  }
+
+  return value ? "Sim" : "Nao";
+}
+
+const LAMG_AGENT_LABELS: Record<LamgProphylaxisAgent, string> = {
+  none: "Nenhum",
+  ppi: "IBP",
+  h2ra: "Bloqueador H2",
+  other: "Outro"
+};
+
+const PADUA_MANUAL_CRITERIA = [
+  { field: "paduaActiveCancer", label: "Cancer ativo", points: 3 },
+  { field: "paduaPreviousVte", label: "TEV previo", points: 3 },
+  { field: "paduaKnownThrombophilia", label: "Trombofilia conhecida", points: 3 },
+  { field: "paduaRecentTraumaOrSurgery", label: "Trauma/cirurgia recente (< 1 mes)", points: 2 },
+  {
+    field: "paduaHeartOrRespiratoryFailure",
+    label: "Insuficiencia cardiaca ou respiratoria",
+    points: 1
+  },
+  { field: "paduaAcuteMiOrIschemicStroke", label: "IAM ou AVC isquemico agudo", points: 1 },
+  {
+    field: "paduaAcuteInfectionOrRheumatologicDisorder",
+    label: "Infeccao aguda ou doenca reumatologica",
+    points: 1
+  },
+  { field: "paduaHormonalTreatment", label: "Tratamento hormonal em curso", points: 1 }
+] as const satisfies ReadonlyArray<{
+  field: AdmissionBooleanField;
+  label: string;
+  points: number;
+}>;
+
+const LAMG_BOOLEAN_FIELDS = [
+  { field: "lamgCriticallyIll", label: "Paciente critico / UTI?" },
+  { field: "lamgShock", label: "Choque?" },
+  { field: "lamgCoagulopathy", label: "Coagulopatia?" },
+  { field: "lamgChronicLiverDisease", label: "Doenca hepatica cronica?" },
+  { field: "lamgNeurocritical", label: "Paciente neurocritico?" },
+  { field: "lamgEnteralNutrition", label: "Em dieta enteral?" }
+] as const satisfies ReadonlyArray<{
+  field: AdmissionBooleanField;
+  label: string;
+}>;
 const CONCEPT_STOPWORDS = new Set([
   "de",
   "da",
@@ -533,6 +643,26 @@ function createEmptyAdmissionFormState() {
     interviewInformationSourceType: "",
     interviewInformationSourceName: "",
     interviewInformationSourceRelationship: "",
+    interviewAmbulates: "" as InterviewBooleanChoice,
+    interviewIsIntubated: "" as InterviewBooleanChoice,
+    paduaActiveCancer: "" as InterviewBooleanChoice,
+    paduaPreviousVte: "" as InterviewBooleanChoice,
+    paduaKnownThrombophilia: "" as InterviewBooleanChoice,
+    paduaRecentTraumaOrSurgery: "" as InterviewBooleanChoice,
+    paduaHeartOrRespiratoryFailure: "" as InterviewBooleanChoice,
+    paduaAcuteMiOrIschemicStroke: "" as InterviewBooleanChoice,
+    paduaAcuteInfectionOrRheumatologicDisorder: "" as InterviewBooleanChoice,
+    paduaHormonalTreatment: "" as InterviewBooleanChoice,
+    paduaContraindicationToPharmacologicProphylaxis: "" as InterviewBooleanChoice,
+    paduaNotes: "",
+    lamgCriticallyIll: "" as InterviewBooleanChoice,
+    lamgShock: "" as InterviewBooleanChoice,
+    lamgCoagulopathy: "" as InterviewBooleanChoice,
+    lamgChronicLiverDisease: "" as InterviewBooleanChoice,
+    lamgNeurocritical: "" as InterviewBooleanChoice,
+    lamgEnteralNutrition: "" as InterviewBooleanChoice,
+    lamgAgent: "" as LamgAgentChoice,
+    lamgNotes: "",
     interviewInterventionMotive: "",
     interviewSubjective: "",
     interviewRelevantSymptoms: "",
@@ -950,6 +1080,13 @@ function buildMandatoryEvolutionPreviewText(payload: MandatoryEvolutionPreviewPa
 
   if (anthropometricText.length > 0) {
     patientDataLines.push(anthropometricText.join(" | "));
+  }
+  const interviewContextText = [
+    formatInterviewBooleanSummary("Deambula", latestAdmission?.interviewAmbulates),
+    formatInterviewBooleanSummary("IOT", latestAdmission?.interviewIsIntubated)
+  ].filter((item) => item.length > 0);
+  if (interviewContextText.length > 0) {
+    patientDataLines.push(interviewContextText.join(" | "));
   }
   pushSection("#DADOS DO PACIENTE", patientDataLines);
 
@@ -3498,6 +3635,8 @@ function buildReadmissionAdmissionPayload(
     interviewInformationSourceType: latestAdmission?.interviewInformationSourceType ?? "",
     interviewInformationSourceName: latestAdmission?.interviewInformationSourceName ?? "",
     interviewInformationSourceRelationship: latestAdmission?.interviewInformationSourceRelationship ?? "",
+    interviewAmbulates: formatInterviewBooleanChoice(latestAdmission?.interviewAmbulates),
+    interviewIsIntubated: formatInterviewBooleanChoice(latestAdmission?.interviewIsIntubated),
     interviewInterventionMotive: latestAdmission?.interviewInterventionMotive ?? "",
     interviewSubjective: latestAdmission?.interviewSubjective ?? "",
     interviewRelevantSymptoms: latestAdmission?.interviewRelevantSymptoms ?? "",
@@ -3692,6 +3831,8 @@ export default function DashboardConsole({
     allergies: [] as string[]
   });
   const [patientFeedback, setPatientFeedback] = useState<FeedbackState>(null);
+  const [testCaseFeedback, setTestCaseFeedback] = useState<FeedbackState>(null);
+  const [testCaseLoading, setTestCaseLoading] = useState(false);
   const [patientLoading, setPatientLoading] = useState(false);
 
   const [patientInitialAllergyForm, setPatientInitialAllergyForm] = useState({
@@ -4804,6 +4945,82 @@ export default function DashboardConsole({
     () => selectedPatientAdmissions[0] ?? selectedPatient?.latestAdmission ?? null,
     [selectedPatient, selectedPatientAdmissions]
   );
+  const selectedAnalysisAgeYears = useMemo(
+    () => selectedPatientAgePreview ?? selectedPatient?.ageYears ?? null,
+    [selectedPatient?.ageYears, selectedPatientAgePreview]
+  );
+  const selectedAnalysisBmi = useMemo(() => {
+    if (admissionPreview?.bmi !== undefined && admissionPreview?.bmi !== null) {
+      return admissionPreview.bmi;
+    }
+
+    if (selectedCurrentAdmission?.bmi !== undefined && selectedCurrentAdmission?.bmi !== null) {
+      return selectedCurrentAdmission.bmi;
+    }
+
+    return selectedPatient?.latestMeasurement?.bmi ?? null;
+  }, [admissionPreview?.bmi, selectedCurrentAdmission?.bmi, selectedPatient?.latestMeasurement?.bmi]);
+  const derivedPaduaReducedMobility = parseInterviewBooleanChoice(admissionForm.interviewAmbulates) === false;
+  const derivedPaduaAgeCriterion = selectedAnalysisAgeYears !== null && selectedAnalysisAgeYears > 70;
+  const derivedPaduaObesityCriterion = selectedAnalysisBmi !== null && selectedAnalysisBmi > 30;
+  const paduaAssessment = useMemo(
+    () =>
+      calculatePaduaAssessment({
+        activeCancer: parseInterviewBooleanChoice(admissionForm.paduaActiveCancer) === true,
+        previousVte: parseInterviewBooleanChoice(admissionForm.paduaPreviousVte) === true,
+        reducedMobility: derivedPaduaReducedMobility,
+        knownThrombophilia: parseInterviewBooleanChoice(admissionForm.paduaKnownThrombophilia) === true,
+        recentTraumaOrSurgery:
+          parseInterviewBooleanChoice(admissionForm.paduaRecentTraumaOrSurgery) === true,
+        ageYears: selectedAnalysisAgeYears,
+        heartOrRespiratoryFailure:
+          parseInterviewBooleanChoice(admissionForm.paduaHeartOrRespiratoryFailure) === true,
+        acuteMiOrIschemicStroke:
+          parseInterviewBooleanChoice(admissionForm.paduaAcuteMiOrIschemicStroke) === true,
+        acuteInfectionOrRheumatologicDisorder:
+          parseInterviewBooleanChoice(admissionForm.paduaAcuteInfectionOrRheumatologicDisorder) === true,
+        bmi: selectedAnalysisBmi,
+        hormonalTreatment: parseInterviewBooleanChoice(admissionForm.paduaHormonalTreatment) === true,
+        contraindicationToPharmacologicProphylaxis:
+          parseInterviewBooleanChoice(admissionForm.paduaContraindicationToPharmacologicProphylaxis) === true
+      }),
+    [
+      admissionForm.paduaAcuteInfectionOrRheumatologicDisorder,
+      admissionForm.paduaAcuteMiOrIschemicStroke,
+      admissionForm.paduaActiveCancer,
+      admissionForm.paduaContraindicationToPharmacologicProphylaxis,
+      admissionForm.paduaHeartOrRespiratoryFailure,
+      admissionForm.paduaHormonalTreatment,
+      admissionForm.paduaKnownThrombophilia,
+      admissionForm.paduaPreviousVte,
+      admissionForm.paduaRecentTraumaOrSurgery,
+      admissionForm.interviewAmbulates,
+      selectedAnalysisAgeYears,
+      selectedAnalysisBmi
+    ]
+  );
+  const lamgAssessment = useMemo(
+    () =>
+      calculateLamgAssessment({
+        criticallyIll: parseInterviewBooleanChoice(admissionForm.lamgCriticallyIll) === true,
+        shock: parseInterviewBooleanChoice(admissionForm.lamgShock) === true,
+        coagulopathy: parseInterviewBooleanChoice(admissionForm.lamgCoagulopathy) === true,
+        chronicLiverDisease:
+          parseInterviewBooleanChoice(admissionForm.lamgChronicLiverDisease) === true,
+        neurocritical: parseInterviewBooleanChoice(admissionForm.lamgNeurocritical) === true,
+        enteralNutrition: parseInterviewBooleanChoice(admissionForm.lamgEnteralNutrition) === true,
+        isIntubated: parseInterviewBooleanChoice(admissionForm.interviewIsIntubated)
+      }),
+    [
+      admissionForm.interviewIsIntubated,
+      admissionForm.lamgChronicLiverDisease,
+      admissionForm.lamgCoagulopathy,
+      admissionForm.lamgCriticallyIll,
+      admissionForm.lamgEnteralNutrition,
+      admissionForm.lamgNeurocritical,
+      admissionForm.lamgShock
+    ]
+  );
 
   const selectedPatientAllergies = useMemo(
     () =>
@@ -4879,6 +5096,36 @@ export default function DashboardConsole({
       interviewInformationSourceName: latestAdmission?.interviewInformationSourceName ?? "",
       interviewInformationSourceRelationship:
         latestAdmission?.interviewInformationSourceRelationship ?? "",
+      interviewAmbulates: formatInterviewBooleanChoice(latestAdmission?.interviewAmbulates),
+      interviewIsIntubated: formatInterviewBooleanChoice(latestAdmission?.interviewIsIntubated),
+      paduaActiveCancer: formatInterviewBooleanChoice(latestAdmission?.paduaActiveCancer),
+      paduaPreviousVte: formatInterviewBooleanChoice(latestAdmission?.paduaPreviousVte),
+      paduaKnownThrombophilia: formatInterviewBooleanChoice(latestAdmission?.paduaKnownThrombophilia),
+      paduaRecentTraumaOrSurgery: formatInterviewBooleanChoice(
+        latestAdmission?.paduaRecentTraumaOrSurgery
+      ),
+      paduaHeartOrRespiratoryFailure: formatInterviewBooleanChoice(
+        latestAdmission?.paduaHeartOrRespiratoryFailure
+      ),
+      paduaAcuteMiOrIschemicStroke: formatInterviewBooleanChoice(
+        latestAdmission?.paduaAcuteMiOrIschemicStroke
+      ),
+      paduaAcuteInfectionOrRheumatologicDisorder: formatInterviewBooleanChoice(
+        latestAdmission?.paduaAcuteInfectionOrRheumatologicDisorder
+      ),
+      paduaHormonalTreatment: formatInterviewBooleanChoice(latestAdmission?.paduaHormonalTreatment),
+      paduaContraindicationToPharmacologicProphylaxis: formatInterviewBooleanChoice(
+        latestAdmission?.paduaContraindicationToPharmacologicProphylaxis
+      ),
+      paduaNotes: latestAdmission?.paduaNotes ?? "",
+      lamgCriticallyIll: formatInterviewBooleanChoice(latestAdmission?.lamgCriticallyIll),
+      lamgShock: formatInterviewBooleanChoice(latestAdmission?.lamgShock),
+      lamgCoagulopathy: formatInterviewBooleanChoice(latestAdmission?.lamgCoagulopathy),
+      lamgChronicLiverDisease: formatInterviewBooleanChoice(latestAdmission?.lamgChronicLiverDisease),
+      lamgNeurocritical: formatInterviewBooleanChoice(latestAdmission?.lamgNeurocritical),
+      lamgEnteralNutrition: formatInterviewBooleanChoice(latestAdmission?.lamgEnteralNutrition),
+      lamgAgent: (latestAdmission?.lamgAgent ?? "") as LamgAgentChoice,
+      lamgNotes: latestAdmission?.lamgNotes ?? "",
       interviewInterventionMotive: latestAdmission?.interviewInterventionMotive ?? "",
       interviewSubjective: latestAdmission?.interviewSubjective ?? "",
       interviewRelevantSymptoms: latestAdmission?.interviewRelevantSymptoms ?? "",
@@ -6309,6 +6556,19 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
     if (anthropometricParts.length > 0) {
       patientDataLines.push(anthropometricParts.join(" | "));
     }
+    const interviewContextText = [
+      formatInterviewBooleanSummary(
+        "Deambula",
+        parseInterviewBooleanChoice(admissionForm.interviewAmbulates)
+      ),
+      formatInterviewBooleanSummary(
+        "IOT",
+        parseInterviewBooleanChoice(admissionForm.interviewIsIntubated)
+      )
+    ].filter((item) => item.length > 0);
+    if (interviewContextText.length > 0) {
+      patientDataLines.push(interviewContextText.join(" | "));
+    }
     pushSection("#DADOS DO PACIENTE", patientDataLines);
 
     const examSummaryLines = selectedSavedExamImportDetails
@@ -6430,7 +6690,9 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   }, [
     admissionForm.heightCm,
     admissionForm.deniesContinuousMedicationUse,
+    admissionForm.interviewAmbulates,
     admissionForm.interviewInformationQuality,
+    admissionForm.interviewIsIntubated,
     admissionForm.interviewInformationSourceName,
     admissionForm.interviewInformationSourceRelationship,
     admissionForm.interviewInformationSourceType,
@@ -6826,6 +7088,16 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
 
   function toggleList(sectionId: DashboardSectionId): void {
     setListVisibility((current) => ({ ...current, [sectionId]: !current[sectionId] }));
+  }
+
+  function updateAdmissionBooleanChoice(
+    field: AdmissionBooleanField,
+    value: InterviewBooleanChoice
+  ): void {
+    setAdmissionForm((current) => ({
+      ...current,
+      [field]: value
+    }));
   }
 
   function updatePriorMedicationReconciliationField(
@@ -7318,6 +7590,7 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
   async function handlePatientSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setPatientFeedback(null);
+    setTestCaseFeedback(null);
 
     const normalizedBirthDate = patientForm.birthDate.trim()
       ? normalizeAdmissionDateValue(patientForm.birthDate)
@@ -7373,6 +7646,47 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       });
     } finally {
       setPatientLoading(false);
+    }
+  }
+
+  async function handleCreateTestPatientCase(): Promise<void> {
+    setPatientFeedback(null);
+    setTestCaseFeedback(null);
+    setTestCaseLoading(true);
+
+    try {
+      const response = await fetch("/api/patients/test-case", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      const result = (await response.json()) as {
+        message?: string;
+        patient?: PatientRecord;
+        admission?: AdmissionRecord;
+      };
+
+      if (!response.ok || !result.patient || !result.admission) {
+        setTestCaseFeedback({
+          type: "error",
+          message: result.message ?? "Falha ao criar o caso clinico de teste."
+        });
+        return;
+      }
+
+      upsertPatientRecordLocally(result.patient);
+      upsertAdmissionRecordLocally(result.admission, result.patient);
+      setTestCaseFeedback({
+        type: "success",
+        message: result.message ?? "Caso clinico de teste criado com sucesso."
+      });
+      openPatientDetails(result.patient.id, "analysis");
+    } catch {
+      setTestCaseFeedback({
+        type: "error",
+        message: "Erro de conexao ao criar o caso clinico de teste."
+      });
+    } finally {
+      setTestCaseLoading(false);
     }
   }
 
@@ -7471,6 +7785,33 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
           admissionDate: normalizedAdmissionDate,
           roundSummary: undefined,
           roundSummaryDate: undefined,
+          interviewAmbulates: parseInterviewBooleanChoice(admissionForm.interviewAmbulates),
+          interviewIsIntubated: parseInterviewBooleanChoice(admissionForm.interviewIsIntubated),
+          paduaActiveCancer: parseInterviewBooleanChoice(admissionForm.paduaActiveCancer),
+          paduaPreviousVte: parseInterviewBooleanChoice(admissionForm.paduaPreviousVte),
+          paduaKnownThrombophilia: parseInterviewBooleanChoice(admissionForm.paduaKnownThrombophilia),
+          paduaRecentTraumaOrSurgery: parseInterviewBooleanChoice(
+            admissionForm.paduaRecentTraumaOrSurgery
+          ),
+          paduaHeartOrRespiratoryFailure: parseInterviewBooleanChoice(
+            admissionForm.paduaHeartOrRespiratoryFailure
+          ),
+          paduaAcuteMiOrIschemicStroke: parseInterviewBooleanChoice(
+            admissionForm.paduaAcuteMiOrIschemicStroke
+          ),
+          paduaAcuteInfectionOrRheumatologicDisorder: parseInterviewBooleanChoice(
+            admissionForm.paduaAcuteInfectionOrRheumatologicDisorder
+          ),
+          paduaHormonalTreatment: parseInterviewBooleanChoice(admissionForm.paduaHormonalTreatment),
+          paduaContraindicationToPharmacologicProphylaxis: parseInterviewBooleanChoice(
+            admissionForm.paduaContraindicationToPharmacologicProphylaxis
+          ),
+          lamgCriticallyIll: parseInterviewBooleanChoice(admissionForm.lamgCriticallyIll),
+          lamgShock: parseInterviewBooleanChoice(admissionForm.lamgShock),
+          lamgCoagulopathy: parseInterviewBooleanChoice(admissionForm.lamgCoagulopathy),
+          lamgChronicLiverDisease: parseInterviewBooleanChoice(admissionForm.lamgChronicLiverDisease),
+          lamgNeurocritical: parseInterviewBooleanChoice(admissionForm.lamgNeurocritical),
+          lamgEnteralNutrition: parseInterviewBooleanChoice(admissionForm.lamgEnteralNutrition),
           admissionId: shouldUpdateAdmission ? Number(admissionForm.admissionId) : undefined,
           patientId: selectedPatient.id,
           teamId: admissionForm.teamId ? Number(admissionForm.teamId) : undefined,
@@ -7594,6 +7935,16 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
       requireExistingAdmission: true,
       successMessage: "Entrevista salva com sucesso.",
       connectionErrorMessage: "Erro de conexão ao salvar entrevista."
+    });
+  }
+
+  async function handlePatientAnalysisSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    await persistAdmissionForm({
+      analyzeSummary: false,
+      requireExistingAdmission: true,
+      successMessage: "Analise do paciente salva com sucesso.",
+      connectionErrorMessage: "Erro de conexao ao salvar a analise do paciente."
     });
   }
 
@@ -10543,6 +10894,26 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                   {activeSection === "patient" ? (
                     <>
                       <h2>Cadastrar Paciente</h2>
+                      <div className="dashboard-subsection-block">
+                        <h3>Caso clinico de teste</h3>
+                        <p className="dashboard-muted">
+                          Gera um paciente completo para homologacao, com internacao, entrevista,
+                          alergias, MUC, prescricoes, exames e round.
+                        </p>
+                        {testCaseFeedback ? (
+                          <p className={`dashboard-feedback dashboard-feedback-${testCaseFeedback.type}`}>
+                            {testCaseFeedback.message}
+                          </p>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="dashboard-mini-button"
+                          onClick={() => void handleCreateTestPatientCase()}
+                          disabled={testCaseLoading}
+                        >
+                          {testCaseLoading ? "Criando caso..." : "Criar caso clinico de teste"}
+                        </button>
+                      </div>
                       <form className="dashboard-form" onSubmit={handlePatientSubmit}>
                     <input
                       placeholder="Nome completo"
@@ -12186,6 +12557,35 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                 </div>
                               ) : null}
 
+                              <div className="dashboard-two-columns">
+                                <select
+                                  value={admissionForm.interviewAmbulates}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({
+                                      ...current,
+                                      interviewAmbulates: event.target.value as InterviewBooleanChoice
+                                    }))
+                                  }
+                                >
+                                  <option value="">Deambula?</option>
+                                  <option value="sim">Sim</option>
+                                  <option value="nao">Não</option>
+                                </select>
+                                <select
+                                  value={admissionForm.interviewIsIntubated}
+                                  onChange={(event) =>
+                                    setAdmissionForm((current) => ({
+                                      ...current,
+                                      interviewIsIntubated: event.target.value as InterviewBooleanChoice
+                                    }))
+                                  }
+                                >
+                                  <option value="">IOT?</option>
+                                  <option value="sim">Sim</option>
+                                  <option value="nao">Não</option>
+                                </select>
+                              </div>
+
                               <textarea
                                 placeholder="Subjetivo"
                                 value={admissionForm.interviewSubjective}
@@ -12253,6 +12653,317 @@ function extractSummaryMedicationCandidates(summaryText: string): SummaryMedicat
                                   disabled={admissionLoading || !admissionForm.admissionId.trim()}
                                 >
                                   {admissionLoading ? "Salvando..." : "Salvar entrevista"}
+                                </button>
+                              </div>
+                            </form>
+                          </div>
+                        ) : null}
+
+                        {patientView === "analysis" ? (
+                          <div className="dashboard-subsection-block">
+                            <h3>Análise do paciente</h3>
+                            <p className="dashboard-muted">
+                              Apoio à decisão clínica da internação atual. O Pádua aproveita idade,
+                              IMC e deambulação automaticamente; o card LAMG usa IOT apenas como
+                              contexto, sem indicar profilaxia isoladamente.
+                            </p>
+
+                            <form className="dashboard-form" onSubmit={handlePatientAnalysisSubmit}>
+                              <div className="dashboard-calculation-box">
+                                <div className="dashboard-inline-actions dashboard-inline-actions-spread">
+                                  <div>
+                                    <h3>Score de Pádua</h3>
+                                    <p className="dashboard-muted">
+                                      Risco elevado quando o total e maior ou igual a 4.
+                                    </p>
+                                  </div>
+                                  <span className="dashboard-tag">
+                                    {paduaAssessment.highRisk ? "Alto risco" : "Baixo risco"}
+                                  </span>
+                                </div>
+
+                                <div className="dashboard-editor-summary-grid">
+                                  <div className="dashboard-editor-summary-card">
+                                    <span>Escore total</span>
+                                    <strong>{paduaAssessment.total}</strong>
+                                  </div>
+                                  <div className="dashboard-editor-summary-card">
+                                    <span>Idade usada</span>
+                                    <strong>
+                                      {selectedAnalysisAgeYears !== null
+                                        ? `${selectedAnalysisAgeYears} anos`
+                                        : "Nao informada"}
+                                    </strong>
+                                  </div>
+                                  <div className="dashboard-editor-summary-card">
+                                    <span>IMC usado</span>
+                                    <strong>
+                                      {selectedAnalysisBmi !== null
+                                        ? formatNumber(selectedAnalysisBmi)
+                                        : "Nao informado"}
+                                    </strong>
+                                  </div>
+                                  <div className="dashboard-editor-summary-card">
+                                    <span>Contraindicacao</span>
+                                    <strong>
+                                      {formatBooleanStatus(
+                                        parseInterviewBooleanChoice(
+                                          admissionForm.paduaContraindicationToPharmacologicProphylaxis
+                                        )
+                                      )}
+                                    </strong>
+                                  </div>
+                                </div>
+
+                                <div className="dashboard-table-wrap">
+                                  <table className="dashboard-table">
+                                    <thead>
+                                      <tr>
+                                        <th>Critério</th>
+                                        <th>Origem</th>
+                                        <th>Status</th>
+                                        <th>Pontos</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      <tr>
+                                        <td>Mobilidade reduzida</td>
+                                        <td>Automático pela entrevista: Deambula?</td>
+                                        <td>
+                                          {parseInterviewBooleanChoice(admissionForm.interviewAmbulates) === null
+                                            ? "Pendente"
+                                            : derivedPaduaReducedMobility
+                                              ? "Sim"
+                                              : "Nao"}
+                                        </td>
+                                        <td>{derivedPaduaReducedMobility ? 3 : 0}</td>
+                                      </tr>
+                                      <tr>
+                                        <td>Idade &gt; 70 anos</td>
+                                        <td>Automático pelo cadastro do paciente</td>
+                                        <td>
+                                          {selectedAnalysisAgeYears === null
+                                            ? "Pendente"
+                                            : derivedPaduaAgeCriterion
+                                              ? "Sim"
+                                              : "Nao"}
+                                        </td>
+                                        <td>{derivedPaduaAgeCriterion ? 1 : 0}</td>
+                                      </tr>
+                                      <tr>
+                                        <td>IMC &gt; 30</td>
+                                        <td>Automático por peso/altura da internação</td>
+                                        <td>
+                                          {selectedAnalysisBmi === null
+                                            ? "Pendente"
+                                            : derivedPaduaObesityCriterion
+                                              ? "Sim"
+                                              : "Nao"}
+                                        </td>
+                                        <td>{derivedPaduaObesityCriterion ? 1 : 0}</td>
+                                      </tr>
+                                      {PADUA_MANUAL_CRITERIA.map((criterion) => {
+                                        const currentValue = admissionForm[criterion.field];
+                                        const isActive =
+                                          parseInterviewBooleanChoice(currentValue) === true;
+
+                                        return (
+                                          <tr key={criterion.field}>
+                                            <td>{criterion.label}</td>
+                                            <td>Preenchimento manual</td>
+                                            <td>
+                                              <select
+                                                className="dashboard-table-select"
+                                                value={currentValue}
+                                                onChange={(event) =>
+                                                  updateAdmissionBooleanChoice(
+                                                    criterion.field,
+                                                    event.target.value as InterviewBooleanChoice
+                                                  )
+                                                }
+                                              >
+                                                <option value="">Nao informado</option>
+                                                <option value="sim">Sim</option>
+                                                <option value="nao">Nao</option>
+                                              </select>
+                                            </td>
+                                            <td>{isActive ? criterion.points : 0}</td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+
+                                <div className="dashboard-editor-modal-grid">
+                                  <label className="dashboard-editor-field">
+                                    <span>Contraindicacao para profilaxia farmacologica?</span>
+                                    <select
+                                      value={
+                                        admissionForm.paduaContraindicationToPharmacologicProphylaxis
+                                      }
+                                      onChange={(event) =>
+                                        updateAdmissionBooleanChoice(
+                                          "paduaContraindicationToPharmacologicProphylaxis",
+                                          event.target.value as InterviewBooleanChoice
+                                        )
+                                      }
+                                    >
+                                      <option value="">Nao informado</option>
+                                      <option value="sim">Sim</option>
+                                      <option value="nao">Nao</option>
+                                    </select>
+                                  </label>
+
+                                  <label className="dashboard-editor-field dashboard-editor-field-full">
+                                    <span>Observacoes do Padua</span>
+                                    <textarea
+                                      rows={3}
+                                      placeholder="Observacoes clinicas relevantes"
+                                      value={admissionForm.paduaNotes}
+                                      onChange={(event) =>
+                                        setAdmissionForm((current) => ({
+                                          ...current,
+                                          paduaNotes: event.target.value
+                                        }))
+                                      }
+                                    />
+                                  </label>
+                                </div>
+
+                                <p className="dashboard-muted">{paduaAssessment.recommendation}</p>
+                              </div>
+
+                              <div className="dashboard-calculation-box">
+                                <div className="dashboard-inline-actions dashboard-inline-actions-spread">
+                                  <div>
+                                    <h3>Card LAMG</h3>
+                                    <p className="dashboard-muted">
+                                      Baseado em paciente critico, fatores de maior risco e revisao
+                                      diaria da necessidade de profilaxia.
+                                    </p>
+                                  </div>
+                                  <span className="dashboard-tag">
+                                    {lamgAssessment.indicated ? "Com criterio" : "Sem criterio"}
+                                  </span>
+                                </div>
+
+                                <div className="dashboard-editor-summary-grid">
+                                  <div className="dashboard-editor-summary-card">
+                                    <span>Status</span>
+                                    <strong>
+                                      {lamgAssessment.recommendationKind === "indicar"
+                                        ? "Indicar"
+                                        : lamgAssessment.recommendationKind === "considerar"
+                                          ? "Considerar"
+                                          : "Nao indicar"}
+                                    </strong>
+                                  </div>
+                                  <div className="dashboard-editor-summary-card">
+                                    <span>Fatores maiores</span>
+                                    <strong>{lamgAssessment.strongRiskFactorCount}</strong>
+                                  </div>
+                                  <div className="dashboard-editor-summary-card">
+                                    <span>IOT (entrevista)</span>
+                                    <strong>
+                                      {formatBooleanStatus(
+                                        parseInterviewBooleanChoice(admissionForm.interviewIsIntubated)
+                                      )}
+                                    </strong>
+                                  </div>
+                                  <div className="dashboard-editor-summary-card">
+                                    <span>Agente atual</span>
+                                    <strong>
+                                      {admissionForm.lamgAgent
+                                        ? LAMG_AGENT_LABELS[
+                                            admissionForm.lamgAgent as LamgProphylaxisAgent
+                                          ]
+                                        : "Nao informado"}
+                                    </strong>
+                                  </div>
+                                </div>
+
+                                <div className="dashboard-editor-modal-grid">
+                                  {LAMG_BOOLEAN_FIELDS.map((fieldConfig) => (
+                                    <label
+                                      key={fieldConfig.field}
+                                      className="dashboard-editor-field"
+                                    >
+                                      <span>{fieldConfig.label}</span>
+                                      <select
+                                        value={admissionForm[fieldConfig.field]}
+                                        onChange={(event) =>
+                                          updateAdmissionBooleanChoice(
+                                            fieldConfig.field,
+                                            event.target.value as InterviewBooleanChoice
+                                          )
+                                        }
+                                      >
+                                        <option value="">Nao informado</option>
+                                        <option value="sim">Sim</option>
+                                        <option value="nao">Nao</option>
+                                      </select>
+                                    </label>
+                                  ))}
+
+                                  <label className="dashboard-editor-field">
+                                    <span>Profilaxia em uso</span>
+                                    <select
+                                      value={admissionForm.lamgAgent}
+                                      onChange={(event) =>
+                                        setAdmissionForm((current) => ({
+                                          ...current,
+                                          lamgAgent: event.target.value as LamgAgentChoice
+                                        }))
+                                      }
+                                    >
+                                      <option value="">Nao informado</option>
+                                      {LAMG_PROPHYLAXIS_AGENT_OPTIONS.map((option) => (
+                                        <option key={option} value={option}>
+                                          {LAMG_AGENT_LABELS[option]}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+
+                                  <label className="dashboard-editor-field dashboard-editor-field-full">
+                                    <span>Observacoes do LAMG</span>
+                                    <textarea
+                                      rows={3}
+                                      placeholder="Ex.: motivo para manter, revisar ou suspender"
+                                      value={admissionForm.lamgNotes}
+                                      onChange={(event) =>
+                                        setAdmissionForm((current) => ({
+                                          ...current,
+                                          lamgNotes: event.target.value
+                                        }))
+                                      }
+                                    />
+                                  </label>
+                                </div>
+
+                                <p className="dashboard-muted">{lamgAssessment.recommendation}</p>
+                              </div>
+
+                              {!admissionForm.admissionId.trim() ? (
+                                <p className="dashboard-muted">
+                                  Salve primeiro as informacoes da internacao para persistir a
+                                  analise do paciente.
+                                </p>
+                              ) : null}
+
+                              {admissionFeedback ? (
+                                <p className={`dashboard-feedback dashboard-feedback-${admissionFeedback.type}`}>
+                                  {admissionFeedback.message}
+                                </p>
+                              ) : null}
+
+                              <div className="dashboard-inline-actions">
+                                <button
+                                  type="submit"
+                                  disabled={admissionLoading || !admissionForm.admissionId.trim()}
+                                >
+                                  {admissionLoading ? "Salvando..." : "Salvar analise do paciente"}
                                 </button>
                               </div>
                             </form>

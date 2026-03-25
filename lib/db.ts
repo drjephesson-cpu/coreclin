@@ -8,6 +8,7 @@ import {
   COUNCIL_OPTIONS,
   INTERVIEW_INFORMATION_QUALITY_OPTIONS,
   INTERVIEW_INFORMATION_SOURCE_TYPE_OPTIONS,
+  LAMG_PROPHYLAXIS_AGENT_OPTIONS,
   PATIENT_SEX_OPTIONS,
   PROFESSION_OPTIONS,
   type AdmissionRecord,
@@ -21,6 +22,7 @@ import {
   type InpatientWorkflowStoragePayload,
   type InterviewInformationQuality,
   type InterviewInformationSourceType,
+  type LamgProphylaxisAgent,
   type AdmissionRoundNoteRecord,
   type PatientExamImportRecord,
   type PatientExamResultRecord,
@@ -92,6 +94,26 @@ export type CreateAdmissionInput = {
   interviewInformationSourceType?: InterviewInformationSourceType | null;
   interviewInformationSourceName?: string | null;
   interviewInformationSourceRelationship?: string | null;
+  interviewAmbulates?: boolean | null;
+  interviewIsIntubated?: boolean | null;
+  paduaActiveCancer?: boolean | null;
+  paduaPreviousVte?: boolean | null;
+  paduaKnownThrombophilia?: boolean | null;
+  paduaRecentTraumaOrSurgery?: boolean | null;
+  paduaHeartOrRespiratoryFailure?: boolean | null;
+  paduaAcuteMiOrIschemicStroke?: boolean | null;
+  paduaAcuteInfectionOrRheumatologicDisorder?: boolean | null;
+  paduaHormonalTreatment?: boolean | null;
+  paduaContraindicationToPharmacologicProphylaxis?: boolean | null;
+  paduaNotes?: string | null;
+  lamgCriticallyIll?: boolean | null;
+  lamgShock?: boolean | null;
+  lamgCoagulopathy?: boolean | null;
+  lamgChronicLiverDisease?: boolean | null;
+  lamgNeurocritical?: boolean | null;
+  lamgEnteralNutrition?: boolean | null;
+  lamgAgent?: LamgProphylaxisAgent | null;
+  lamgNotes?: string | null;
   interviewInterventionMotive?: string | null;
   interviewSubjective?: string | null;
   interviewRelevantSymptoms?: string | null;
@@ -119,6 +141,26 @@ export type UpdateAdmissionInput = {
   interviewInformationSourceType?: InterviewInformationSourceType | null;
   interviewInformationSourceName?: string | null;
   interviewInformationSourceRelationship?: string | null;
+  interviewAmbulates?: boolean | null;
+  interviewIsIntubated?: boolean | null;
+  paduaActiveCancer?: boolean | null;
+  paduaPreviousVte?: boolean | null;
+  paduaKnownThrombophilia?: boolean | null;
+  paduaRecentTraumaOrSurgery?: boolean | null;
+  paduaHeartOrRespiratoryFailure?: boolean | null;
+  paduaAcuteMiOrIschemicStroke?: boolean | null;
+  paduaAcuteInfectionOrRheumatologicDisorder?: boolean | null;
+  paduaHormonalTreatment?: boolean | null;
+  paduaContraindicationToPharmacologicProphylaxis?: boolean | null;
+  paduaNotes?: string | null;
+  lamgCriticallyIll?: boolean | null;
+  lamgShock?: boolean | null;
+  lamgCoagulopathy?: boolean | null;
+  lamgChronicLiverDisease?: boolean | null;
+  lamgNeurocritical?: boolean | null;
+  lamgEnteralNutrition?: boolean | null;
+  lamgAgent?: LamgProphylaxisAgent | null;
+  lamgNotes?: string | null;
   interviewInterventionMotive?: string | null;
   interviewSubjective?: string | null;
   interviewRelevantSymptoms?: string | null;
@@ -478,6 +520,15 @@ function mapAuditLog(row: DbRow): AuditLogRecord {
   };
 }
 
+function normalizeLamgProphylaxisAgent(value: unknown): LamgProphylaxisAgent | null {
+  const normalizedValue =
+    value === null || value === undefined ? "" : String(value).trim().toLowerCase();
+
+  return LAMG_PROPHYLAXIS_AGENT_OPTIONS.includes(normalizedValue as LamgProphylaxisAgent)
+    ? (normalizedValue as LamgProphylaxisAgent)
+    : null;
+}
+
 function mapAdmission(row: DbRow): AdmissionRecord {
   const interviewInformationQualityRaw =
     row.interview_information_quality === null
@@ -520,6 +571,52 @@ function mapAdmission(row: DbRow): AdmissionRecord {
       row.interview_information_source_relationship === null
         ? null
         : String(row.interview_information_source_relationship ?? ""),
+    interviewAmbulates:
+      row.interview_ambulates === null ? null : Boolean(row.interview_ambulates),
+    interviewIsIntubated:
+      row.interview_is_intubated === null ? null : Boolean(row.interview_is_intubated),
+    paduaActiveCancer:
+      row.padua_active_cancer === null ? null : Boolean(row.padua_active_cancer),
+    paduaPreviousVte:
+      row.padua_previous_vte === null ? null : Boolean(row.padua_previous_vte),
+    paduaKnownThrombophilia:
+      row.padua_known_thrombophilia === null ? null : Boolean(row.padua_known_thrombophilia),
+    paduaRecentTraumaOrSurgery:
+      row.padua_recent_trauma_or_surgery === null
+        ? null
+        : Boolean(row.padua_recent_trauma_or_surgery),
+    paduaHeartOrRespiratoryFailure:
+      row.padua_heart_or_respiratory_failure === null
+        ? null
+        : Boolean(row.padua_heart_or_respiratory_failure),
+    paduaAcuteMiOrIschemicStroke:
+      row.padua_acute_mi_or_ischemic_stroke === null
+        ? null
+        : Boolean(row.padua_acute_mi_or_ischemic_stroke),
+    paduaAcuteInfectionOrRheumatologicDisorder:
+      row.padua_acute_infection_or_rheumatologic_disorder === null
+        ? null
+        : Boolean(row.padua_acute_infection_or_rheumatologic_disorder),
+    paduaHormonalTreatment:
+      row.padua_hormonal_treatment === null ? null : Boolean(row.padua_hormonal_treatment),
+    paduaContraindicationToPharmacologicProphylaxis:
+      row.padua_contraindication_to_pharmacologic_prophylaxis === null
+        ? null
+        : Boolean(row.padua_contraindication_to_pharmacologic_prophylaxis),
+    paduaNotes: row.padua_notes === null ? null : String(row.padua_notes ?? ""),
+    lamgCriticallyIll:
+      row.lamg_critically_ill === null ? null : Boolean(row.lamg_critically_ill),
+    lamgShock: row.lamg_shock === null ? null : Boolean(row.lamg_shock),
+    lamgCoagulopathy:
+      row.lamg_coagulopathy === null ? null : Boolean(row.lamg_coagulopathy),
+    lamgChronicLiverDisease:
+      row.lamg_chronic_liver_disease === null ? null : Boolean(row.lamg_chronic_liver_disease),
+    lamgNeurocritical:
+      row.lamg_neurocritical === null ? null : Boolean(row.lamg_neurocritical),
+    lamgEnteralNutrition:
+      row.lamg_enteral_nutrition === null ? null : Boolean(row.lamg_enteral_nutrition),
+    lamgAgent: normalizeLamgProphylaxisAgent(row.lamg_agent),
+    lamgNotes: row.lamg_notes === null ? null : String(row.lamg_notes ?? ""),
     interviewInterventionMotive:
       row.interview_intervention_motive === null
         ? null
@@ -941,6 +1038,85 @@ function mapPatient(row: DbRow): PatientRecord {
             row.latest_admission_interview_information_source_relationship === null
               ? null
               : String(row.latest_admission_interview_information_source_relationship ?? ""),
+          interviewAmbulates:
+            row.latest_admission_interview_ambulates === null
+              ? null
+              : Boolean(row.latest_admission_interview_ambulates),
+          interviewIsIntubated:
+            row.latest_admission_interview_is_intubated === null
+              ? null
+              : Boolean(row.latest_admission_interview_is_intubated),
+          paduaActiveCancer:
+            row.latest_admission_padua_active_cancer === null
+              ? null
+              : Boolean(row.latest_admission_padua_active_cancer),
+          paduaPreviousVte:
+            row.latest_admission_padua_previous_vte === null
+              ? null
+              : Boolean(row.latest_admission_padua_previous_vte),
+          paduaKnownThrombophilia:
+            row.latest_admission_padua_known_thrombophilia === null
+              ? null
+              : Boolean(row.latest_admission_padua_known_thrombophilia),
+          paduaRecentTraumaOrSurgery:
+            row.latest_admission_padua_recent_trauma_or_surgery === null
+              ? null
+              : Boolean(row.latest_admission_padua_recent_trauma_or_surgery),
+          paduaHeartOrRespiratoryFailure:
+            row.latest_admission_padua_heart_or_respiratory_failure === null
+              ? null
+              : Boolean(row.latest_admission_padua_heart_or_respiratory_failure),
+          paduaAcuteMiOrIschemicStroke:
+            row.latest_admission_padua_acute_mi_or_ischemic_stroke === null
+              ? null
+              : Boolean(row.latest_admission_padua_acute_mi_or_ischemic_stroke),
+          paduaAcuteInfectionOrRheumatologicDisorder:
+            row.latest_admission_padua_acute_infection_or_rheumatologic_disorder === null
+              ? null
+              : Boolean(row.latest_admission_padua_acute_infection_or_rheumatologic_disorder),
+          paduaHormonalTreatment:
+            row.latest_admission_padua_hormonal_treatment === null
+              ? null
+              : Boolean(row.latest_admission_padua_hormonal_treatment),
+          paduaContraindicationToPharmacologicProphylaxis:
+            row.latest_admission_padua_contraindication_to_pharmacologic_prophylaxis === null
+              ? null
+              : Boolean(
+                  row.latest_admission_padua_contraindication_to_pharmacologic_prophylaxis
+                ),
+          paduaNotes:
+            row.latest_admission_padua_notes === null
+              ? null
+              : String(row.latest_admission_padua_notes ?? ""),
+          lamgCriticallyIll:
+            row.latest_admission_lamg_critically_ill === null
+              ? null
+              : Boolean(row.latest_admission_lamg_critically_ill),
+          lamgShock:
+            row.latest_admission_lamg_shock === null
+              ? null
+              : Boolean(row.latest_admission_lamg_shock),
+          lamgCoagulopathy:
+            row.latest_admission_lamg_coagulopathy === null
+              ? null
+              : Boolean(row.latest_admission_lamg_coagulopathy),
+          lamgChronicLiverDisease:
+            row.latest_admission_lamg_chronic_liver_disease === null
+              ? null
+              : Boolean(row.latest_admission_lamg_chronic_liver_disease),
+          lamgNeurocritical:
+            row.latest_admission_lamg_neurocritical === null
+              ? null
+              : Boolean(row.latest_admission_lamg_neurocritical),
+          lamgEnteralNutrition:
+            row.latest_admission_lamg_enteral_nutrition === null
+              ? null
+              : Boolean(row.latest_admission_lamg_enteral_nutrition),
+          lamgAgent: normalizeLamgProphylaxisAgent(row.latest_admission_lamg_agent),
+          lamgNotes:
+            row.latest_admission_lamg_notes === null
+              ? null
+              : String(row.latest_admission_lamg_notes ?? ""),
           interviewInterventionMotive:
             row.latest_admission_interview_intervention_motive === null
               ? null
@@ -1152,6 +1328,26 @@ async function setupDatabase(): Promise<void> {
       interview_information_source_type TEXT,
       interview_information_source_name TEXT,
       interview_information_source_relationship TEXT,
+      interview_ambulates BOOLEAN,
+      interview_is_intubated BOOLEAN,
+      padua_active_cancer BOOLEAN,
+      padua_previous_vte BOOLEAN,
+      padua_known_thrombophilia BOOLEAN,
+      padua_recent_trauma_or_surgery BOOLEAN,
+      padua_heart_or_respiratory_failure BOOLEAN,
+      padua_acute_mi_or_ischemic_stroke BOOLEAN,
+      padua_acute_infection_or_rheumatologic_disorder BOOLEAN,
+      padua_hormonal_treatment BOOLEAN,
+      padua_contraindication_to_pharmacologic_prophylaxis BOOLEAN,
+      padua_notes TEXT,
+      lamg_critically_ill BOOLEAN,
+      lamg_shock BOOLEAN,
+      lamg_coagulopathy BOOLEAN,
+      lamg_chronic_liver_disease BOOLEAN,
+      lamg_neurocritical BOOLEAN,
+      lamg_enteral_nutrition BOOLEAN,
+      lamg_agent TEXT,
+      lamg_notes TEXT,
       interview_intervention_motive TEXT,
       interview_subjective TEXT,
       interview_relevant_symptoms TEXT,
@@ -1380,6 +1576,66 @@ async function setupDatabase(): Promise<void> {
 
     ALTER TABLE admissions
     ADD COLUMN IF NOT EXISTS interview_information_source_relationship TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS interview_ambulates BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS interview_is_intubated BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS padua_active_cancer BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS padua_previous_vte BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS padua_known_thrombophilia BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS padua_recent_trauma_or_surgery BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS padua_heart_or_respiratory_failure BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS padua_acute_mi_or_ischemic_stroke BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS padua_acute_infection_or_rheumatologic_disorder BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS padua_hormonal_treatment BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS padua_contraindication_to_pharmacologic_prophylaxis BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS padua_notes TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS lamg_critically_ill BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS lamg_shock BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS lamg_coagulopathy BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS lamg_chronic_liver_disease BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS lamg_neurocritical BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS lamg_enteral_nutrition BOOLEAN;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS lamg_agent TEXT;
+
+    ALTER TABLE admissions
+    ADD COLUMN IF NOT EXISTS lamg_notes TEXT;
 
     ALTER TABLE admissions
     ADD COLUMN IF NOT EXISTS interview_intervention_motive TEXT;
@@ -2917,6 +3173,26 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
           interview_information_source_type,
           interview_information_source_name,
           interview_information_source_relationship,
+          interview_ambulates,
+          interview_is_intubated,
+          padua_active_cancer,
+          padua_previous_vte,
+          padua_known_thrombophilia,
+          padua_recent_trauma_or_surgery,
+          padua_heart_or_respiratory_failure,
+          padua_acute_mi_or_ischemic_stroke,
+          padua_acute_infection_or_rheumatologic_disorder,
+          padua_hormonal_treatment,
+          padua_contraindication_to_pharmacologic_prophylaxis,
+          padua_notes,
+          lamg_critically_ill,
+          lamg_shock,
+          lamg_coagulopathy,
+          lamg_chronic_liver_disease,
+          lamg_neurocritical,
+          lamg_enteral_nutrition,
+          lamg_agent,
+          lamg_notes,
           interview_intervention_motive,
           interview_subjective,
           interview_relevant_symptoms,
@@ -2925,7 +3201,12 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
           team_id,
           responsible_professional_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+          $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+          $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
+          $31, $32, $33, $34, $35, $36, $37, $38, $39, $40
+        )
         RETURNING id
       `,
       [
@@ -2942,6 +3223,26 @@ export async function createAdmission(input: CreateAdmissionInput): Promise<Admi
         input.interviewInformationSourceType?.trim() || null,
         input.interviewInformationSourceName?.trim() || null,
         input.interviewInformationSourceRelationship?.trim() || null,
+        input.interviewAmbulates ?? null,
+        input.interviewIsIntubated ?? null,
+        input.paduaActiveCancer ?? null,
+        input.paduaPreviousVte ?? null,
+        input.paduaKnownThrombophilia ?? null,
+        input.paduaRecentTraumaOrSurgery ?? null,
+        input.paduaHeartOrRespiratoryFailure ?? null,
+        input.paduaAcuteMiOrIschemicStroke ?? null,
+        input.paduaAcuteInfectionOrRheumatologicDisorder ?? null,
+        input.paduaHormonalTreatment ?? null,
+        input.paduaContraindicationToPharmacologicProphylaxis ?? null,
+        input.paduaNotes?.trim() || null,
+        input.lamgCriticallyIll ?? null,
+        input.lamgShock ?? null,
+        input.lamgCoagulopathy ?? null,
+        input.lamgChronicLiverDisease ?? null,
+        input.lamgNeurocritical ?? null,
+        input.lamgEnteralNutrition ?? null,
+        input.lamgAgent?.trim() || null,
+        input.lamgNotes?.trim() || null,
         input.interviewInterventionMotive?.trim() || null,
         input.interviewSubjective?.trim() || null,
         input.interviewRelevantSymptoms?.trim() || null,
@@ -3025,12 +3326,32 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
           interview_information_source_type = $11,
           interview_information_source_name = $12,
           interview_information_source_relationship = $13,
-          interview_intervention_motive = $14,
-          interview_subjective = $15,
-          interview_relevant_symptoms = $16,
-          interview_pending_issues = $17,
-          interview_plan = $18,
-          team_id = $19
+          interview_ambulates = $14,
+          interview_is_intubated = $15,
+          padua_active_cancer = $16,
+          padua_previous_vte = $17,
+          padua_known_thrombophilia = $18,
+          padua_recent_trauma_or_surgery = $19,
+          padua_heart_or_respiratory_failure = $20,
+          padua_acute_mi_or_ischemic_stroke = $21,
+          padua_acute_infection_or_rheumatologic_disorder = $22,
+          padua_hormonal_treatment = $23,
+          padua_contraindication_to_pharmacologic_prophylaxis = $24,
+          padua_notes = $25,
+          lamg_critically_ill = $26,
+          lamg_shock = $27,
+          lamg_coagulopathy = $28,
+          lamg_chronic_liver_disease = $29,
+          lamg_neurocritical = $30,
+          lamg_enteral_nutrition = $31,
+          lamg_agent = $32,
+          lamg_notes = $33,
+          interview_intervention_motive = $34,
+          interview_subjective = $35,
+          interview_relevant_symptoms = $36,
+          interview_pending_issues = $37,
+          interview_plan = $38,
+          team_id = $39
         WHERE id = $1
         RETURNING id, patient_id
       `,
@@ -3048,6 +3369,26 @@ export async function updateAdmission(input: UpdateAdmissionInput): Promise<Admi
         input.interviewInformationSourceType?.trim() || null,
         input.interviewInformationSourceName?.trim() || null,
         input.interviewInformationSourceRelationship?.trim() || null,
+        input.interviewAmbulates ?? null,
+        input.interviewIsIntubated ?? null,
+        input.paduaActiveCancer ?? null,
+        input.paduaPreviousVte ?? null,
+        input.paduaKnownThrombophilia ?? null,
+        input.paduaRecentTraumaOrSurgery ?? null,
+        input.paduaHeartOrRespiratoryFailure ?? null,
+        input.paduaAcuteMiOrIschemicStroke ?? null,
+        input.paduaAcuteInfectionOrRheumatologicDisorder ?? null,
+        input.paduaHormonalTreatment ?? null,
+        input.paduaContraindicationToPharmacologicProphylaxis ?? null,
+        input.paduaNotes?.trim() || null,
+        input.lamgCriticallyIll ?? null,
+        input.lamgShock ?? null,
+        input.lamgCoagulopathy ?? null,
+        input.lamgChronicLiverDisease ?? null,
+        input.lamgNeurocritical ?? null,
+        input.lamgEnteralNutrition ?? null,
+        input.lamgAgent?.trim() || null,
+        input.lamgNotes?.trim() || null,
         input.interviewInterventionMotive?.trim() || null,
         input.interviewSubjective?.trim() || null,
         input.interviewRelevantSymptoms?.trim() || null,
@@ -4512,6 +4853,26 @@ export async function listPatients(
       la.interview_information_source_type AS latest_admission_interview_information_source_type,
       la.interview_information_source_name AS latest_admission_interview_information_source_name,
       la.interview_information_source_relationship AS latest_admission_interview_information_source_relationship,
+      la.interview_ambulates AS latest_admission_interview_ambulates,
+      la.interview_is_intubated AS latest_admission_interview_is_intubated,
+      la.padua_active_cancer AS latest_admission_padua_active_cancer,
+      la.padua_previous_vte AS latest_admission_padua_previous_vte,
+      la.padua_known_thrombophilia AS latest_admission_padua_known_thrombophilia,
+      la.padua_recent_trauma_or_surgery AS latest_admission_padua_recent_trauma_or_surgery,
+      la.padua_heart_or_respiratory_failure AS latest_admission_padua_heart_or_respiratory_failure,
+      la.padua_acute_mi_or_ischemic_stroke AS latest_admission_padua_acute_mi_or_ischemic_stroke,
+      la.padua_acute_infection_or_rheumatologic_disorder AS latest_admission_padua_acute_infection_or_rheumatologic_disorder,
+      la.padua_hormonal_treatment AS latest_admission_padua_hormonal_treatment,
+      la.padua_contraindication_to_pharmacologic_prophylaxis AS latest_admission_padua_contraindication_to_pharmacologic_prophylaxis,
+      la.padua_notes AS latest_admission_padua_notes,
+      la.lamg_critically_ill AS latest_admission_lamg_critically_ill,
+      la.lamg_shock AS latest_admission_lamg_shock,
+      la.lamg_coagulopathy AS latest_admission_lamg_coagulopathy,
+      la.lamg_chronic_liver_disease AS latest_admission_lamg_chronic_liver_disease,
+      la.lamg_neurocritical AS latest_admission_lamg_neurocritical,
+      la.lamg_enteral_nutrition AS latest_admission_lamg_enteral_nutrition,
+      la.lamg_agent AS latest_admission_lamg_agent,
+      la.lamg_notes AS latest_admission_lamg_notes,
       la.interview_intervention_motive AS latest_admission_interview_intervention_motive,
       la.interview_subjective AS latest_admission_interview_subjective,
       la.interview_relevant_symptoms AS latest_admission_interview_relevant_symptoms,
@@ -4544,6 +4905,26 @@ export async function listPatients(
       NULL::text AS latest_admission_interview_information_source_type,
       NULL::text AS latest_admission_interview_information_source_name,
       NULL::text AS latest_admission_interview_information_source_relationship,
+      NULL::boolean AS latest_admission_interview_ambulates,
+      NULL::boolean AS latest_admission_interview_is_intubated,
+      NULL::boolean AS latest_admission_padua_active_cancer,
+      NULL::boolean AS latest_admission_padua_previous_vte,
+      NULL::boolean AS latest_admission_padua_known_thrombophilia,
+      NULL::boolean AS latest_admission_padua_recent_trauma_or_surgery,
+      NULL::boolean AS latest_admission_padua_heart_or_respiratory_failure,
+      NULL::boolean AS latest_admission_padua_acute_mi_or_ischemic_stroke,
+      NULL::boolean AS latest_admission_padua_acute_infection_or_rheumatologic_disorder,
+      NULL::boolean AS latest_admission_padua_hormonal_treatment,
+      NULL::boolean AS latest_admission_padua_contraindication_to_pharmacologic_prophylaxis,
+      NULL::text AS latest_admission_padua_notes,
+      NULL::boolean AS latest_admission_lamg_critically_ill,
+      NULL::boolean AS latest_admission_lamg_shock,
+      NULL::boolean AS latest_admission_lamg_coagulopathy,
+      NULL::boolean AS latest_admission_lamg_chronic_liver_disease,
+      NULL::boolean AS latest_admission_lamg_neurocritical,
+      NULL::boolean AS latest_admission_lamg_enteral_nutrition,
+      NULL::text AS latest_admission_lamg_agent,
+      NULL::text AS latest_admission_lamg_notes,
       NULL::text AS latest_admission_interview_intervention_motive,
       NULL::text AS latest_admission_interview_subjective,
       NULL::text AS latest_admission_interview_relevant_symptoms,
@@ -4580,6 +4961,26 @@ export async function listPatients(
         a.interview_information_source_type,
         a.interview_information_source_name,
         a.interview_information_source_relationship,
+        a.interview_ambulates,
+        a.interview_is_intubated,
+        a.padua_active_cancer,
+        a.padua_previous_vte,
+        a.padua_known_thrombophilia,
+        a.padua_recent_trauma_or_surgery,
+        a.padua_heart_or_respiratory_failure,
+        a.padua_acute_mi_or_ischemic_stroke,
+        a.padua_acute_infection_or_rheumatologic_disorder,
+        a.padua_hormonal_treatment,
+        a.padua_contraindication_to_pharmacologic_prophylaxis,
+        a.padua_notes,
+        a.lamg_critically_ill,
+        a.lamg_shock,
+        a.lamg_coagulopathy,
+        a.lamg_chronic_liver_disease,
+        a.lamg_neurocritical,
+        a.lamg_enteral_nutrition,
+        a.lamg_agent,
+        a.lamg_notes,
         a.interview_intervention_motive,
         a.interview_subjective,
         a.interview_relevant_symptoms,
@@ -4707,6 +5108,26 @@ export async function listRecentAdmissions(
         a.interview_information_source_type,
         a.interview_information_source_name,
         a.interview_information_source_relationship,
+        a.interview_ambulates,
+        a.interview_is_intubated,
+        a.padua_active_cancer,
+        a.padua_previous_vte,
+        a.padua_known_thrombophilia,
+        a.padua_recent_trauma_or_surgery,
+        a.padua_heart_or_respiratory_failure,
+        a.padua_acute_mi_or_ischemic_stroke,
+        a.padua_acute_infection_or_rheumatologic_disorder,
+        a.padua_hormonal_treatment,
+        a.padua_contraindication_to_pharmacologic_prophylaxis,
+        a.padua_notes,
+        a.lamg_critically_ill,
+        a.lamg_shock,
+        a.lamg_coagulopathy,
+        a.lamg_chronic_liver_disease,
+        a.lamg_neurocritical,
+        a.lamg_enteral_nutrition,
+        a.lamg_agent,
+        a.lamg_notes,
         a.interview_intervention_motive,
         a.interview_subjective,
         a.interview_relevant_symptoms,
@@ -4773,6 +5194,26 @@ async function getAdmissionById(admissionId: number): Promise<AdmissionRecord | 
         a.interview_information_source_type,
         a.interview_information_source_name,
         a.interview_information_source_relationship,
+        a.interview_ambulates,
+        a.interview_is_intubated,
+        a.padua_active_cancer,
+        a.padua_previous_vte,
+        a.padua_known_thrombophilia,
+        a.padua_recent_trauma_or_surgery,
+        a.padua_heart_or_respiratory_failure,
+        a.padua_acute_mi_or_ischemic_stroke,
+        a.padua_acute_infection_or_rheumatologic_disorder,
+        a.padua_hormonal_treatment,
+        a.padua_contraindication_to_pharmacologic_prophylaxis,
+        a.padua_notes,
+        a.lamg_critically_ill,
+        a.lamg_shock,
+        a.lamg_coagulopathy,
+        a.lamg_chronic_liver_disease,
+        a.lamg_neurocritical,
+        a.lamg_enteral_nutrition,
+        a.lamg_agent,
+        a.lamg_notes,
         a.interview_intervention_motive,
         a.interview_subjective,
         a.interview_relevant_symptoms,
